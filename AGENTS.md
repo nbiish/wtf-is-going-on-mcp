@@ -1,5 +1,5 @@
 ---
-description: PQC secrets for all API keys. Worktree per task. Worktrees branch from main, merge back to main after verification. Polyglot ecosystem (Rust, TS, Py, etc). Chain-of-Draft (CoD) reasoning: strictly ≤5 words per step. Mimic human shorthand: pure logic/state transformations. Separate final output via ####. Ask before merging. Output full production code. llms.txt is the PRD anchor. Read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops. Standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Create a worktree for every task. Branch naming: `<type>/<scope>-<slug>`. Pre-merge checklist: gates, diff, user confirmation. Fail closed on any conflict or unconfirmed merge.
+description: PQC secrets for all API keys. Worktree per task. Worktrees branch from main, merge back to main after verification. Polyglot ecosystem (Rust, TS, Py, etc). Chain-of-Draft (CoD) reasoning: strictly ≤5 words per step. Mimic human shorthand: pure logic/state transformations. Separate final output via ####. Ask before merging. Output full production code. llms.txt is the PRD anchor. Read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops. Standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Create a worktree for every task. Branch naming: `<type>/<scope>-<slug>`. Pre-merge checklist: gates, diff, user confirmation. Fail closed on any conflict or unconfirmed merge. wtf hub reporting is mandatory (chain-of-draft; see .agents/skills/wtf-observability/SKILL.md): the operator sees what the fuck is going on across agents and machines.
 ---
 
 # 🚧 WORKTREE GATE — MANDATORY CHECKPOINT
@@ -52,6 +52,40 @@ Conflict → fail closed, explain, ask.
 - **PRD Anchor:** `llms.txt` is the authoritative Product Requirements Document. Read unconditionally if present. Overrides conflicting sources per Priority 2. If task drifts, re-read. Never skip.
 - **Artifact Hygiene:** Task files and PRD inherit all security rules. Audit per cycle for banned crypto and secrets. Default classification: Confidential.
 </TASK_PRIMER>
+
+---
+
+<AGENT_HUB>
+## AGENT COMMUNICATIONS HUB — wtf (MANDATORY)
+
+Every agent in this ecosystem reports through the **wtf** observability hub so the operator can see, at a glance, what the fuck is going on between all agents, on every machine. This is not optional instrumentation — it is the team's nervous system and the operator's single pane of glass.
+
+**Setup (once per machine, zero-install):**
+1. Read `.agents/skills/wtf-observability/SKILL.md` before anything else. It is the canonical operating guide: MCP wiring, the signed `curl` + `openssl` fallback for harnesses without MCP, etiquette, troubleshooting.
+2. Enroll the machine: `wtf join you@HUB-HOST --name <box>` (or `wtf setup --url URL --name NAME --key KEY` with a key issued hub-side). Credentials land in `bridge.json` (0600); `WTF_HUB_URL` / `WTF_DEVICE_NAME` / `WTF_DEVICE_KEY` env vars override and are the secret-manager delivery path.
+3. Register the bridge with your MCP harness: `command: wtf` (or the built binary path), `args: ["agent"]`. No MCP harness? Use the skill's signed-curl fallback — same endpoints, same rules, no excuses.
+
+**Reporting contract (chain-of-draft):**
+- The bridge's `initialize` `instructions` and every tool description mandate chain-of-draft: terse fragments, ≤5 words per fragment, no prose, no secrets. Comply regardless of harness, skill loading, or model.
+- `check_in` when you start (`working` + task), when blocked (`blocked` + what you need), and when done (`done`). `log_event` for milestones and failures — `warn`/`error` levels exist for a reason.
+- Call `wtf_is_going_on` before starting work: it summarizes every agent's status, recent events, and operator paste-bins. Another agent may already be on the task.
+- `list_bins` / `read_bin` fetch operator-posted context (BIN 1–3). Read the bins before planning.
+
+**Why:** The dashboard (hub port 7800, `?k=` key in `$WTF_HOME/config.json`) is what the operator watches. Your updates are how they see what the fuck is going on across agents and machines — keep them short, current, and secret-free. The whole network reads them.
+
+**Lift-ready system prompt** (plain text; drop verbatim into any agent harness that lacks this file):
+
+```text
+You report through the wtf observability hub (MCP tools check_in, log_event,
+wtf_is_going_on, list_bins, read_bin; see .agents/skills/wtf-observability/SKILL.md).
+Chain-of-draft is your wire format: terse fragments, <=5 words each, no prose,
+no secrets. check_in at start (working + task), on blockers (blocked + need),
+and at completion (done). Call wtf_is_going_on before you start; read operator
+bins with list_bins / read_bin when planning. The operator watches the hub
+dashboard to see what the fuck is going on between all agents — your updates
+are how they see it. Keep them short, current, and secret-free.
+```
+</AGENT_HUB>
 
 ---
 
