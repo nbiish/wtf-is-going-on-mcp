@@ -4,6 +4,7 @@
 //! startup to rebuild agent state, so a hub restart loses nothing. The log
 //! rotates at 10 MB (renamed to events.jsonl.old) so it cannot grow forever.
 
+use crate::bins::Bins;
 use crate::json::Value;
 use crate::util::{clamp, now_secs};
 use std::collections::{HashMap, VecDeque};
@@ -262,7 +263,7 @@ impl Store {
         (agents, inner.events.iter().cloned().collect())
     }
 
-    pub fn to_state_json(&self, started_at: u64) -> Value {
+    pub fn to_state_json(&self, started_at: u64, bins: &Bins) -> Value {
         let now = now_secs();
         let (agents, events) = self.snapshot();
         let agents_v: Vec<Value> = agents
@@ -304,6 +305,7 @@ impl Store {
             ),
             ("agents", Value::Arr(agents_v)),
             ("events", Value::Arr(events_v)),
+            ("bins", bins.to_state_json()),
         ])
     }
 }

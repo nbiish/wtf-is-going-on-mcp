@@ -146,7 +146,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 6);
 
     rpc_write(
         &mut agent,
@@ -251,8 +251,117 @@ fn hub_bridge_end_to_end() {
     assert!(events
         .iter()
         .any(|e| e.get("message").and_then(|v| v.as_str()) == Some("e2e event fired")));
+    // State JSON carries the three paste-bins for live dashboards.
+    assert_eq!(sv.get("bins").unwrap().as_arr().unwrap().len(), 3);
 
-    // 7. Cleanup.
+    // 7. Paste-bins: dashboard-key write, authenticated reads, rejections.
+    let put = wtf::client::request(
+        &format!("{url}/api/v1/bins/1?k={dkey}"),
+        "PUT",
+        &[("Content-Type".to_string(), "application/json".to_string())],
+        br#"{"content":"work from this bin: e2e spec"}"#,
+    )
+    .unwrap();
+    assert_eq!(put.status, 200);
+    assert!(put.text().contains("\"ok\":true"));
+
+    let anon_put = wtf::client::request(
+        &format!("{url}/api/v1/bins/1"),
+        "PUT",
+        &[],
+        br#"{"content":"nope"}"#,
+    )
+    .unwrap();
+    assert_eq!(anon_put.status, 401);
+
+    // Unknown bin id is an unknown path: 404, never a panic.
+    let bad_bin = wtf::client::request(
+        &format!("{url}/api/v1/bins/4?k={dkey}"),
+        "PUT",
+        &[],
+        br#"{"content":"x"}"#,
+    )
+    .unwrap();
+    assert_eq!(bad_bin.status, 404);
+
+    // Oversized paste is rejected, not truncated.
+    let big = format!("{{\"content\":\"{}\"}}", "x".repeat(70_000));
+    let too_big = wtf::client::request(
+        &format!("{url}/api/v1/bins/2?k={dkey}"),
+        "PUT",
+        &[],
+        big.as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(too_big.status, 400);
+
+    let got = wtf::client::request(
+        &format!("{url}/api/v1/bins/1?k={dkey}"),
+        "GET",
+        &[],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(got.status, 200);
+    assert!(got.text().contains("work from this bin: e2e spec"));
+
+    let all = wtf::client::request(&format!("{url}/api/v1/bins?k={dkey}"), "GET", &[], b"").unwrap();
+    assert_eq!(all.status, 200);
+    assert_eq!(all.json().unwrap().get("bins").unwrap().as_arr().unwrap().len(), 3);
+
+    // 8. Bridge tools expose the bins to agents on any machine.
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":1}}}"#,
+    );
+    let rb = rpc_read(&mut reader);
+    let rbres = rb.get("result").unwrap();
+    assert_eq!(rbres.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let rbtext = rbres.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(rbtext.contains("work from this bin: e2e spec"), "read_bin text: {rbtext}");
+
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":9}}}"#,
+    );
+    let badrb = rpc_read(&mut reader);
+    assert_eq!(
+        badrb.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"list_bins","arguments":{}}}"#,
+    );
+    let lb = rpc_read(&mut reader);
+    let lbres = lb.get("result").unwrap();
+    assert_eq!(lbres.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let lbtext = lbres.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(lbtext.contains("BIN 1"), "list_bins text: {lbtext}");
+
+    // wtf_is_going_on surfaces non-empty bins so agents notice them.
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"wtf_is_going_on","arguments":{}}}"#,
+    );
+    let st2 = rpc_read(&mut reader);
+    let st2text = st2.get("result").unwrap().get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(st2text.contains("BIN 1"), "state text should list bins: {st2text}");
+
+    // 9. Cleanup.
     done.store(true, Ordering::SeqCst);
     let _ = agent.kill();
     let _ = hub.kill();
