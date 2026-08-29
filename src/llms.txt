@@ -12,7 +12,7 @@ All hub and bridge code lives here on the Rust standard library only. Zero exter
 - `store.rs` — `events.jsonl` is the source of truth (replayed on start, rotates at 10 MB); 1000 events in memory; generation counter drives SSE pushes.
 - `api.rs` — route table + authz: `/healthz` open; `/` and `/stream` need dashboard key `?k=`; `/api/v1/state` accepts dashboard key or device auth; `checkin`/`event`/`heartbeat` are device-only. On unknown device the keystore reloads once from disk (hot enrollment without hub restart).
 - `dashboard.rs` — embedded single-page dark UI; no external assets; EventSource live updates.
-- `mcp.rs` — stdio JSON-RPC 2.0 bridge (`initialize`, `tools/list`, `tools/call`, `ping`); application failures are `isError:true` results, never protocol errors; 60 s heartbeat thread; shared text formatter also used by `wtf status`.
+- `mcp.rs` — stdio JSON-RPC 2.0 bridge (`initialize`, `tools/list`, `tools/call`, `ping`); application failures are `isError:true` results, never protocol errors; 60 s heartbeat thread; shared text formatter also used by `wtf status`; `instructions` + tool descriptions mandate chain-of-draft reporting (terse fragments, <=5 words).
 - `main.rs` — CLI: `serve`, `key issue|list|revoke` (`issue --json` emits a machine-readable enrollment line), `url` (get/set/clear advertised URL), `setup`, `join` (self-enroll by running `key issue --json` remotely over ssh; the one-time secret travels only inside the ssh channel and the remote command is charset-restricted), `agent`, `status`, `help`.
 
 ## Local Contracts
