@@ -480,3 +480,104 @@ fn bridge_refuses_without_config() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("bridge config incomplete"));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn revocation_is_instant() {
+    let home = temp_home("revoke");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url in listening line")
+        .to_string();
+
+    // Enroll, then prove the signed path works before revoking.
+    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "box1"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("key issue");
+    assert!(
+        out.status.success(),
+        "key issue failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let keys_text = std::fs::read_to_string(home.join("keys.json")).unwrap();
+    let keys = wtf::json::parse(&keys_text).unwrap();
+    let secret = keys.get("devices").unwrap().as_arr().unwrap()[0]
+        .get("secret")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let body = b"{\"status\":\"working\",\"task\":\"pre-revoke\",\"details\":\"signed\"}".to_vec();
+    let mut ts = wtf::util::now_secs();
+    let mut nonce = wtf::rand::hex(16);
+    let mut sig =
+        wtf::auth::sign(&secret, "POST", "/api/v1/checkin", ts, &nonce, &body).unwrap();
+    let head = |ts: u64, nonce: &str, sig: &str| -> Vec<(String, String)> {
+        vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X-Wtf-Device".to_string(), "box1".to_string()),
+            ("X-Wtf-Timestamp".to_string(), ts.to_string()),
+            ("X-Wtf-Nonce".to_string(), nonce.to_string()),
+            ("X-Wtf-Signature".to_string(), sig.to_string()),
+        ]
+    };
+    let ok = wtf::client::request(
+        &format!("{url}/api/v1/checkin"),
+        "POST",
+        &head(ts, &nonce, &sig),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(ok.status, 200, "pre-revoke signed check_in must pass");
+
+    // Revoke on disk; the very next signed call must fail. No stale
+    // in-memory keystore entry may authenticate a revoked device.
+    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "revoke", "box1"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("key revoke");
+    assert!(
+        out.status.success(),
+        "key revoke failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    ts = wtf::util::now_secs();
+    nonce = wtf::rand::hex(16);
+    sig = wtf::auth::sign(&secret, "POST", "/api/v1/checkin", ts, &nonce, &body).unwrap();
+    let denied = wtf::client::request(
+        &format!("{url}/api/v1/checkin"),
+        "POST",
+        &head(ts, &nonce, &sig),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(denied.status, 401, "revoked device must be rejected instantly");
+
+    let _ = hub.kill();
+    let _ = std::fs::remove_dir_all(&home);
+}
