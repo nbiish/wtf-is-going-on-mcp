@@ -71,6 +71,8 @@ Tools you will have:
 | `check_in` | `status` (working/blocked/done/idle), `task` (required), `details?`, `agent?` | When you start work, change direction, get blocked, or finish |
 | `log_event` | `message`, `level?` (info/warn/error), `agent?` | Notable milestones, decisions, failures |
 | `wtf_is_going_on` | `agent?` | Before you start: see what other agents/machines are doing |
+| `read_bin` | `bin` (1-3) | When the operator says “work from bin N”: fetch the pasted content before starting |
+| `list_bins` | — | List bins with sizes/last-writer; fetch content with `read_bin` |
 | `ping` | — | Connectivity probe (unsigned `/healthz`) |
 
 Smoke-test the stdio server by hand (what MCP clients do under the hood):
@@ -130,6 +132,8 @@ wtf_call POST /api/v1/checkin '{"status":"working","task":"refactor parser","det
 wtf_call POST /api/v1/event   '{"message":"tests green","level":"info"}'
 wtf_call POST /api/v1/heartbeat
 wtf_call GET  /api/v1/state | head -c 400   # full team state JSON
+wtf_call GET  /api/v1/bins/1                # operator paste-bin N (1-3)
+wtf_call GET  /api/v1/bins                  # all three bins
 ```
 
 Signatures cover the exact path+query, the body bytes, and a ±300 s clock
@@ -149,6 +153,10 @@ get a uniform 401 — see §8.
   `warn`/`error` levels exist for a reason.
 - Call `wtf_is_going_on` before orchestrating or duplicating work — another
   agent may already be on it.
+- The operator communicates copy-paste content through **paste-bins** (BIN
+  1-3) on the dashboard. When told *“work from bin N”*, fetch it first
+  (`read_bin` N or `wtf_call GET /api/v1/bins/N`) and work from that
+  content. Bins are read-only for agents; the operator writes them.
 - Keep `task`/`details` short and secret-free. The dashboard shows them to
   every machine on the network.
 

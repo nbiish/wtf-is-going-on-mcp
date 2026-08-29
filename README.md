@@ -9,7 +9,8 @@ One command answers the eternal question across every machine you operate:
   report what they are doing; you watch it in one page.
 - **Bridge** (`wtf agent`) — an MCP stdio server that any MCP client launches.
   It exposes reporting tools (`check_in`, `log_event`, `wtf_is_going_on`,
-  `ping`) and forwards everything to the hub over HMAC-signed requests.
+  `read_bin`, `list_bins`, `ping`) and forwards everything to the hub over
+  HMAC-signed requests.
 
 Everything — SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server + client, and the
 MCP bridge — is implemented in this repo on the Rust standard library only.
@@ -92,6 +93,11 @@ in `$WTF_HOME/config.json` and is reprinted by `wtf serve` on every start).
 current task, details, and last-seen age (`●` fresh, `○` stale after a
 few minutes of silence).
 - The event feed lists everything agents have logged, newest first.
+- The **COPY-PASTE BINS** section holds three persistent bins. Paste any
+content (a spec, logs, a URL list) into a bin, hit Save, then tell any
+agent on any machine: *“work from bin 2”*. The agent fetches it with the
+`read_bin` MCP tool. Bins survive hub restarts; every save lands in the
+event feed, so the other dashboards see it live.
 - The page live-updates over Server-Sent Events (`/stream`) — no refresh,
 no external assets, works offline.
 
@@ -209,6 +215,9 @@ reads these on the dashboard to see what the fuck is going on.
 a reason.
 - `wtf_is_going_on` before starting work — another agent may already be on
 it.
+- When the operator says *“work from bin N”*, call `read_bin` with that N
+before starting; bins hold pasted specs, logs, or whatever the operator
+queued for you.
 - The bridge heartbeats automatically every 60 s while running. Keep
 `task`/`details` short and secret-free; the whole network can read them.
 
@@ -219,6 +228,8 @@ it.
 | `check_in` | `status` (working/blocked/done/idle), `task`, `details?`, `agent?` | Report current status; shown as an agent card |
 | `log_event` | `message`, `level?` (info/warn/error), `agent?` | Append to the shared event feed |
 | `wtf_is_going_on` | `agent?` | Text snapshot of all agents + recent events |
+| `read_bin` | `bin` (1-3) | Fetch the content an operator pasted into a bin (use when told “work from bin N”) |
+| `list_bins` | — | List bins with sizes and last-writer metadata |
 | `ping` | — | Hub connectivity probe (unsigned `/healthz`) |
 
 Tool failures (bad args, hub down, revoked key) are returned as
@@ -231,7 +242,10 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | `GET /healthz` | none | Connectivity probe (version, uptime) |
 | `GET /?k=KEY` | dashboard key | Dashboard page |
 | `GET /stream?k=KEY` | dashboard key (device auth ok) | SSE state stream |
-| `GET /api/v1/state` | dashboard key or device auth | Full state JSON |
+| `GET /api/v1/state` | dashboard key or device auth | Full state JSON (includes `bins`) |
+| `GET /api/v1/bins` | dashboard key or device auth | All three paste-bins |
+| `GET /api/v1/bins/N` | dashboard key or device auth | One paste-bin (N = 1-3) |
+| `PUT /api/v1/bins/N` | dashboard key or device auth | Write a paste-bin: `{"content":"…"}` (max 65,536 chars; oversize is rejected, not truncated) |
 | `POST /api/v1/checkin` | device auth | Upsert agent status |
 | `POST /api/v1/event` | device auth | Append event |
 | `POST /api/v1/heartbeat` | device auth | Liveness touch |
@@ -246,6 +260,7 @@ All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
 - `config.json` — hub bind address, port, dashboard key, optional advertised URL (0600)
 - `keys.json` — device records (0600)
 - `bridge.json` — agent-side hub URL + credentials (0600)
+- `bins.json` — operator paste-bins, content included (0600)
 - `events.jsonl` — append-only log, rotates to `events.jsonl.old` at 10 MB
 
 `wtf key revoke <name>` instantly disables a device; the hub picks up
@@ -303,7 +318,7 @@ wtf version
 ## Development
 
 ```
-cargo test              # 44 unit tests + 3 e2e tests (real hub + real bridge over stdio)
+cargo test              # 48 unit tests + 3 e2e tests (real hub + real bridge over stdio)
 cargo build --release   # lto, panic=abort, overflow checks
 ```
 

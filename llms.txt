@@ -82,7 +82,7 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Project Shape
 
-Rust workspace (binary + lib crate `wtf`) implementing an observability hub (`wtf serve`) and an MCP stdio bridge (`wtf agent`) with zero external crates. Deployment topologies: trusted LAN (plain HTTP), encrypted overlay (WireGuard/Tailscale, recommended off-LAN), or cloud behind a TLS-terminating proxy (`https://`). Operator workflow rules live in `AGENTS.md`; product behavior in `README.md`; implementation contracts in `src/llms.txt`.
+Rust workspace (binary + lib crate `wtf`) implementing an observability hub (`wtf serve`) and an MCP stdio bridge (`wtf agent`) with zero external crates. The hub carries operator paste-bins (BIN 1-3): a human pastes content on the dashboard and tells any agent on any machine to "work from bin N"; agents read bins via MCP tools. Deployment topologies: trusted LAN (plain HTTP), encrypted overlay (WireGuard/Tailscale, recommended off-LAN), or cloud behind a TLS-terminating proxy (`https://`). Operator workflow rules live in `AGENTS.md`; product behavior in `README.md`; implementation contracts in `src/llms.txt`.
 
 Parent-owned here: repo workflow gates, task records (`.agents/tasks/`), PQC policy, operator preferences.
 
