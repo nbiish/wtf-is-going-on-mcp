@@ -78,9 +78,11 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child `llms.txt`
 
+- Any agent instructed to use, set up, join, or debug this system must load `.agents/skills/wtf-observability/SKILL.md` first; it is the canonical zero-install operating guide (MCP wiring, signed curl fallback, operator CLI, multi-machine bring-up).
+
 ## Project Shape
 
-Rust workspace (binary + lib crate `wtf`) implementing a LAN observability hub (`wtf serve`) and an MCP stdio bridge (`wtf agent`) with zero external crates. Operator workflow rules live in `AGENTS.md`; product behavior in `README.md`; implementation contracts in `src/llms.txt`.
+Rust workspace (binary + lib crate `wtf`) implementing an observability hub (`wtf serve`) and an MCP stdio bridge (`wtf agent`) with zero external crates. Deployment topologies: trusted LAN (plain HTTP), encrypted overlay (WireGuard/Tailscale, recommended off-LAN), or cloud behind a TLS-terminating proxy (`https://`). Operator workflow rules live in `AGENTS.md`; product behavior in `README.md`; implementation contracts in `src/llms.txt`.
 
 Parent-owned here: repo workflow gates, task records (`.agents/tasks/`), PQC policy, operator preferences.
 

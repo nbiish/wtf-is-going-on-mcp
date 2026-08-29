@@ -83,6 +83,9 @@ pub struct HubConfig {
     pub port: u16,
     pub dashboard_key: String,
     pub created_at: u64,
+    /// URL handed out to joining devices (overlay IP, public https host).
+    /// When set, it wins over the auto-detected LAN address in lan_url().
+    pub advertised_url: Option<String>,
 }
 
 impl HubConfig {
@@ -104,13 +107,19 @@ impl HubConfig {
                 _ => return Err("config.json has empty dashboard_key; delete it to regenerate".into()),
             };
             let created_at = v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
-            return Ok(HubConfig { bind_ip, port, dashboard_key, created_at });
+            let advertised_url = v
+                .get("advertised_url")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
+            return Ok(HubConfig { bind_ip, port, dashboard_key, created_at, advertised_url });
         }
         let cfg = HubConfig {
             bind_ip: std::net::Ipv4Addr::UNSPECIFIED.to_string(),
             port: DEFAULT_PORT,
             dashboard_key: rand::key_hex(),
             created_at: crate::util::now_secs(),
+            advertised_url: None,
         };
         let v = Value::obj(vec![
             ("bind_ip", Value::from(cfg.bind_ip.as_str())),
@@ -126,13 +135,49 @@ impl HubConfig {
         format!("http://{}:{}", self.bind_ip, self.port)
     }
 
+    /// URL handed out to joining devices. An explicitly advertised URL (set
+    /// via `wtf url`, e.g. an overlay IP or a public https endpoint) wins over
+    /// the auto-detected LAN address.
     pub fn lan_url(&self) -> String {
+        if let Some(u) = &self.advertised_url {
+            return u.clone();
+        }
         let ip = if self.bind_ip == std::net::Ipv4Addr::UNSPECIFIED.to_string() {
             crate::util::lan_ip()
         } else {
             self.bind_ip.clone()
         };
         format!("http://{ip}:{}", self.port)
+    }
+
+    /// Set or clear the advertised URL, preserving all other config fields.
+    pub fn set_advertised_url_at(path: &Path, url: Option<String>) -> Result<HubConfig, String> {
+        let mut cfg = HubConfig::load_or_create_at(path)?;
+        cfg.advertised_url = match url {
+            Some(u) => {
+                let u = u.trim().trim_end_matches('/').to_string();
+                if !u.starts_with("http://") && !u.starts_with("https://") {
+                    return Err("advertised url must start with http:// or https://".into());
+                }
+                Some(u)
+            }
+            None => None,
+        };
+        let mut fields = vec![
+            ("bind_ip", Value::from(cfg.bind_ip.as_str())),
+            ("port", Value::from(cfg.port as i64)),
+            ("dashboard_key", Value::from(cfg.dashboard_key.as_str())),
+            ("created_at", Value::from(cfg.created_at as i64)),
+        ];
+        if let Some(u) = &cfg.advertised_url {
+            fields.push(("advertised_url", Value::from(u.as_str())));
+        }
+        save_json(path, &Value::obj(fields), 0o600)?;
+        Ok(cfg)
+    }
+
+    pub fn set_advertised_url(url: Option<String>) -> Result<HubConfig, String> {
+        Self::set_advertised_url_at(&config_path(), url)
     }
 }
 
@@ -290,8 +335,11 @@ impl BridgeConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if !self.hub_url.starts_with("http://") {
-            return Err("hub_url must start with http:// (LAN deployment; TLS is out of scope)".into());
+        // http:// covers LAN and encrypted overlay networks (WireGuard et al);
+        // https:// covers deployments behind a TLS-terminating proxy. Request
+        // authenticity comes from the HMAC signature in both cases.
+        if !self.hub_url.starts_with("http://") && !self.hub_url.starts_with("https://") {
+            return Err("hub_url must start with http:// (LAN/overlay) or https:// (proxied)".into());
         }
         if !valid_name(&self.device_name) {
             return Err("device_name must match [A-Za-z0-9._-]{1,64}".into());
@@ -365,6 +413,30 @@ mod tests {
     }
 
     #[test]
+    fn hub_config_advertised_url_roundtrip() {
+        let d = temp_dir("advertised");
+        let p = d.join("config.json");
+        let c0 = HubConfig::load_or_create_at(&p).unwrap();
+        assert!(c0.advertised_url.is_none());
+        let c1 =
+            HubConfig::set_advertised_url_at(&p, Some("http://hub.tailnet:7800".into())).unwrap();
+        assert_eq!(c1.advertised_url.as_deref(), Some("http://hub.tailnet:7800"));
+        // Persists, preserves other fields, and wins over lan_url().
+        let c2 = HubConfig::load_or_create_at(&p).unwrap();
+        assert_eq!(c2.advertised_url.as_deref(), Some("http://hub.tailnet:7800"));
+        assert_eq!(c2.dashboard_key, c0.dashboard_key);
+        assert_eq!(c2.lan_url(), "http://hub.tailnet:7800");
+        // Trailing slash trimmed; clearing works; bad scheme refused.
+        let c3 =
+            HubConfig::set_advertised_url_at(&p, Some("https://hub.example.com/".into())).unwrap();
+        assert_eq!(c3.advertised_url.as_deref(), Some("https://hub.example.com"));
+        assert!(HubConfig::set_advertised_url_at(&p, Some("ftp://x".into())).is_err());
+        let c4 = HubConfig::set_advertised_url_at(&p, None).unwrap();
+        assert!(c4.advertised_url.is_none());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
     fn bridge_config_validation_and_save() {
         let d = temp_dir("bridge");
         let p = d.join("bridge.json");
@@ -377,8 +449,14 @@ mod tests {
         BridgeConfig::save_at(&p, &good).unwrap();
         let meta = std::fs::metadata(&p).unwrap();
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        // https is now accepted (TLS-terminating proxy / cloud deployment).
+        let tls = BridgeConfig {
+            hub_url: "https://hub.example.com".into(),
+            ..good.clone()
+        };
+        assert!(tls.validate().is_ok());
         let bad = BridgeConfig {
-            hub_url: "https://example.invalid".into(),
+            hub_url: "ftp://example.invalid".into(),
             ..good.clone()
         };
         assert!(bad.validate().is_err());
