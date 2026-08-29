@@ -1,0 +1,28 @@
+[package]
+name = "wtf"
+version = "0.1.0"
+edition = "2021"
+description = "wtf-is-going-on-mcp: secure multi-agent activity hub with MCP stdio bridge and live dashboard"
+publish = false
+
+# Zero external dependencies by design (see README: Security model).
+[dependencies]
+
+[[bin]]
+name = "wtf"
+path = "src/main.rs"
+
+[lib]
+name = "wtf"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = true
+
+[profile.dev]
+overflow-checks = true
