@@ -73,29 +73,18 @@ fn bin_id_of(path: &str) -> Option<u8> {
 fn device_auth(hub: &Hub, req: &Request) -> Result<String, Response> {
     let headers =
         auth::extract(&req.headers).map_err(|e| Response::error(401, &e.to_string()))?;
+    // keys.json may have changed on disk since the last request (issue,
+    // revoke, rotate via `wtf key`). Reload unconditionally: the file is
+    // tiny, and a stale in-memory record must never authenticate a revoked
+    // device. Fail closed if the keystore cannot be read.
+    let fresh = KeyStore::load().map_err(|_| Response::error(401, "keystore unavailable"))?;
+    *hub.keys.lock().unwrap() = fresh;
     let verify = |keys: &KeyStore, nonces: &mut NonceCache| {
         auth::verify(headers.clone(), keys, nonces, &req.method, &req.target, &req.body)
     };
-    {
-        let mut nonces = hub.nonces.lock().unwrap();
-        let keys = hub.keys.lock().unwrap();
-        match verify(&keys, &mut nonces) {
-            Ok(device) => return Ok(device),
-            Err(auth::AuthError::UnknownDevice) => {} // maybe enrolled after start
-            Err(e) => return Err(Response::error(401, &e.to_string())),
-        }
-    }
-    // Device unknown in memory: a key may have been issued (or revoked) by
-    // `wtf key` after the hub started. Reload once from disk and retry.
-    let fresh = KeyStore::load().map_err(|_| Response::error(401, "unknown device"))?;
     let mut nonces = hub.nonces.lock().unwrap();
-    match verify(&fresh, &mut nonces) {
-        Ok(device) => {
-            *hub.keys.lock().unwrap() = fresh;
-            Ok(device)
-        }
-        Err(e) => Err(Response::error(401, &e.to_string())),
-    }
+    let keys = hub.keys.lock().unwrap();
+    verify(&keys, &mut nonces).map_err(|e| Response::error(401, &e.to_string()))
 }
 
 fn dash_ok(hub: &Hub, req: &Request) -> bool {
