@@ -138,6 +138,10 @@ get a uniform 401 — see §8.
 
 ## 5. Agent etiquette
 
+- **Chain-of-draft is the reporting format.** Every `check_in` and
+  `log_event` MUST be terse fragments, <=5 words per fragment, no prose
+  (e.g. `fixing auth replay bug; hub restarted; blocked on sshd`). The user
+  reads these on the dashboard to see what the fuck is going on.
 - `check_in` when you start (`working` + short task), when blocked
   (`blocked` + what you need in `details`), and when done (`done`). The
   dashboard stale-marks agents silent for a few minutes.

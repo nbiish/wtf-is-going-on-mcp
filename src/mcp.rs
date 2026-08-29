@@ -216,6 +216,12 @@ impl Bridge {
                 Ok(Value::obj(vec![
                     ("protocolVersion", pv),
                     (
+                        "instructions",
+                        Value::from(
+                            "All status reporting MUST use chain-of-draft style: terse fragments of <=5 words each, no prose paragraphs, no secrets (e.g. \"fixing auth replay bug; hub restarted; blocked on sshd\"). The user reads these updates on the dashboard to see what the fuck is going on — keep them scannable and frequent.",
+                        ),
+                    ),
+                    (
                         "capabilities",
                         Value::obj(vec![(
                             "tools",
@@ -269,7 +275,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Report your current status to the team hub: what you are doing and how it is going.",
+                        "Report your current status to the team hub so the user can see what the fuck is going on. task and details MUST be chain-of-draft: terse fragments, <=5 words each, no prose.",
                     ),
                 ),
                 (
@@ -280,8 +286,8 @@ impl Bridge {
                             "properties",
                             Value::obj(vec![
                                 ("status", status_schema),
-                                ("task", Self::prop("what you are working on right now")),
-                                ("details", Self::prop("optional detail line (blockers, progress)")),
+                                ("task", Self::prop("chain-of-draft fragment: what you are doing right now, <=5 words")),
+                                ("details", Self::prop("optional chain-of-draft line: blockers or progress, <=5 words per fragment")),
                                 (
                                     "agent",
                                     Self::prop("optional agent name; defaults to this device"),
@@ -300,7 +306,9 @@ impl Bridge {
                 ("name", Value::from("log_event")),
                 (
                     "description",
-                    Value::from("Append a log line to the shared team event feed."),
+                    Value::from(
+                        "Append a log line to the shared team event feed. message MUST be chain-of-draft: one terse line, <=5 words per fragment, no prose.",
+                    ),
                 ),
                 (
                     "inputSchema",
@@ -309,7 +317,7 @@ impl Bridge {
                         (
                             "properties",
                             Value::obj(vec![
-                                ("message", Self::prop("what happened")),
+                                ("message", Self::prop("chain-of-draft one-liner: what happened, <=5 words")),
                                 ("level", level_schema),
                                 (
                                     "agent",

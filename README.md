@@ -199,6 +199,10 @@ WTF_DEVICE_KEY=<64 hex chars>
 
 ## Agent etiquette
 
+- **Chain-of-draft is the reporting format.** Every `check_in` and
+`log_event` MUST be terse fragments, <=5 words per fragment, no prose
+(e.g. `fixing auth replay bug; hub restarted; blocked on sshd`). The user
+reads these on the dashboard to see what the fuck is going on.
 - `check_in` when you start (`working` + short task), when blocked
 (`blocked` + what you need), and when done (`done`).
 - `log_event` for milestones and failures; `warn`/`error` levels exist for
