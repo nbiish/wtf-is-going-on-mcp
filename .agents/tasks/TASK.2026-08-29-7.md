@@ -62,3 +62,19 @@ Goal: record hub-bins session; coordinate with remote agent.
 2. Merge `docs/session-log-cross-machine` (this file) → `main` after user confirms; then mandatory cleanup of both worktrees/branches (review worktree may instead re-track for further remote pushes — operator's call).
 3. Confirm windows-agent handshake on dashboard / `events.jsonl`.
 4. Refresh `../wtf-remote-review` (`git pull`) if the remote agent pushes more while we coordinate.
+---
+
+## Appendix — cross-machine-handoff branch checklist (other agent; preserved verbatim from their `TASK.2026-08-29-7.md`)
+
+> Note: both agents independently created a `-7` task file (add/add conflict on
+> merge). Their open item "PQC/password coordination" is answered by
+> `.agents/handoffs/HANDOFF.2026-08-29-machine2.md`.
+
+Goal: coordinate machine 2 via handoff branch.
+- Worktree docs/cross-machine-handoff. ####
+- Handoff doc: state, verified, gotchas. ####
+- Fast-path connect instructions. ####
+- Open PQC/password coordination section. ####
+- Commit on branch (not main). ####
+- Push branch + all branches. ####
+- Keep branch; remove worktree. ####
