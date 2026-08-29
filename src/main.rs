@@ -107,6 +107,7 @@ fn cmd_serve(args: &[String]) -> i32 {
             return 1;
         }
     };
+    let bins = Arc::new(wtf::bins::Bins::load());
 
     let mut bind_ip = cfg.bind_ip.clone();
     let mut port = cfg.port;
@@ -137,6 +138,7 @@ fn cmd_serve(args: &[String]) -> i32 {
 
     let hub = Arc::new(wtf::api::Hub {
         store,
+        bins,
         keys: Mutex::new(keys),
         nonces: Mutex::new(wtf::auth::NonceCache::new()),
         dashboard_key: cfg.dashboard_key.clone(),

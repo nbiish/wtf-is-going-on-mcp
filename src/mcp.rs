@@ -91,6 +91,26 @@ pub fn format_state(state: &Value, hub_label: &str) -> String {
     out.push_str(&format!("WTF IS GOING ON — hub {hub_label}\n"));
     let agents = state.get("agents").and_then(|v| v.as_arr()).unwrap_or(&[]);
     let events = state.get("events").and_then(|v| v.as_arr()).unwrap_or(&[]);
+    let bins = state.get("bins").and_then(|v| v.as_arr()).unwrap_or(&[]);
+    if bins
+        .iter()
+        .any(|b| b.get("size").and_then(|x| x.as_i64()).unwrap_or(0) > 0)
+    {
+        out.push_str("\nBINS (operator paste; fetch with read_bin)\n");
+        for b in bins {
+            let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
+            if size == 0 {
+                continue;
+            }
+            let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+            let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
+            let at = b.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
+            out.push_str(&format!(
+                "  BIN {id} — {size} chars — updated {} ago by {by}\n",
+                rel_age(now, at)
+            ));
+        }
+    }
     out.push_str(&format!(
         "{} agent(s) tracked · showing {} recent event(s)\n",
         agents.len(),
@@ -181,6 +201,13 @@ fn text_result(text: String, is_error: bool) -> Value {
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
+}
+
+fn int_prop(desc: &str) -> Value {
+    Value::obj(vec![
+        ("type", Value::from("integer")),
+        ("description", Value::from(desc)),
+    ])
 }
 
 impl Bridge {
@@ -354,6 +381,47 @@ impl Bridge {
                 ),
             ]),
             Value::obj(vec![
+                ("name", Value::from("read_bin")),
+                (
+                    "description",
+                    Value::from(
+                        "Read an operator paste-bin (BIN 1-3): content the user pasted on the hub dashboard for agents. When the user says 'work from bin N', fetch it with this tool before starting.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![(
+                                "bin",
+                                int_prop("bin number: 1, 2, or 3"),
+                            )]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("bin")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("list_bins")),
+                (
+                    "description",
+                    Value::from(
+                        "List the operator paste-bins (sizes, last writer, age) without full content; fetch a specific bin with read_bin.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
                 ("name", Value::from("ping")),
                 (
                     "description",
@@ -389,6 +457,8 @@ impl Bridge {
             "check_in" => self.tool_check_in(args),
             "log_event" => self.tool_log_event(args),
             "wtf_is_going_on" => self.tool_state(args),
+            "read_bin" => self.tool_read_bin(args),
+            "list_bins" => self.tool_list_bins(),
             "ping" => self.tool_ping(),
             other => (
                 format!("unknown tool: {other}"),
@@ -474,6 +544,67 @@ impl Bridge {
                     state = filter_state(&state, filter);
                 }
                 (format_state(&state, &self.cfg.hub_url), false)
+            }
+            Err(e) => (e, true),
+        }
+    }
+
+    /// Operator paste-bins are read-only from the agent side; writes happen
+    /// on the hub dashboard (dashboard key) or via signed PUT from an operator.
+    fn tool_read_bin(&self, args: &Value) -> (String, bool) {
+        let id = match args.get("bin").and_then(|v| v.as_i64()) {
+            Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
+            Some(other) => {
+                return (format!("invalid bin {other}; must be 1, 2, or 3"), true)
+            }
+            None => return ("missing required argument: bin".into(), true),
+        };
+        match self.api_get(&format!("/api/v1/bins/{id}")) {
+            Ok(v) => {
+                let size = v.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
+                if size == 0 {
+                    return (format!("BIN {id} is empty"), false);
+                }
+                let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                let by = v.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
+                let at = v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
+                (
+                    format!(
+                        "BIN {id} — {size} chars — updated {} ago by {by}\n\n{content}",
+                        rel_age(now_secs(), at)
+                    ),
+                    false,
+                )
+            }
+            Err(e) => (e, true),
+        }
+    }
+
+    fn tool_list_bins(&self) -> (String, bool) {
+        match self.api_get("/api/v1/bins") {
+            Ok(v) => {
+                let bins = v.get("bins").and_then(|x| x.as_arr()).unwrap_or(&[]).to_vec();
+                let mut out = String::from("operator paste-bins (fetch content with read_bin):\n");
+                for b in &bins {
+                    let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
+                    let at = b.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
+                    if size == 0 {
+                        out.push_str(&format!("  BIN {id}: (empty)\n"));
+                    } else {
+                        let content = b.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                        let mut preview: String = content.chars().take(60).collect();
+                        if content.chars().count() > 60 {
+                            preview.push('…');
+                        }
+                        out.push_str(&format!(
+                            "  BIN {id}: {size} chars, updated {} ago by {by} — {preview}\n",
+                            rel_age(now_secs(), at)
+                        ));
+                    }
+                }
+                (out, false)
             }
             Err(e) => (e, true),
         }

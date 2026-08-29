@@ -39,6 +39,16 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 .lv.warn{color:var(--warn)}
 .lv.info{color:var(--info)}
 .dim{color:var(--dim)}
+#bins-sec{padding:0 20px 16px}
+#bins{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:16px;padding:0}
+@media(max-width:1100px){#bins{grid-template-columns:1fr}}
+.bin textarea{width:100%;min-height:150px;margin-top:8px;background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:8px;font:inherit;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto}
+.bhead{display:flex;gap:8px;align-items:baseline}
+.bmeta{margin-left:auto;font-size:12px}
+.bbtns{display:flex;gap:8px;margin-top:8px}
+.bbtns button{background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:4px 12px;font:inherit;cursor:pointer}
+.bbtns button:hover{border-color:var(--dim)}
+.bbtns button.dirty{border-color:var(--warn);color:var(--warn)}
 </style>
 </head>
 <body>
@@ -47,6 +57,7 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 <section><h2>AGENTS</h2><div id="agents" class="card"><span class="dim">no agents have checked in yet</span></div></section>
 <section><h2>EVENT LOG</h2><div class="card"><ul id="feed"></ul></div></section>
 </main>
+<section id="bins-sec"><h2>COPY-PASTE BINS · paste content here, then tell any agent “work from bin N”</h2><div id="bins"></div></section>
 <script>
 "use strict";
 const K = new URLSearchParams(location.search).get("k") || "";
@@ -76,8 +87,66 @@ function render(s){
     '<li><span class="dim">#'+e.id+' '+hms(e.ts)+'</span> <span class="lv '+esc(e.level)+'">['+esc(e.level)+']</span> <b>'+esc(e.agent)+'@'+esc(e.device)+'</b> '+esc(e.message)+'</li>'
   ).join("");
   feed.innerHTML = rows || '<li class="dim">no events yet</li>';
+  renderBins(s.bins, now);
+}
+const binIds=[1,2,3];
+const dirty={};
+function buildBins(){
+  const host=document.getElementById("bins");
+  host.innerHTML="";
+  for(const id of binIds){
+    const card=document.createElement("div");card.className="card bin";
+    const head=document.createElement("div");head.className="bhead";
+    const title=document.createElement("b");title.textContent="BIN "+id;
+    const meta=document.createElement("span");meta.className="bmeta dim";meta.id="bmeta-"+id;meta.textContent="loading…";
+    head.appendChild(title);head.appendChild(meta);
+    const ta=document.createElement("textarea");ta.id="ta-"+id;ta.spellcheck=false;ta.placeholder="paste content for agents here";
+    const btns=document.createElement("div");btns.className="bbtns";
+    const save=document.createElement("button");save.id="save-"+id;save.textContent="Save";
+    const copy=document.createElement("button");copy.id="copy-"+id;copy.textContent="Copy";
+    save.addEventListener("click",()=>saveBin(id));
+    copy.addEventListener("click",()=>copyBin(id));
+    ta.addEventListener("input",()=>{dirty[id]=true;save.classList.add("dirty");});
+    btns.appendChild(save);btns.appendChild(copy);
+    card.appendChild(head);card.appendChild(ta);card.appendChild(btns);
+    host.appendChild(card);
+  }
+}
+function renderBins(bins, now){
+  if(!bins)return;
+  for(const b of bins){
+    const ta=document.getElementById("ta-"+b.id);
+    if(!ta)continue;
+    if(!dirty[b.id] && ta.value!==b.content){ta.value=b.content;}
+    const m=document.getElementById("bmeta-"+b.id);
+    m.textContent = b.size+" chars"+(b.updated_by ? (" · updated "+ago(b.updated_at,now)+" ago by "+esc(b.updated_by)) : " · empty");
+  }
+}
+async function saveBin(id){
+  const ta=document.getElementById("ta-"+id);
+  const btn=document.getElementById("save-"+id);
+  btn.disabled=true;btn.textContent="Saving…";
+  try{
+    const r=await fetch("/api/v1/bins/"+id+"?k="+encodeURIComponent(K),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({content:ta.value})});
+    const j=await r.json();
+    if(!r.ok||!j.ok)throw new Error(j.error||("HTTP "+r.status));
+    dirty[id]=false;btn.classList.remove("dirty");btn.textContent="Saved";
+    setTimeout(()=>{btn.textContent="Save";},1500);
+  }catch(e){
+    document.getElementById("bmeta-"+id).textContent="save failed: "+esc(String(e.message||e));
+    btn.textContent="Save";
+  }
+  btn.disabled=false;
+}
+function copyBin(id){
+  const ta=document.getElementById("ta-"+id);
+  const btn=document.getElementById("copy-"+id);
+  const done=()=>{btn.textContent="Copied";setTimeout(()=>{btn.textContent="Copy";},1200);};
+  const fallback=()=>{ta.select();document.execCommand("copy");done();};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(ta.value).then(done).catch(fallback);}else{fallback();}
 }
 function boot(){
+  buildBins();
   fetch("/api/v1/state?k="+encodeURIComponent(K))
     .then(r=>{if(!r.ok)throw 0;return r.json();})
     .then(render)

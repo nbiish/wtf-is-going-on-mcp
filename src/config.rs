@@ -38,6 +38,10 @@ pub fn events_path() -> PathBuf {
     home().join("events.jsonl")
 }
 
+pub fn bins_path() -> PathBuf {
+    home().join("bins.json")
+}
+
 /// Ensure the home dir exists with 0700.
 pub fn ensure_home() -> std::io::Result<PathBuf> {
     let h = home();

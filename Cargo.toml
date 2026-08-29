@@ -1,6 +1,6 @@
 [package]
 name = "wtf"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "wtf-is-going-on-mcp: secure multi-agent activity hub with MCP stdio bridge and live dashboard"
 publish = false

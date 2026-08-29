@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod bins;
 pub mod client;
 pub mod config;
 pub mod dashboard;
