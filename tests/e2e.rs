@@ -262,6 +262,101 @@ fn hub_bridge_end_to_end() {
 }
 
 #[test]
+fn key_issue_json_and_hot_enrollment() {
+    let home = temp_home("keyjson");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let mut hub_lines = BufReader::new(hub.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // Advertise the real (ephemeral) URL: `wtf url` writes the advertised_url
+    // that `key issue --json` must hand out in preference to config defaults.
+    let set = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["url", &url])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("wtf url");
+    assert!(
+        set.status.success(),
+        "wtf url failed: {}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+
+    // `key issue --json` prints a single machine-readable enrollment line.
+    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "--json", "boxj"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("key issue --json");
+    assert!(
+        out.status.success(),
+        "key issue --json failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let jline = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .expect("json enrollment line");
+    let v = wtf::json::parse(jline.trim()).expect("valid enrollment json");
+    let hub_url = v.get("hub_url").unwrap().as_str().unwrap();
+    let device = v.get("device").unwrap().as_str().unwrap();
+    let key = v.get("key").unwrap().as_str().unwrap();
+    assert_eq!(hub_url, url);
+    assert_eq!(device, "boxj");
+    assert_eq!(key.len(), 64);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // The just-issued credentials authenticate immediately (hot enrollment).
+    let mut agent = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", hub_url)
+        .env("WTF_DEVICE_NAME", device)
+        .env("WTF_DEVICE_KEY", key)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agent");
+    let mut reader = BufReader::new(agent.stdout.take().unwrap());
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"working","task":"joined via json"}}}"#,
+    );
+    let ci = rpc_read(&mut reader);
+    assert_eq!(
+        ci.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    let _ = agent.kill();
+    let _ = hub.kill();
+    let _ = agent.wait();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn bridge_refuses_without_config() {
     let home = temp_home("noconf");
     let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
