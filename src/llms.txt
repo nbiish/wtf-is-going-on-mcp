@@ -8,18 +8,19 @@ All hub and bridge code lives here on the Rust standard library only. Zero exter
 - `json.rs` — strict depth-limited parser + serializer; the only JSON path for config, wire, and storage.
 - `http.rs`, `client.rs` — hand-rolled HTTP/1.1. Server enforces 32 KiB head / 1 MiB body / 100 headers / 15 s timeouts; `Transfer-Encoding` requests get `501` by design.
 - `auth.rs` — HMAC-SHA256 request signing (standard-crypto transport lane). Canonical string: `wtf-hmac-v1\nMETHOD\npath-and-query\nts\nnonce\nsha256hex(body)`. ±300 s skew; per-device nonce replay cache. Device lookup happens before nonce consumption so callers can reload the keystore and retry.
-- `config.rs` — `$WTF_HOME` layout (default `~/.config/wtf-mcp`), atomic writes, `0600` key files, KeyStore issue/revoke/rotate, BridgeConfig with env overrides `WTF_HUB_URL` / `WTF_DEVICE_NAME` / `WTF_DEVICE_KEY`.
+- `config.rs` — `$WTF_HOME` layout (default `~/.config/wtf-mcp`), atomic writes, `0600` key files, KeyStore issue/revoke/rotate, BridgeConfig with env overrides `WTF_HUB_URL` / `WTF_DEVICE_NAME` / `WTF_DEVICE_KEY`. HubConfig carries an optional `advertised_url` (set via `wtf url`) that wins over LAN auto-detection in `lan_url()`. `BridgeConfig::validate` accepts `http://` and `https://`.
 - `store.rs` — `events.jsonl` is the source of truth (replayed on start, rotates at 10 MB); 1000 events in memory; generation counter drives SSE pushes.
 - `api.rs` — route table + authz: `/healthz` open; `/` and `/stream` need dashboard key `?k=`; `/api/v1/state` accepts dashboard key or device auth; `checkin`/`event`/`heartbeat` are device-only. On unknown device the keystore reloads once from disk (hot enrollment without hub restart).
 - `dashboard.rs` — embedded single-page dark UI; no external assets; EventSource live updates.
 - `mcp.rs` — stdio JSON-RPC 2.0 bridge (`initialize`, `tools/list`, `tools/call`, `ping`); application failures are `isError:true` results, never protocol errors; 60 s heartbeat thread; shared text formatter also used by `wtf status`.
-- `main.rs` — CLI: `serve`, `key issue|list|revoke`, `setup`, `agent`, `status`, `help`.
+- `main.rs` — CLI: `serve`, `key issue|list|revoke` (`issue --json` emits a machine-readable enrollment line), `url` (get/set/clear advertised URL), `setup`, `join` (self-enroll by running `key issue --json` remotely over ssh; the one-time secret travels only inside the ssh channel and the remote command is charset-restricted), `agent`, `status`, `help`.
 
 ## Local Contracts
 - No third-party dependencies in `Cargo.toml`, ever. Implement or do without.
 - No literal IP addresses in source or docs authored by agents (tooling redacts them); build addresses from constants at runtime, use `localhost` in examples.
 - Secrets (device keys, dashboard key) go only into `0600` files under `$WTF_HOME` or the one-time `wtf key issue` output; never commit or log them.
 - Standard crypto for transport only. PQC (FIPS 203/204/205) is mandatory for any future secrets-at-rest feature; none exists yet.
+- Bridge URLs are `http://` (trusted LAN or encrypted overlay) or `https://` (TLS-terminating proxy). The HMAC signature is the authenticity root in every topology; TLS is never implemented in-tree.
 - Fail closed: unparseable input is a 4xx, auth errors never reveal which factor failed.
 
 ## Work Guidance
@@ -28,7 +29,7 @@ All hub and bridge code lives here on the Rust standard library only. Zero exter
 - Bridge tools report failures as tool results, keeping the JSON-RPC layer for protocol faults only.
 
 ## Verification
-- `cargo test` — 43 unit tests (crypto vectors, adversarial parser cases, auth roundtrip/tamper/replay/skew, store replay, HTTP parse limits) plus `tests/e2e.rs` (real hub + real bridge over stdio, HTTP auth negatives).
+- `cargo test` — 44 unit tests (crypto vectors, adversarial parser cases, auth roundtrip/tamper/replay/skew, store replay, HTTP parse limits, advertised_url roundtrip) plus `tests/e2e.rs` (real hub + real bridge over stdio, HTTP auth negatives, `key issue --json` enrollment).
 - `cargo build --release` must succeed (lto, codegen-units=1, panic=abort, overflow-checks).
 - rustfmt/clippy are not installed in this environment; run `cargo fmt`/`cargo clippy -- -D warnings` when available.
 
