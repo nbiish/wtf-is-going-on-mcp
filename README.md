@@ -9,8 +9,8 @@ One command answers the eternal question across every machine you operate:
   report what they are doing; you watch it in one page.
 - **Bridge** (`wtf agent`) — an MCP stdio server that any MCP client launches.
   It exposes reporting and collaboration tools (`check_in`, `log_event`,
-  `wtf_is_going_on`, `read_bin`, `write_bin`, `list_bins`, `ping`) and
-  forwards everything to the hub over HMAC-signed requests.
+  `wtf_is_going_on`, `read_bin`, `write_bin`, `list_bins`, `ping`,
+  `hub_info`) and forwards everything to the hub over HMAC-signed requests.
 
 Everything — SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server + client, and the
 MCP bridge — is implemented in this repo on the Rust standard library only.
@@ -86,8 +86,16 @@ it: `wtf url http://OVERLAY-IP:7800` (or the public `https://` URL).
 
 ## Using the dashboard
 
-Open the printed URL: `http://HUB:7800/?k=<dashboard key>` (the key lives
-in `$WTF_HOME/config.json` and is reprinted by `wtf serve` on every start).
+Open the printed URL: `http://HUB:7800/?k=<dashboard key>`. `wtf serve`
+reprints it on every start, and on the hub machine you can always get the
+exact clickable link (localhost + LAN) with:
+
+```
+wtf dashboard-url
+```
+
+The key lives in `$WTF_HOME/config.json` (0600); it is never exposed over
+MCP — agents only see the hub address via the `hub_info` tool.
 
 - Each reporting agent renders as a card: `● name [status]` with its
 current task, details, and last-seen age (`●` fresh, `○` stale after a
@@ -221,6 +229,21 @@ eval "$(pqc-secrets export | grep '^export WTF_LAPTOP_SECRET=')"
 # then launch the MCP client as usual; the bridge reads WTF_* first
 ```
 
+### Distribute the skill anywhere
+
+The portable skill ships inside the binary. From any machine that has
+`wtf`, drop the operating guide into any repo, project, or harness
+workspace:
+
+```bash
+wtf skill install --dir /path/to/any/project   # -> <project>/.agents/skills/wtf-agent-hub/SKILL.md
+wtf skill print                                # raw SKILL.md to stdout
+```
+
+Installs are idempotent (identical copies are a no-op); overwrite a drifted
+file with `--force`. Point agents at `.agents/skills/wtf-agent-hub/SKILL.md`
+and they know how to connect, report, and collaborate.
+
 ### Collaboration across agents and harnesses
 
 Bins are the collaboration surface: one agent writes findings with
@@ -269,6 +292,7 @@ can read them, and bins persist to disk.
 | `write_bin` | `bin` (1-3), `content` | Publish content to a bin for other agents/machines (device-signed, attributed to your device) |
 | `list_bins` | — | List bins with sizes and last-writer metadata |
 | `ping` | — | Hub connectivity probe (unsigned `/healthz`) |
+| `hub_info` | — | Which hub is this bridge connected to (URL, device, version); never exposes the dashboard key |
 
 Tool failures (bad args, hub down, revoked key) are returned as
 `isError: true` results, never as MCP protocol errors.
@@ -338,6 +362,8 @@ wtf setup --url URL --name NAME --key KEY
 wtf join user@hub [--name NAME] [--url URL]   # self-enroll over ssh
 wtf agent        # MCP stdio server — what your MCP client launches
 wtf status       # plain-text hub state (same formatter as the tool)
+wtf dashboard-url # clickable dashboard URL (hub machine; never over MCP)
+wtf skill install [--dir DIR] [--force] | skill print  # distribute the hub skill anywhere
 wtf version
 ```
 
@@ -346,7 +372,7 @@ wtf version
 | Symptom | Cause → fix |
 |---------|-------------|
 | HTTP 401 on a signed call | key revoked/wrong, clock off by >300 s, or signature input mismatch (exact path+query, raw 32-byte key as hex). Fresh nonce and retry. |
-| Dashboard 401 | append `?k=<dashboard key>` (see `config.json`). |
+| Dashboard 401 | append `?k=<dashboard key>` — or run `wtf dashboard-url` on the hub machine for the exact link. |
 | Connection refused | hub not running or wrong port — `curl http://localhost:7800/healthz`. |
 | "cannot bind" on serve | port taken: `--bind IP:PORT` or free the port. |
 | `wtf join` exit 127 | `wtf` is not on the hub host's PATH — install it there (see Build and install). |

@@ -18,6 +18,11 @@ use wtf::store::Store;
 use wtf::util;
 use wtf::VERSION;
 
+/// The portable hub skill, embedded at build time so the single binary can
+/// distribute it anywhere (`wtf skill install`). Kept byte-identical with
+/// `.agents/skills/wtf-agent-hub/SKILL.md` and the ainish-coder mirror.
+const AGENT_SKILL: &str = include_str!("../.agents/skills/wtf-agent-hub/SKILL.md");
+
 fn main() {
     std::process::exit(run());
 }
@@ -32,6 +37,8 @@ fn run() -> i32 {
         Some("join") => cmd_join(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
+        Some("dashboard-url") => cmd_dashboard_url(),
+        Some("skill") => cmd_skill(&args[1..]),
         Some("version") | Some("--version") | Some("-V") => {
             println!("wtf {VERSION}");
             0
@@ -61,6 +68,9 @@ fn print_help() {
     println!("  wtf join user@host [--name N] [--url U]    enroll this machine via ssh");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
+    println!("  wtf dashboard-url                          print the clickable dashboard URL (hub machine)");
+    println!("  wtf skill install [--dir DIR] [--force]    install the hub skill into DIR/.agents/skills/");
+    println!("  wtf skill print                            print the hub skill to stdout");
     println!("  wtf help                                   this text");
     println!();
     println!("state lives in $WTF_HOME (default: ~/.config/wtf-mcp)");
@@ -346,6 +356,102 @@ fn cmd_status() -> i32 {
             1
         }
     }
+}
+
+/// Distribute the portable hub skill to any project, repo, or agent
+/// workspace: `wtf skill install [--dir DIR] [--force]`. Idempotent —
+/// identical installs are a no-op; differing files need --force.
+/// `wtf skill print` emits the raw SKILL.md for piping.
+fn cmd_skill(args: &[String]) -> i32 {
+    match args.first().map(|s| s.as_str()) {
+        Some("print") => {
+            print!("{AGENT_SKILL}");
+            0
+        }
+        Some("install") => {
+            let force = has_flag(args, "--force");
+            let base = match flag_value(args, "--dir") {
+                Some(d) => std::path::PathBuf::from(d),
+                None => std::path::PathBuf::from("."),
+            };
+            let target = base
+                .join(".agents")
+                .join("skills")
+                .join("wtf-agent-hub")
+                .join("SKILL.md");
+            if target.exists() {
+                let existing = std::fs::read_to_string(&target).unwrap_or_default();
+                if existing == AGENT_SKILL {
+                    println!("already installed (identical): {}", target.display());
+                    return 0;
+                }
+                if !force {
+                    eprintln!(
+                        "error: {} exists with different content; re-run with --force to overwrite",
+                        target.display()
+                    );
+                    return 1;
+                }
+            }
+            if let Some(parent) = target.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("error: cannot create {}: {e}", parent.display());
+                    return 1;
+                }
+            }
+            match std::fs::write(&target, AGENT_SKILL) {
+                Ok(_) => {
+                    println!("skill installed: {}", target.display());
+                    println!();
+                    println!("point agents at .agents/skills/wtf-agent-hub/SKILL.md, then register the bridge:");
+                    println!(r#"  {{ "command": "<absolute path to>/wtf", "args": ["agent"] }}"#);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: cannot write {}: {e}", target.display());
+                    1
+                }
+            }
+        }
+        _ => {
+            eprintln!("usage: wtf skill <install [--dir DIR] [--force] | print>");
+            2
+        }
+    }
+}
+
+/// Print the full dashboard URL (including the `?k=` key) for the operator
+/// sitting on the hub machine. The key already lives in this machine's
+/// config.json — this just saves retyping it. Agents can never fetch this
+/// over MCP; they only get the hub address via the `hub_info` tool.
+fn cmd_dashboard_url() -> i32 {
+    let cfg = match HubConfig::load_or_create() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let bind: Ipv4Addr = match cfg.bind_ip.parse() {
+        Ok(i) => i,
+        Err(_) => {
+            eprintln!("error: bad bind ip '{}' in config.json", cfg.bind_ip);
+            return 2;
+        }
+    };
+    println!(
+        "dashboard: http://localhost:{}/?k={}",
+        cfg.port, cfg.dashboard_key
+    );
+    if bind == Ipv4Addr::UNSPECIFIED {
+        println!(
+            "from other hosts: http://{}:{}/?k={}",
+            util::lan_ip(),
+            cfg.port,
+            cfg.dashboard_key
+        );
+    }
+    0
 }
 
 fn cmd_url(args: &[String]) -> i32 {
