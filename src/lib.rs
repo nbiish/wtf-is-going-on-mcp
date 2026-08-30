@@ -13,6 +13,7 @@ pub mod gcm;
 pub mod dashboard;
 pub mod hmac;
 pub mod http;
+pub mod identity;
 pub mod json;
 pub mod aes;
 pub mod keccak;
@@ -22,6 +23,7 @@ pub mod ntt_tables;
 pub mod rand;
 pub mod sessions;
 pub mod sha256;
+pub mod session_crypto;
 pub mod store;
 pub mod util;
 

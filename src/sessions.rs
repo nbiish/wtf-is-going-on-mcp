@@ -164,8 +164,11 @@ impl Session {
             .members
             .iter()
             .map(|m| {
+                // ek is a PUBLIC encapsulation key — safe to expose to
+                // members (they need it to verify seal routing).
                 Value::obj(vec![
                     ("device", Value::from(m.device.as_str())),
+                    ("ek", Value::from(m.ek.as_str())),
                     ("joined_at", Value::from(m.joined_at as i64)),
                 ])
             })
@@ -348,8 +351,8 @@ impl Sessions {
         nonce: &str,
         ct: &str,
     ) -> Result<SessionMsg, String> {
-        if nonce.len() != 48 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err("nonce must be 48 hex chars (192-bit)".into());
+        if nonce.len() != 24 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("nonce must be 24 hex chars (96-bit GCM nonce)".into());
         }
         if ct.is_empty() || ct.len() > MAX_CIPHERTEXT_CHARS * 2 {
             return Err(format!("ciphertext must be 1..{MAX_CIPHERTEXT_CHARS} chars (hex)"));
