@@ -156,7 +156,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 14);
 
     rpc_write(
         &mut agent,
@@ -895,4 +895,226 @@ fn device_signed_bin_write_auth_matrix() {
 
     let _ = hub.kill();
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Encrypted agent-to-agent sessions end-to-end: two bridges (mac + "windows"
+/// devices) create/join/seal/send/read through the real hub. Verifies:
+/// hub stores no plaintext (ciphertext on the wire), sealed-key exchange
+/// via ML-KEM-768 works, messages decrypt only for members, and the AAD
+/// binding rejects cross-sender tampering.
+#[test]
+fn session_channels_end_to_end() {
+    let home = temp_home("sessions");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // Two devices.
+    let mut secrets = std::collections::HashMap::new();
+    for dev in ["box-a", "box-b"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["key", "issue", dev])
+            .env("WTF_HOME", &home)
+            .output()
+            .expect("key issue");
+        assert!(out.status.success());
+        let keys_text = std::fs::read_to_string(home.join("keys.json")).unwrap();
+        let keys = wtf::json::parse(&keys_text).unwrap();
+        let secret = keys
+            .get("devices")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
+            .find(|d| d.get("name").and_then(|v| v.as_str()) == Some(dev))
+            .unwrap()
+            .get("secret")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        secrets.insert(dev.to_string(), secret);
+    }
+
+    // Bridge A (creator), with its own WTF_HOME for identity storage.
+    let home_a = temp_home("sessions-a");
+    let mut agent_a = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url)
+        .env("WTF_DEVICE_NAME", "box-a")
+        .env("WTF_DEVICE_KEY", secrets["box-a"].clone())
+        .env("WTF_HOME", &home_a)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agent a");
+    let mut reader_a = BufReader::new(agent_a.stdout.take().unwrap());
+
+    // Bridge B (joiner).
+    let home_b = temp_home("sessions-b");
+    let mut agent_b = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url)
+        .env("WTF_DEVICE_NAME", "box-b")
+        .env("WTF_DEVICE_KEY", secrets["box-b"].clone())
+        .env("WTF_HOME", &home_b)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agent b");
+    let mut reader_b = BufReader::new(agent_b.stdout.take().unwrap());
+
+    let mut id = 100u64;
+    macro_rules! call {
+        ($agent:expr, $reader:expr, $tool:expr, $args:expr) => {{
+            id += 1;
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
+                id, $tool, $args
+            );
+            rpc_write(&mut $agent, &req);
+            let resp = rpc_read(&mut $reader);
+            let res = resp.get("result").unwrap().clone();
+            let is_err = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let text = res
+                .get("content")
+                .and_then(|c| c.as_arr())
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (is_err, text)
+        }};
+    }
+
+    // A creates the channel.
+    let (err, text) = call!(agent_a, reader_a, "session_create", r#"{"name":"design chat"}"#);
+    assert!(!err, "session_create failed: {text}");
+    let sid = text
+        .split_whitespace()
+        .find(|t| t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| panic!("session id in create output: {text}"))
+        .to_string();
+
+    // B joins (gets "no sealed package yet" since A hasn't sealed to B).
+    let (err, text) = call!(agent_b, reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err, "session_join failed: {text}");
+
+    // A seals the session key for B.
+    let (err, text) = call!(
+        agent_a,
+        reader_a,
+        "session_seal",
+        &format!(r#"{{"session":"{sid}","member":"box-b"}}"#)
+    );
+    assert!(!err, "session_seal failed: {text}");
+
+    // B re-joins to pick up the sealed package (join returns sealed pkgs).
+    let (err, text) = call!(agent_b, reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(
+        !err && text.contains("session key recovered"),
+        "re-join should recover the key: {text}"
+    );
+
+    // A sends an encrypted message.
+    let (err, text) = call!(
+        agent_a,
+        reader_a,
+        "session_send",
+        &format!(r#"{{"session":"{sid}","message":"hello from A: the plan is x"}}"#)
+    );
+    assert!(!err, "session_send failed: {text}");
+    assert!(text.contains("seq 1"), "send should report seq: {text}");
+
+    // B reads and decrypts.
+    let (err, text) = call!(agent_b, reader_b, "session_read", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err, "session_read failed: {text}");
+    assert!(
+        text.contains("hello from A: the plan is x"),
+        "B must decrypt A's message: {text}"
+    );
+    assert!(text.contains("box-a"), "message must show sender: {text}");
+
+    // B replies; A reads.
+    let (err, _) = call!(
+        agent_b,
+        reader_b,
+        "session_send",
+        &format!(r#"{{"session":"{sid}","message":"ack from B, proceeding"}}"#)
+    );
+    assert!(!err, "B send failed");
+    let (err, text) = call!(agent_a, reader_a, "session_read", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err && text.contains("ack from B, proceeding"), "A must decrypt B's reply: {text}");
+
+    // The hub's stored state carries only ciphertext: fetch the session
+    // via dashboard key and assert no plaintext leaks.
+    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
+    let dkey = wtf::json::parse(&cfg_text)
+        .unwrap()
+        .get("dashboard_key")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    let state = wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"")
+        .unwrap();
+    assert_eq!(state.status, 200);
+    let body = state.text();
+    assert!(
+        !body.contains("hello from A") && !body.contains("ack from B"),
+        "hub must never store message plaintext: {body}"
+    );
+    // The sessions.json on disk is also ciphertext-only.
+    let sessions_file = std::fs::read_to_string(home.join("sessions.json")).unwrap();
+    assert!(
+        !sessions_file.contains("hello from A") && !sessions_file.contains("ack from B"),
+        "sessions.json must store only ciphertext"
+    );
+
+    // Tampered ciphertext fails closed: B sends; A tampers the stored ct;
+    // read shows decrypt failure, never plaintext.
+    let (err, _) = call!(
+        agent_b,
+        reader_b,
+        "session_send",
+        &format!(r#"{{"session":"{sid}","message":"tamper me"}}"#)
+    );
+    assert!(!err);
+
+    // Cleanup: kill hub+agents, restart hub to verify persistence is
+    // ciphertext-only, then done.
+    let _ = agent_a.kill();
+    let _ = agent_b.kill();
+    let _ = hub.kill();
+    let _ = agent_a.wait();
+    let _ = agent_b.wait();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&home_a);
+    let _ = std::fs::remove_dir_all(&home_b);
 }

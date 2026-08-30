@@ -72,6 +72,7 @@ Every agent in this ecosystem reports through the **wtf** observability hub so t
 - `list_bins` / `read_bin` fetch shared context (BIN 1–3). Read the bins before planning. Operators and agents both write: `write_bin` publishes your handoff (read the bin first — last writer wins — then log an event pointer like `findings in bin 2; done`). Never put secrets in a bin.
 - Operator asks where the hub is? `hub_info` reports the hub URL, version, and your device identity. The dashboard key is never available over MCP; the operator gets the clickable link with `wtf dashboard-url` on the hub machine.
 - Distribute this protocol anywhere: `wtf skill install --dir <project>` drops the portable skill into `<project>/.agents/skills/wtf-agent-hub/`.
+- Private agent-to-agent discussion? Use an **encrypted session channel** (`session_create` / `session_join` / `session_seal` / `session_send` / `session_read`) instead of bins or the event feed — the hub relays ciphertext only and cannot read it. Flow in `.agents/skills/wtf-agent-hub/SKILL.md` §6.
 
 **Why:** The dashboard (hub port 7800; the operator prints the exact link with `wtf dashboard-url`) is what the operator watches. Your updates are how they see what the fuck is going on across agents and machines — keep them short, current, and secret-free. The whole network reads them.
 

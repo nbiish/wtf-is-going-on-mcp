@@ -491,6 +491,149 @@ impl Bridge {
                     ]),
                 ),
             ]),
+            Value::obj(vec![
+                ("name", Value::from("session_create")),
+                (
+                    "description",
+                    Value::from(
+                        "Create an encrypted agent-to-agent session channel (dedicated chat). Generates a fresh 256-bit session key, seals it to your identity with ML-KEM-768 (FIPS 203), and registers the channel on the hub. Other agents join with session_join; the hub stores only ciphertext — it cannot read messages.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![(
+                                "name",
+                                Self::prop("channel name, e.g. 'auth-refactor chat'"),
+                            )]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("name")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("session_list")),
+                (
+                    "description",
+                    Value::from(
+                        "List the encrypted session channels on the hub with member counts and message counts.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("session_join")),
+                (
+                    "description",
+                    Value::from(
+                        "Join an encrypted session channel with your ML-KEM-768 identity and decapsulate the shared session key from any sealed package addressed to you. Run this after the creator seals the key for you (they do that with session_seal).",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![(
+                                "session",
+                                Self::prop("session id from session_create or session_list"),
+                            )]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("session")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("session_seal")),
+                (
+                    "description",
+                    Value::from(
+                        "Creator only: seal the session key to a member's ML-KEM-768 identity so they can decapsulate it. Run after the member joins with session_join.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("session", Self::prop("session id")),
+                                ("member", Self::prop("device name of the member to seal for")),
+                            ]),
+                        ),
+                        (
+                            "required",
+                            Value::arr(vec![Value::from("session"), Value::from("member")]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("session_send")),
+                (
+                    "description",
+                    Value::from(
+                        "Send an encrypted message to a session channel. AES-256-GCM with a per-(session, sender) subkey; the AAD binds the hub-assigned sequence number, so replay across sessions/senders/positions fails closed.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("session", Self::prop("session id")),
+                                ("message", Self::prop("plaintext message to encrypt and send")),
+                            ]),
+                        ),
+                        (
+                            "required",
+                            Value::arr(vec![Value::from("session"), Value::from("message")]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("session_read")),
+                (
+                    "description",
+                    Value::from(
+                        "Read and decrypt new messages in a session channel (optionally after a sequence number). Messages from other members are verified against their sender binding before display.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("session", Self::prop("session id")),
+                                ("after", int_prop("only messages with seq greater than this (default 0 = all stored)")),
+                            ]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("session")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -517,6 +660,12 @@ impl Bridge {
             "list_bins" => self.tool_list_bins(),
             "ping" => self.tool_ping(),
             "hub_info" => self.tool_hub_info(),
+            "session_create" => self.tool_session_create(args),
+            "session_list" => self.tool_session_list(),
+            "session_join" => self.tool_session_join(args),
+            "session_seal" => self.tool_session_seal(args),
+            "session_send" => self.tool_session_send(args),
+            "session_read" => self.tool_session_read(args),
             other => (
                 format!("unknown tool: {other}"),
                 true,
@@ -820,4 +969,365 @@ pub fn run(cfg: BridgeConfig) {
             }
         }
     }
+}
+
+// ---------- encrypted agent-to-agent session tools ----------
+
+impl Bridge {
+    fn identity(&self) -> Result<crate::identity::Identity, String> {
+        crate::identity::load_or_create()
+    }
+
+    fn ek_hex(&self) -> Result<String, String> {
+        Ok(crate::util::hex_encode(&self.identity()?.ek))
+    }
+
+    /// POST helper for session endpoints (device-signed).
+    fn api_post_session(&self, path: &str, body: &Value) -> Result<Value, String> {
+        self.api_post(path, body)
+    }
+
+    fn api_get_session(&self, path: &str) -> Result<Value, String> {
+        self.api_get(path)
+    }
+
+    /// session_create { name }: create a channel, generate the session
+    /// key, seal it to our own identity, register as creator-member.
+    fn tool_session_create(&self, args: &Value) -> (String, bool) {
+        let Some(name) = arg_str(args, "name") else {
+            return ("missing required argument: name".into(), true);
+        };
+        let id = self.identity();
+        let Ok(identity) = id else {
+            return (format!("identity error: {}", id.unwrap_err()), true);
+        };
+        let ek_hex = crate::util::hex_encode(&identity.ek);
+        // Register identity first (session create requires it).
+        if let Err(e) = self.api_post_session(
+            "/api/v1/identity",
+            &Value::obj(vec![("ek", Value::from(ek_hex.as_str()))]),
+        ) {
+            return (format!("identity registration failed: {e}"), true);
+        }
+        let created = self.api_post_session(
+            "/api/v1/sessions",
+            &Value::obj(vec![("name", Value::from(name))]),
+        );
+        let Ok(session) = created else {
+            return (format!("session create failed: {}", created.unwrap_err()), true);
+        };
+        let Some(sid) = session.get("id").and_then(|v| v.as_str()) else {
+            return ("hub returned no session id".into(), true);
+        };
+        // Generate + seal the session key to ourselves (creator-member).
+        let session_key: [u8; 32] = crate::rand::bytes(32).try_into().unwrap();
+        let pkg = match crate::session_crypto::seal_session_key(&ek_hex, &session_key, sid) {
+            Ok(p) => p,
+            Err(e) => return (format!("seal failed: {e}"), true),
+        };
+        let fp = crate::session_crypto::ek_fp(&ek_hex);
+        if let Err(e) = self.api_post_session(
+            &format!("/api/v1/sessions/{sid}/seal"),
+            &Value::obj(vec![(
+                "pkgs",
+                Value::arr(vec![Value::obj(vec![
+                    ("ct", Value::from(pkg.as_str())),
+                    ("ek_fp", Value::from(fp.as_str())),
+                ])]),
+            )]),
+        ) {
+            return (format!("seal post failed: {e}"), true);
+        }
+        // Persist the session key locally, bound to the session id.
+        if let Err(e) = store_session_key(sid, &session_key) {
+            return (format!("session key persist failed: {e}"), true);
+        }
+        (
+            format!(
+                "session created: {sid} '{name}' — you are the creator; peers join with session_join {sid}"
+            ),
+            false,
+        )
+    }
+
+    fn tool_session_list(&self) -> (String, bool) {
+        match self.api_get_session("/api/v1/sessions") {
+            Ok(v) => {
+                let sessions = v.get("sessions").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                let mut out = String::from("sessions:\n");
+                for s in sessions {
+                    let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                    let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                    let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
+                    let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
+                    out.push_str(&format!("  {id} '{name}' — {members} member(s), {msgs} message(s)\n"));
+                }
+                (out, false)
+            }
+            Err(e) => (format!("session list failed: {e}"), true),
+        }
+    }
+
+    /// session_join { session }: join, fetch sealed packages, decapsulate
+    /// the session key to local storage.
+    fn tool_session_join(&self, args: &Value) -> (String, bool) {
+        let Some(sid) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let Ok(identity) = self.identity() else {
+            return ("identity load failed".into(), true);
+        };
+        let ek_hex = crate::util::hex_encode(&identity.ek);
+        let joined = self.api_post_session(
+            &format!("/api/v1/sessions/{sid}/join"),
+            &Value::obj(vec![("ek", Value::from(ek_hex.as_str()))]),
+        );
+        // Re-join to pick up a sealed package is fine: the hub rejects
+        // duplicate membership, but the seal fetch below still runs.
+        if let Err(e) = &joined {
+            if !e.contains("HTTP 400") {
+                return (format!("join failed: {e}"), true);
+            }
+        }
+        // Fetch sealed packages addressed to our ek fingerprint.
+        let fp = crate::session_crypto::ek_fp(&ek_hex);
+        let seals = self.api_get_session(&format!("/api/v1/sessions/{sid}/seals"));
+        let Ok(sv) = seals else {
+            return (format!("seal fetch failed: {}", seals.unwrap_err()), true);
+        };
+        let mut recovered = 0;
+        if let Some(pkgs) = sv.get("sealed").and_then(|x| x.as_arr()) {
+            for p in pkgs {
+                let Some(pkg_hex) = p.get("ct").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                match crate::session_crypto::open_sealed_package(pkg_hex, &identity.dk, sid) {
+                    Ok(key) => {
+                        if let Err(e) = store_session_key(sid, &key) {
+                            return (format!("session key persist failed: {e}"), true);
+                        }
+                        recovered += 1;
+                    }
+                    Err(e) => {
+                        // Packages sealed to other members fail here; skip.
+                        let _ = e;
+                    }
+                }
+            }
+        }
+        if recovered == 0 {
+            return (
+                format!("joined {sid}; no sealed package for us yet — ask the creator to run session_seal (they need to seal the key to our new key)"),
+                false,
+            );
+        }
+        (format!("joined {sid}; session key recovered from {recovered} sealed package(s)"), false)
+    }
+
+    /// session_seal { session, member }: creator seals the session key to
+    /// the member's registered ek and posts the package.
+    fn tool_session_seal(&self, args: &Value) -> (String, bool) {
+        let Some(sid) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let Some(member) = arg_str(args, "member") else {
+            return ("missing required argument: member (device name of the member to seal for)".into(), true);
+        };
+        // Session key must be local (creator holds it).
+        let Some(key) = load_session_key(sid) else {
+            return (format!("no local session key for {sid} — only the creator can seal"), true);
+        };
+        // Fetch the member's registered ek from the identity registry.
+        let devices = self.api_get_session("/api/v1/devices");
+        let Ok(dv) = devices else {
+            return (format!("device list failed: {}", devices.unwrap_err()), true);
+        };
+        let member_ek_fp = dv
+            .get("devices")
+            .and_then(|x| x.as_arr())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|d| d.get("device").and_then(|v| v.as_str()) == Some(member))
+                    .and_then(|d| d.get("ek_fp").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string())
+            });
+        let Some(fp) = member_ek_fp else {
+            return (format!("member '{member}' has no registered identity — they must run session_join first"), true);
+        };
+        // Fetch the member's ek: the registry only carries fingerprints;
+        // the sealed package must target the member's REAL ek. The hub
+        // returns full eks to members via the seals endpoint trick — no:
+        // simplest correct flow: ask the hub for the member's ek via the
+        // member-list of the session (join stored it).
+        let sess = self.api_get_session(&format!("/api/v1/sessions/{sid}"));
+        let Ok(sv) = sess else {
+            return (format!("session fetch failed: {}", sess.unwrap_err()), true);
+        };
+        let member_ek = sv
+            .get("members")
+            .and_then(|x| x.as_arr())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|mm| mm.get("device").and_then(|v| v.as_str()) == Some(member))
+                    .and_then(|mm| mm.get("ek").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string())
+            });
+        let Some(member_ek) = member_ek else {
+            return (format!("member '{member}' not in session {sid}"), true);
+        };
+        let pkg = match crate::session_crypto::seal_session_key(&member_ek, &key, sid) {
+            Ok(p) => p,
+            Err(e) => return (format!("seal failed: {e}"), true),
+        };
+        if let Err(e) = self.api_post_session(
+            &format!("/api/v1/sessions/{sid}/seal"),
+            &Value::obj(vec![(
+                "pkgs",
+                Value::arr(vec![Value::obj(vec![
+                    ("ct", Value::from(pkg.as_str())),
+                    ("ek_fp", Value::from(fp.as_str())),
+                ])]),
+            )]),
+        ) {
+            return (format!("seal post failed: {e}"), true);
+        }
+        (format!("session key sealed for '{member}'; they run session_join again or session_read to pick it up"), false)
+    }
+
+    /// session_send { session, message }: encrypt + post. The AAD binds
+    /// the seq returned by the hub (hub-assigned monotonic).
+    fn tool_session_send(&self, args: &Value) -> (String, bool) {
+        let Some(sid) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let Some(message) = arg_str(args, "message") else {
+            return ("missing required argument: message".into(), true);
+        };
+        let Some(key) = load_session_key(sid) else {
+            return (format!("no local session key for {sid} — join the session first"), true);
+        };
+        let sender = &self.cfg.device_name;
+        // seq: ask the hub for the next seq by listing the session.
+        let sess = self.api_get_session(&format!("/api/v1/sessions/{sid}"));
+        let Ok(sv) = sess else {
+            return (format!("session fetch failed: {}", sess.unwrap_err()), true);
+        };
+        let next_seq = sv
+            .get("next_seq")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1) as u64;
+        let (nonce, ct) =
+            match crate::session_crypto::seal_message(&key, sid, sender, next_seq, message) {
+                Ok(v) => v,
+                Err(e) => return (format!("encrypt failed: {e}"), true),
+            };
+        let sent = self.api_post_session(
+            &format!("/api/v1/sessions/{sid}/send"),
+            &Value::obj(vec![
+                ("nonce", Value::from(nonce.as_str())),
+                ("ct", Value::from(ct.as_str())),
+            ]),
+        );
+        let Ok(sv) = sent else {
+            return (format!("send failed: {}", sent.unwrap_err()), true);
+        };
+        let seq = sv.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+        (
+            format!("sent to {sid} as seq {seq} (encrypted, sender-bound)"),
+            false,
+        )
+    }
+
+    /// session_read { session, after? }: poll, decrypt all new messages.
+    fn tool_session_read(&self, args: &Value) -> (String, bool) {
+        let Some(sid) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let after = args
+            .get("after")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .max(0) as u64;
+        let Some(key) = load_session_key(sid) else {
+            return (format!("no local session key for {sid} — join the session first"), true);
+        };
+        let msgs = self.api_get_session(&format!("/api/v1/sessions/{sid}/recv?after={after}"));
+        let Ok(mv) = msgs else {
+            return (format!("read failed: {}", msgs.unwrap_err()), true);
+        };
+        let arr = mv.get("msgs").and_then(|x| x.as_arr()).unwrap_or(&[]);
+        if arr.is_empty() {
+            return (format!("no new messages in {sid} after seq {after}"), false);
+        }
+        let sender = &self.cfg.device_name;
+        let mut out = String::new();
+        for msg in arr {
+            let seq = msg.get("seq").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
+            let from = msg.get("sender").and_then(|v| v.as_str()).unwrap_or("?");
+            let nonce = msg.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
+            let ct = msg.get("ct").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::session_crypto::open_message(&key, sid, from, seq, nonce, ct) {
+                Ok(pt) => out.push_str(&format!("#{seq} {from}: {pt}\n")),
+                Err(e) => out.push_str(&format!("#{seq} {from}: <decrypted failed: {e}>\n")),
+            }
+        }
+        let _ = sender;
+        (out, false)
+    }
+}
+
+// ---------- local session key store ----------
+
+/// Per-device session key cache: `$WTF_HOME/session_keys.json` (0600).
+/// Keys are session-scoped secrets — same protection class as bridge.json.
+fn session_keys_path() -> std::path::PathBuf {
+    crate::config::home().join("session_keys.json")
+}
+
+fn store_session_key(session_id: &str, key: &[u8; 32]) -> Result<(), String> {
+    let path = session_keys_path();
+    let mut map = load_session_keys(&path);
+    map.insert(
+        session_id.to_string(),
+        crate::util::hex_encode(key),
+    );
+    save_session_keys(&path, &map)
+}
+
+pub fn load_session_key(session_id: &str) -> Option<[u8; 32]> {
+    let map = load_session_keys(&session_keys_path());
+    let hex = map.get(session_id)?;
+    let bytes = crate::util::hex_decode(hex)?;
+    bytes.try_into().ok()
+}
+
+fn load_session_keys(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let parsed = match crate::config::load_json(path) {
+        Ok(Some(v)) => v,
+        _ => return std::collections::HashMap::new(),
+    };
+    let Some(pairs) = parsed.get("keys").and_then(|x| x.as_obj()) else {
+        return std::collections::HashMap::new();
+    };
+    pairs
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .collect()
+}
+
+fn save_session_keys(
+    path: &std::path::Path,
+    map: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let mut pairs: Vec<(&str, Value)> = Vec::new();
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    for k in keys {
+        pairs.push((k.as_str(), Value::from(map[k].as_str())));
+    }
+    crate::config::save_json(
+        path,
+        &Value::obj(vec![("keys", Value::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()))]),
+        0o600,
+    )
 }
