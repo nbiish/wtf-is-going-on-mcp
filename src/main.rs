@@ -153,6 +153,8 @@ fn cmd_serve(args: &[String]) -> i32 {
         nonces: Mutex::new(wtf::auth::NonceCache::new()),
         dashboard_key: cfg.dashboard_key.clone(),
         started_at: util::now_secs(),
+        identities: Mutex::new(Vec::new()),
+        sessions: wtf::sessions::Sessions::load(),
     });
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
