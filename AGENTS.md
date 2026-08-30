@@ -66,22 +66,27 @@ Every agent in this ecosystem reports through the **wtf** observability hub so t
 3. Register the bridge with your MCP harness: `command: wtf` (or the built binary path), `args: ["agent"]`. No MCP harness? Use the skill's signed-curl fallback — same endpoints, same rules, no excuses.
 
 **Reporting contract (chain-of-draft):**
-- The bridge's `initialize` `instructions` and every tool description mandate chain-of-draft: terse fragments, ≤5 words per fragment, no prose, no secrets. Comply regardless of harness, skill loading, or model.
+- The bridge's `initialize` `instructions` and every tool description mandate chain-of-draft: terse fragments, ≤5 words per fragment, no prose, no secrets. Comply regardless of harness, skill loading, or model. Output coherence check: a fragment should read like `fixing auth replay bug; hub restarted; blocked on sshd` — never like a sentence.
 - `check_in` when you start (`working` + task), when blocked (`blocked` + what you need), and when done (`done`). `log_event` for milestones and failures — `warn`/`error` levels exist for a reason.
-- Call `wtf_is_going_on` before starting work: it summarizes every agent's status, recent events, and operator paste-bins. Another agent may already be on the task.
-- `list_bins` / `read_bin` fetch operator-posted context (BIN 1–3). Read the bins before planning.
+- Call `wtf_is_going_on` before starting work: it summarizes every agent's status, recent events, and shared bins. Another agent may already be on the task.
+- `list_bins` / `read_bin` fetch shared context (BIN 1–3). Read the bins before planning. Operators and agents both write: `write_bin` publishes your handoff (read the bin first — last writer wins — then log an event pointer like `findings in bin 2; done`). Never put secrets in a bin.
+- Operator asks where the hub is? `hub_info` reports the hub URL, version, and your device identity. The dashboard key is never available over MCP; the operator gets the clickable link with `wtf dashboard-url` on the hub machine.
+- Distribute this protocol anywhere: `wtf skill install --dir <project>` drops the portable skill into `<project>/.agents/skills/wtf-agent-hub/`.
 
-**Why:** The dashboard (hub port 7800, `?k=` key in `$WTF_HOME/config.json`) is what the operator watches. Your updates are how they see what the fuck is going on across agents and machines — keep them short, current, and secret-free. The whole network reads them.
+**Why:** The dashboard (hub port 7800; the operator prints the exact link with `wtf dashboard-url`) is what the operator watches. Your updates are how they see what the fuck is going on across agents and machines — keep them short, current, and secret-free. The whole network reads them.
 
 **Lift-ready system prompt** (plain text; drop verbatim into any agent harness that lacks this file):
 
 ```text
 You report through the wtf observability hub (MCP tools check_in, log_event,
-wtf_is_going_on, list_bins, read_bin; see .agents/skills/wtf-observability/SKILL.md).
+wtf_is_going_on, list_bins, read_bin, write_bin, hub_info; see
+.agents/skills/wtf-agent-hub/SKILL.md — `wtf skill install` distributes it).
 Chain-of-draft is your wire format: terse fragments, <=5 words each, no prose,
 no secrets. check_in at start (working + task), on blockers (blocked + need),
-and at completion (done). Call wtf_is_going_on before you start; read operator
-bins with list_bins / read_bin when planning. The operator watches the hub
+and at completion (done). Call wtf_is_going_on before you start; read shared
+bins with list_bins / read_bin when planning; publish handoffs with write_bin
+(read first, last-writer-wins, then log_event a pointer like "findings in bin
+2; done"). Never put secrets in bins or events. The operator watches the hub
 dashboard to see what the fuck is going on between all agents — your updates
 are how they see it. Keep them short, current, and secret-free.
 ```

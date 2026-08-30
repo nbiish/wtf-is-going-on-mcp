@@ -474,6 +474,23 @@ impl Bridge {
                     ]),
                 ),
             ]),
+            Value::obj(vec![
+                ("name", Value::from("hub_info")),
+                (
+                    "description",
+                    Value::from(
+                        "Query which hub this bridge is connected to: the hub URL (localhost/LAN address), this device's identity, hub version and uptime. Call this when the operator asks where the hub is or wants the dashboard link — the dashboard key itself is never exposed over MCP; the operator runs `wtf dashboard-url` on the hub machine for the clickable URL.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -499,6 +516,7 @@ impl Bridge {
             "write_bin" => self.tool_write_bin(args),
             "list_bins" => self.tool_list_bins(),
             "ping" => self.tool_ping(),
+            "hub_info" => self.tool_hub_info(),
             other => (
                 format!("unknown tool: {other}"),
                 true,
@@ -687,6 +705,35 @@ impl Bridge {
                 (out, false)
             }
             Err(e) => (e, true),
+        }
+    }
+
+    /// Where is the hub? Answers the operator's "what's the address"
+    /// question without ever exposing the dashboard key: agents get the
+    /// hub URL and version; the clickable `?k=` link is printed only by
+    /// `wtf dashboard-url` on the hub machine itself.
+    fn tool_hub_info(&self) -> (String, bool) {
+        let mut out = format!(
+            "hub address: {}\nthis device: {} (bridge {})\n",
+            self.cfg.hub_url, self.cfg.device_name, crate::VERSION
+        );
+        match client::get_text(&format!("{}/healthz", self.cfg.hub_url)) {
+            Ok((200, body)) => {
+                if let Ok(v) = json::parse(&body) {
+                    let hv = v.get("version").and_then(|x| x.as_str()).unwrap_or("?");
+                    let started = v.get("started_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
+                    out.push_str(&format!(
+                        "hub version: {hv} · uptime {}s\n",
+                        now_secs().saturating_sub(started)
+                    ));
+                }
+                out.push_str(
+                    "dashboard link: operator runs `wtf dashboard-url` on the hub machine (the dashboard key never travels over MCP)\n",
+                );
+                (out, false)
+            }
+            Ok((status, _)) => (format!("hub responded HTTP {status}"), true),
+            Err(e) => (format!("hub unreachable: {e}"), true),
         }
     }
 

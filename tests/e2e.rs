@@ -131,6 +131,16 @@ fn hub_bridge_end_to_end() {
             .and_then(|n| n.as_str()),
         Some("wtf")
     );
+    // The chain-of-draft reporting mandate ships in-protocol: every harness
+    // gets it from initialize without loading any skill.
+    let instructions = result
+        .get("instructions")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        instructions.contains("chain-of-draft") && instructions.contains("<=5 words"),
+        "initialize instructions must mandate chain-of-draft: {instructions}"
+    );
 
     rpc_write(
         &mut agent,
@@ -146,7 +156,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 8);
 
     rpc_write(
         &mut agent,
@@ -388,6 +398,24 @@ fn hub_bridge_end_to_end() {
         Some(true)
     );
 
+    // hub_info: the operator's "what's the address" tool. Reports the hub
+    // URL and device identity; the dashboard key never appears.
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"hub_info","arguments":{}}}"#,
+    );
+    let hi = rpc_read(&mut reader);
+    let hires = hi.get("result").unwrap();
+    assert_eq!(hires.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let hitext = hires.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(hitext.contains(&url), "hub_info must report the hub address: {hitext}");
+    assert!(hitext.contains("box2"), "hub_info must identify this device: {hitext}");
+    assert!(!hitext.contains("?k="), "dashboard key must never travel over MCP: {hitext}");
+
     // The device write is durable and attributed: dashboard-key GET shows
     // the content with the device as last writer.
     let got2 = wtf::client::request(
@@ -408,6 +436,22 @@ fn hub_bridge_end_to_end() {
         Some("box2"),
         "device write must be attributed to the device"
     );
+
+    // `wtf dashboard-url` on the hub machine prints the clickable link
+    // (localhost + LAN) — the operator-side counterpart to hub_info.
+    let du = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["dashboard-url"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("run dashboard-url");
+    assert!(
+        du.status.success(),
+        "dashboard-url failed: {}",
+        String::from_utf8_lossy(&du.stderr)
+    );
+    let dutext = String::from_utf8_lossy(&du.stdout);
+    assert!(dutext.contains("http://localhost:"), "localhost link: {dutext}");
+    assert!(dutext.contains("/?k="), "link must carry the key: {dutext}");
 
     // 9. Cleanup.
     done.store(true, Ordering::SeqCst);
@@ -510,6 +554,60 @@ fn key_issue_json_and_hot_enrollment() {
     let _ = hub.kill();
     let _ = agent.wait();
     let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn skill_install_distributes_portable_skill() {
+    let home = temp_home("skill");
+    let run = |extra: &[&str]| {
+        let mut a = vec!["skill", "install", "--dir", home.to_str().unwrap()];
+        a.extend_from_slice(extra);
+        Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(&a)
+            .output()
+            .expect("skill install")
+    };
+
+    // Fresh install into an empty directory.
+    let out = run(&[]);
+    assert!(
+        out.status.success(),
+        "skill install failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = home
+        .join(".agents")
+        .join("skills")
+        .join("wtf-agent-hub")
+        .join("SKILL.md");
+    let text = std::fs::read_to_string(&path).expect("installed skill");
+    assert!(text.contains("name: wtf-agent-hub"), "frontmatter: {text}");
+    assert!(text.contains("write_bin") && text.contains("hub_info"), "current tool set: {text}");
+
+    // Identical re-install is an idempotent no-op.
+    let again = run(&[]);
+    assert!(again.status.success());
+    assert!(String::from_utf8_lossy(&again.stdout).contains("already installed"));
+
+    // A drifted file is refused without --force.
+    std::fs::write(&path, "stale content").unwrap();
+    let refused = run(&[]);
+    assert!(!refused.status.success(), "must refuse drifted skill without --force");
+
+    // --force restores the embedded copy.
+    let forced = run(&["--force"]);
+    assert!(forced.status.success());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("name: wtf-agent-hub"));
+
+    // `wtf skill print` emits exactly the embedded skill.
+    let printed = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["skill", "print"])
+        .output()
+        .expect("skill print");
+    assert!(printed.status.success());
+    assert_eq!(String::from_utf8_lossy(&printed.stdout), text);
+
     let _ = std::fs::remove_dir_all(&home);
 }
 

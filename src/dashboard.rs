@@ -44,7 +44,9 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 @media(max-width:1100px){#bins{grid-template-columns:1fr}}
 .bin textarea{width:100%;min-height:150px;margin-top:8px;background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:8px;font:inherit;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto}
 .bhead{display:flex;gap:8px;align-items:baseline}
+.bin b{letter-spacing:1px}
 .bmeta{margin-left:auto;font-size:12px}
+.bmeta .who{color:var(--info)}
 .bbtns{display:flex;gap:8px;margin-top:8px}
 .bbtns button{background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:4px 12px;font:inherit;cursor:pointer}
 .bbtns button:hover{border-color:var(--dim)}
@@ -57,7 +59,7 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 <section><h2>AGENTS</h2><div id="agents" class="card"><span class="dim">no agents have checked in yet</span></div></section>
 <section><h2>EVENT LOG</h2><div class="card"><ul id="feed"></ul></div></section>
 </main>
-<section id="bins-sec"><h2>COPY-PASTE BINS · paste content here, then tell any agent “work from bin N”</h2><div id="bins"></div></section>
+<section id="bins-sec"><h2>SHARED BINS · paste here and tell any agent “work from bin N” · agents publish back with write_bin</h2><div id="bins"></div></section>
 <script>
 "use strict";
 const K = new URLSearchParams(location.search).get("k") || "";
@@ -100,10 +102,10 @@ function buildBins(){
     const title=document.createElement("b");title.textContent="BIN "+id;
     const meta=document.createElement("span");meta.className="bmeta dim";meta.id="bmeta-"+id;meta.textContent="loading…";
     head.appendChild(title);head.appendChild(meta);
-    const ta=document.createElement("textarea");ta.id="ta-"+id;ta.spellcheck=false;ta.placeholder="paste content for agents here";
+    const ta=document.createElement("textarea");ta.id="ta-"+id;ta.spellcheck=false;ta.placeholder="paste content for agents here — agents publish via write_bin too";
     const btns=document.createElement("div");btns.className="bbtns";
-    const save=document.createElement("button");save.id="save-"+id;save.textContent="Save";
-    const copy=document.createElement("button");copy.id="copy-"+id;copy.textContent="Copy";
+    const save=document.createElement("button");save.id="save-"+id;save.textContent="Save";save.title="Save this bin (agents see it immediately)";
+    const copy=document.createElement("button");copy.id="copy-"+id;copy.textContent="Copy";copy.title="Copy this bin's content to the clipboard";
     save.addEventListener("click",()=>saveBin(id));
     copy.addEventListener("click",()=>copyBin(id));
     ta.addEventListener("input",()=>{dirty[id]=true;save.classList.add("dirty");});
@@ -119,7 +121,13 @@ function renderBins(bins, now){
     if(!ta)continue;
     if(!dirty[b.id] && ta.value!==b.content){ta.value=b.content;}
     const m=document.getElementById("bmeta-"+b.id);
-    m.textContent = b.size+" chars"+(b.updated_by ? (" · updated "+ago(b.updated_at,now)+" ago by "+esc(b.updated_by)) : " · empty");
+    if(b.updated_by){
+      const byAgent = b.updated_by !== "dashboard";
+      m.innerHTML = b.size+" chars · updated "+ago(b.updated_at,now)+" ago by "
+        +(byAgent?'<span class="who" title="written by an agent via write_bin">✎ '+esc(b.updated_by)+'</span>':esc(b.updated_by));
+    }else{
+      m.textContent = b.size+" chars · empty";
+    }
   }
 }
 async function saveBin(id){
