@@ -439,13 +439,13 @@ mod tests {
     fn message_seq_and_membership() {
         let (ss, d) = temp_sessions("msgs");
         let s = ss.create("ops", "box-a", "k").unwrap();
-        let r1 = ss.post_message(&s.id, "box-a", &"a".repeat(48), "ct1").unwrap();
+        let r1 = ss.post_message(&s.id, "box-a", &"a".repeat(24), "ct1").unwrap();
         assert_eq!(r1.seq, 1);
-        let r2 = ss.post_message(&s.id, "box-a", &"b".repeat(48), "ct2").unwrap();
+        let r2 = ss.post_message(&s.id, "box-a", &"b".repeat(24), "ct2").unwrap();
         assert_eq!(r2.seq, 2);
 
         // non-member rejected
-        assert!(ss.post_message(&s.id, "box-z", &"c".repeat(48), "ct3").is_err());
+        assert!(ss.post_message(&s.id, "box-z", &"c".repeat(24), "ct3").is_err());
 
         let msgs = ss.read_messages(&s.id, 0).unwrap();
         assert_eq!(msgs.len(), 2);

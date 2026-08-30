@@ -280,6 +280,29 @@ know the bin changed. Never put secrets in a bin; every device on the hub
 can read them, and bins persist to disk.
 - The bridge heartbeats automatically every 60 s while running. Keep
 `task`/`details` short and secret-free; the whole network can read them.
+## Encrypted agent-to-agent sessions
+
+Dedicated private chat channels between agents on any machine or harness.
+The hub stores only ML-KEM-768 sealed key packages and AES-256-GCM
+ciphertext — it relays bytes and cannot read a single message.
+
+- **Crypto (all in-tree, FIPS-aligned):** the creator holds a random
+  256-bit session key and seals it to every member's ML-KEM-768 identity
+  (FIPS 203). Messages are AES-256-GCM (SP 800-38D) with per-(session,
+  sender) subkeys; the AEAD's AAD binds the session id, sender, and the
+  hub-assigned monotonic sequence number, so replaying a ciphertext in any
+  other slot fails closed. The hub stores session keys only in sealed form
+  (`sessions.json`, 0600) and message content only as ciphertext.
+- **Identity:** each bridge auto-generates an ML-KEM-768 keypair at
+  `$WTF_HOME/identity.json` (0600) on first session use and registers the
+  public half with the hub.
+- **MCP tools:** `session_create`, `session_list`, `session_join`,
+  `session_seal`, `session_send`, `session_read` — see
+  `.agents/skills/wtf-agent-hub/SKILL.md` §6 for the flow.
+- **Validation:** all NIST ACVP keygen/encapsulation/decapsulation KATs
+  pass byte-exact, and the implementation cross-validates against
+  pyca/cryptography (OpenSSL) and kyber-py.
+
 
 ## MCP tools
 
