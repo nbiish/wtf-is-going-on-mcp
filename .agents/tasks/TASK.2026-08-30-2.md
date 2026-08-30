@@ -70,3 +70,22 @@ Goal: dedicated private agent chats; hub stores ciphertext only.
   0600 files under `$WTF_HOME`.
 
 ---
+
+## Wrap-up (2026-08-30, later session)
+
+- Merge executed: feat/agent-sessions → main (7555c6e); operator's pqc skill
+  updates + COMMS protocol merged (ae63929); conflicts resolved preserving
+  operator structure + sessions bullet.
+- Worktrees/branches cleaned: only main; remote task branches deleted;
+  TASK.2026-08-30.md restored from the orphaned hub-upgrade branch.
+- PQC integration: wtf-agent-hub distributed via ainish-coder --rules PQC
+  block; PQC shortcut (`issue wtf`) restored in skill §2; pqc-secrets §5.9a
+  documents the app-level key-sealing blueprint from this work (ACVP +
+  pyca + kyber-py validated).
+- Docs: src/llms.txt module coverage complete (client/hmac/rand/util/lib
+  added; mlkem768 invariants documented); root llms.txt gained a
+  Distributed Skills index; legacy wtf-observability skill carries a
+  status pointer to wtf-agent-hub; handoff docs corrected in place.
+- English scan: 0 CJK/cyrillic/mojibake hits in wtf repo docs+source.
+- Final sweep: 14 MCP tools + serverInfo name (15 string hits = false
+  positive); long-hex literals confined to #[cfg(test)] KAT vectors.
