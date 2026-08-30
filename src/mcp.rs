@@ -66,6 +66,14 @@ impl Bridge {
         let resp = client::request(&url, "GET", &headers, b"")?;
         self.decode(resp, path)
     }
+
+    pub fn api_put(&self, path: &str, body: &Value) -> Result<Value, String> {
+        let body_str = body.to_json();
+        let headers = self.signed_headers("PUT", path, body_str.as_bytes())?;
+        let url = format!("{}{}", self.cfg.hub_url, path);
+        let resp = client::request(&url, "PUT", &headers, body_str.as_bytes())?;
+        self.decode(resp, path)
+    }
 }
 
 /// Signed state fetch, shared with `wtf status`.
@@ -96,7 +104,7 @@ pub fn format_state(state: &Value, hub_label: &str) -> String {
         .iter()
         .any(|b| b.get("size").and_then(|x| x.as_i64()).unwrap_or(0) > 0)
     {
-        out.push_str("\nBINS (operator paste; fetch with read_bin)\n");
+        out.push_str("\nBINS (shared; read_bin to fetch, write_bin to publish)\n");
         for b in bins {
             let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
             if size == 0 {
@@ -385,7 +393,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Read an operator paste-bin (BIN 1-3): content the user pasted on the hub dashboard for agents. When the user says 'work from bin N', fetch it with this tool before starting.",
+                        "Read a shared paste-bin (BIN 1-3): prompts, notes, or knowledge placed there by the user or other agents/machines. When the user or a peer says 'work from bin N', fetch it with this tool before starting.",
                     ),
                 ),
                 (
@@ -405,11 +413,41 @@ impl Bridge {
                 ),
             ]),
             Value::obj(vec![
+                ("name", Value::from("write_bin")),
+                (
+                    "description",
+                    Value::from(
+                        "Write your content to a shared paste-bin (BIN 1-3) so other agents on other machines/harnesses can read it with read_bin — cross-agent handoff of prompts, findings, and knowledge. Replaces the whole bin (last writer wins); read it first, keep writes purposeful, never put secrets in a bin.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("bin", int_prop("bin number: 1, 2, or 3")),
+                                (
+                                    "content",
+                                    Self::prop("full text to place in the bin (replaces existing content; max 65,536 chars)"),
+                                ),
+                            ]),
+                        ),
+                        (
+                            "required",
+                            Value::arr(vec![Value::from("bin"), Value::from("content")]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
                 ("name", Value::from("list_bins")),
                 (
                     "description",
                     Value::from(
-                        "List the operator paste-bins (sizes, last writer, age) without full content; fetch a specific bin with read_bin.",
+                        "List the shared paste-bins (sizes, last writer, age) without full content; fetch a specific bin with read_bin.",
                     ),
                 ),
                 (
@@ -458,6 +496,7 @@ impl Bridge {
             "log_event" => self.tool_log_event(args),
             "wtf_is_going_on" => self.tool_state(args),
             "read_bin" => self.tool_read_bin(args),
+            "write_bin" => self.tool_write_bin(args),
             "list_bins" => self.tool_list_bins(),
             "ping" => self.tool_ping(),
             other => (
@@ -549,8 +588,6 @@ impl Bridge {
         }
     }
 
-    /// Operator paste-bins are read-only from the agent side; writes happen
-    /// on the hub dashboard (dashboard key) or via signed PUT from an operator.
     fn tool_read_bin(&self, args: &Value) -> (String, bool) {
         let id = match args.get("bin").and_then(|v| v.as_i64()) {
             Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
@@ -580,11 +617,54 @@ impl Bridge {
         }
     }
 
+    /// Agents publish to shared bins with a device-signed PUT; the hub
+    /// records the device as `updated_by`, so cross-machine writes are
+    /// attributable in the dashboard.
+    fn tool_write_bin(&self, args: &Value) -> (String, bool) {
+        let id = match args.get("bin").and_then(|v| v.as_i64()) {
+            Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
+            Some(other) => {
+                return (format!("invalid bin {other}; must be 1, 2, or 3"), true)
+            }
+            None => return ("missing required argument: bin".into(), true),
+        };
+        let content = match arg_str(args, "content") {
+            Some(c) if !c.is_empty() => c.to_string(),
+            Some(_) => return ("content must not be empty (bins have no delete; leave that to the operator)".into(), true),
+            None => return ("missing required argument: content".into(), true),
+        };
+        if content.chars().count() > crate::bins::MAX_BIN_CHARS {
+            return (
+                format!(
+                    "bin content too large (max {} chars)",
+                    crate::bins::MAX_BIN_CHARS
+                ),
+                true,
+            );
+        }
+        let body = Value::obj(vec![("content", Value::from(content.as_str()))]);
+        match self.api_put(&format!("/api/v1/bins/{id}"), &body) {
+            Ok(v) => {
+                let bid = v.get("id").and_then(|x| x.as_i64()).unwrap_or(id as i64);
+                let ev = v.get("event").and_then(|x| x.as_i64()).unwrap_or(0);
+                (
+                    format!(
+                        "BIN {bid} updated ({} chars, by {}) — event #{ev}; peers can fetch it with read_bin",
+                        content.chars().count(),
+                        self.cfg.device_name
+                    ),
+                    false,
+                )
+            }
+            Err(e) => (e, true),
+        }
+    }
+
     fn tool_list_bins(&self) -> (String, bool) {
         match self.api_get("/api/v1/bins") {
             Ok(v) => {
                 let bins = v.get("bins").and_then(|x| x.as_arr()).unwrap_or(&[]).to_vec();
-                let mut out = String::from("operator paste-bins (fetch content with read_bin):\n");
+                let mut out = String::from("shared paste-bins (read_bin to fetch, write_bin to publish):\n");
                 for b in &bins {
                     let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
                     let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);

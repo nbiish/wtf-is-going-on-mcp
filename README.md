@@ -8,9 +8,9 @@ One command answers the eternal question across every machine you operate:
 - **Hub** (`wtf serve`) — an HTTP API plus a live browser dashboard. Agents
   report what they are doing; you watch it in one page.
 - **Bridge** (`wtf agent`) — an MCP stdio server that any MCP client launches.
-  It exposes reporting tools (`check_in`, `log_event`, `wtf_is_going_on`,
-  `read_bin`, `list_bins`, `ping`) and forwards everything to the hub over
-  HMAC-signed requests.
+  It exposes reporting and collaboration tools (`check_in`, `log_event`,
+  `wtf_is_going_on`, `read_bin`, `write_bin`, `list_bins`, `ping`) and
+  forwards everything to the hub over HMAC-signed requests.
 
 Everything — SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server + client, and the
 MCP bridge — is implemented in this repo on the Rust standard library only.
@@ -93,11 +93,14 @@ in `$WTF_HOME/config.json` and is reprinted by `wtf serve` on every start).
 current task, details, and last-seen age (`●` fresh, `○` stale after a
 few minutes of silence).
 - The event feed lists everything agents have logged, newest first.
-- The **COPY-PASTE BINS** section holds three persistent bins. Paste any
-content (a spec, logs, a URL list) into a bin, hit Save, then tell any
-agent on any machine: *“work from bin 2”*. The agent fetches it with the
-`read_bin` MCP tool. Bins survive hub restarts; every save lands in the
-event feed, so the other dashboards see it live.
+- The **COPY-PASTE BINS** section holds three persistent bins shared by
+  humans *and* agents. Paste any content (a spec, logs, a URL list) into a
+  bin, hit Save, then tell any agent on any machine: *“work from bin 2”* —
+  it fetches it with the `read_bin` MCP tool. Agents can write back:
+  anything an agent saves via `write_bin` (device-signed PUT) lands in the
+  bin with the device name as last writer, so any other agent — on any
+  machine or harness — can read it. Bins survive hub restarts; every save
+  lands in the event feed, so the other dashboards see it live.
 - The page live-updates over Server-Sent Events (`/stream`) — no refresh,
 no external assets, works offline.
 
@@ -170,14 +173,16 @@ round-trip against the hub has succeeded. For automation,
 `wtf key issue --json <name>` prints one machine-readable line:
 `{"hub_url":…,"device":…,"key":…}`.
 
-## Wiring up agents
+## Connect any agent (any harness)
 
-Agents should read **`.agents/skills/wtf-observability/SKILL.md`** — the
-canonical operating guide, written so an agent with nothing but a terminal
-can go from clone to reporting in minutes. It covers MCP wiring, etiquette,
-the operator CLI, topologies, troubleshooting, security rules, and a
-signed `curl` + `openssl` fallback for environments without an MCP
-harness.
+Any MCP-speaking agent — Claude Desktop, Cursor, Warp, Codex, a CI bot, or
+a harness you wrote last night — points at this repo the same way. Agents
+should read **`.agents/skills/wtf-agent-hub/SKILL.md`** (also mirrored to
+sibling repos) — the canonical operating guide, written so an agent with
+nothing but a terminal can go from clone to reporting in minutes. It
+covers MCP wiring, etiquette, bin-based collaboration, the operator CLI,
+topologies, troubleshooting, security rules, and a signed `curl` +
+`openssl` fallback for environments without an MCP harness.
 
 MCP harnesses (Claude Desktop, Cursor, Warp, and most clients) register
 the bridge with the standard shape:
@@ -193,15 +198,43 @@ the bridge with the standard shape:
 }
 ```
 
-Credentials come from `bridge.json`; env vars (`WTF_HUB_URL`,
-`WTF_DEVICE_NAME`, `WTF_DEVICE_KEY`) override it and are the recommended
-delivery path for secret managers:
+Credentials come from `bridge.json` (written by `wtf join`/`wtf setup`);
+env vars (`WTF_HUB_URL`, `WTF_DEVICE_NAME`, `WTF_DEVICE_KEY`) override it
+and are the recommended delivery path for secret managers:
 
 ```
 WTF_HUB_URL=http://HUB-LAN-IP:7800
 WTF_DEVICE_NAME=laptop
 WTF_DEVICE_KEY=<64 hex chars>
 ```
+
+### Delivery via the PQC secrets lane
+
+When your stack ships device keys through `pqc-secrets` (FIPS 203/204/205
+bundle), a packed `WTF_<NAME>_SECRET` env var unwraps into the three
+`WTF_*` vars without the key ever touching disk in plaintext:
+
+```bash
+export WTF_HUB_URL=http://HUB-LAN-IP:7800
+export WTF_DEVICE_NAME=laptop
+eval "$(pqc-secrets export | grep '^export WTF_LAPTOP_SECRET=')"
+# then launch the MCP client as usual; the bridge reads WTF_* first
+```
+
+### Collaboration across agents and harnesses
+
+Bins are the collaboration surface: one agent writes findings with
+`write_bin`, tells the operator (or a peer via an event), and any other
+agent — any machine, any harness — picks it up with `read_bin`. Typical
+flows:
+
+- **Operator → agent**: paste a spec on the dashboard, say *“work from
+  bin N”*; the agent reads it before starting.
+- **Agent → agent**: agent A writes its findings/context to a bin and
+  logs `context in bin 2` to the event feed; agent B on another machine
+  reads the bin and continues the task.
+- **Agent → operator**: an agent drops a long report in a bin instead of
+  flooding the event feed; the operator reads it on the dashboard.
 
 ## Agent etiquette
 
@@ -218,6 +251,10 @@ it.
 - When the operator says *“work from bin N”*, call `read_bin` with that N
 before starting; bins hold pasted specs, logs, or whatever the operator
 queued for you.
+- **Bin hygiene**: `write_bin` replaces the whole bin (last writer wins) —
+read it first, write whole-purposeful content, and log an event so peers
+know the bin changed. Never put secrets in a bin; every device on the hub
+can read them, and bins persist to disk.
 - The bridge heartbeats automatically every 60 s while running. Keep
 `task`/`details` short and secret-free; the whole network can read them.
 
@@ -228,7 +265,8 @@ queued for you.
 | `check_in` | `status` (working/blocked/done/idle), `task`, `details?`, `agent?` | Report current status; shown as an agent card |
 | `log_event` | `message`, `level?` (info/warn/error), `agent?` | Append to the shared event feed |
 | `wtf_is_going_on` | `agent?` | Text snapshot of all agents + recent events |
-| `read_bin` | `bin` (1-3) | Fetch the content an operator pasted into a bin (use when told “work from bin N”) |
+| `read_bin` | `bin` (1-3) | Fetch bin content (use when told “work from bin N” or picking up a peer's handoff) |
+| `write_bin` | `bin` (1-3), `content` | Publish content to a bin for other agents/machines (device-signed, attributed to your device) |
 | `list_bins` | — | List bins with sizes and last-writer metadata |
 | `ping` | — | Hub connectivity probe (unsigned `/healthz`) |
 
@@ -260,7 +298,7 @@ All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
 - `config.json` — hub bind address, port, dashboard key, optional advertised URL (0600)
 - `keys.json` — device records (0600)
 - `bridge.json` — agent-side hub URL + credentials (0600)
-- `bins.json` — operator paste-bins, content included (0600)
+- `bins.json` — shared paste-bins, content included (0600)
 - `events.jsonl` — append-only log, rotates to `events.jsonl.old` at 10 MB
 
 `wtf key revoke <name>` instantly disables a device; the hub picks up
@@ -318,7 +356,7 @@ wtf version
 ## Development
 
 ```
-cargo test              # 48 unit tests + 3 e2e tests (real hub + real bridge over stdio)
+cargo test              # 48 unit tests + 5 e2e tests (real hub + real bridge over stdio)
 cargo build --release   # lto, panic=abort, overflow checks
 ```
 

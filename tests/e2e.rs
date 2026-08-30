@@ -146,7 +146,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
 
     rpc_write(
         &mut agent,
@@ -360,6 +360,54 @@ fn hub_bridge_end_to_end() {
         .as_str()
         .unwrap();
     assert!(st2text.contains("BIN 1"), "state text should list bins: {st2text}");
+
+    // 8b. Bridge write_bin: the agent publishes to a shared bin with a
+    // device-signed PUT; the hub attributes it to the device.
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"write_bin","arguments":{"bin":2,"content":"agent findings: e2e wrote this from the bridge"}}}"#,
+    );
+    let wb = rpc_read(&mut reader);
+    let wbres = wb.get("result").unwrap();
+    assert_eq!(wbres.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let wbtext = wbres.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(wbtext.contains("BIN 2 updated"), "write_bin text: {wbtext}");
+
+    // Empty content is refused client-side (bins have no delete).
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"write_bin","arguments":{"bin":2,"content":""}}}"#,
+    );
+    let wbempty = rpc_read(&mut reader);
+    assert_eq!(
+        wbempty.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // The device write is durable and attributed: dashboard-key GET shows
+    // the content with the device as last writer.
+    let got2 = wtf::client::request(
+        &format!("{url}/api/v1/bins/2?k={dkey}"),
+        "GET",
+        &[],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(got2.status, 200);
+    let bin2 = got2.json().expect("bin 2 json");
+    assert!(
+        bin2.get("content").unwrap().as_str().unwrap().contains("e2e wrote this from the bridge"),
+        "device write must persist: {bin2:?}"
+    );
+    assert_eq!(
+        bin2.get("updated_by").and_then(|v| v.as_str()),
+        Some("box2"),
+        "device write must be attributed to the device"
+    );
 
     // 9. Cleanup.
     done.store(true, Ordering::SeqCst);
@@ -577,6 +625,175 @@ fn revocation_is_instant() {
     )
     .unwrap();
     assert_eq!(denied.status, 401, "revoked device must be rejected instantly");
+
+    let _ = hub.kill();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn device_signed_bin_write_auth_matrix() {
+    let home = temp_home("binwrite");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url in listening line")
+        .to_string();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "boxw"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("key issue");
+    assert!(
+        out.status.success(),
+        "key issue failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let keys_text = std::fs::read_to_string(home.join("keys.json")).unwrap();
+    let keys = wtf::json::parse(&keys_text).unwrap();
+    let secret = keys.get("devices").unwrap().as_arr().unwrap()[0]
+        .get("secret")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let head = |device: &str, ts: u64, nonce: &str, sig: &str| -> Vec<(String, String)> {
+        vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X-Wtf-Device".to_string(), device.to_string()),
+            ("X-Wtf-Timestamp".to_string(), ts.to_string()),
+            ("X-Wtf-Nonce".to_string(), nonce.to_string()),
+            ("X-Wtf-Signature".to_string(), sig.to_string()),
+        ]
+    };
+    let body = b"{\"content\":\"device-signed write from boxw\"}".to_vec();
+    let path = "/api/v1/bins/3";
+    let ts = wtf::util::now_secs();
+    let nonce = wtf::rand::hex(16);
+    let sig = wtf::auth::sign(&secret, "PUT", path, ts, &nonce, &body).unwrap();
+
+    // 1. Valid device-signed PUT succeeds.
+    let ok = wtf::client::request(
+        &format!("{url}{path}"),
+        "PUT",
+        &head("boxw", ts, &nonce, &sig),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(ok.status, 200, "device-signed bin write must pass");
+    let okv = ok.json().expect("write json");
+    assert_eq!(okv.get("ok").and_then(|v| v.as_bool()), Some(true));
+    assert!(okv.get("event").and_then(|v| v.as_i64()).unwrap_or(0) > 0, "write must land in the event feed");
+
+    // 2. Device-signed GET reads it back, attributed to the device.
+    let gts = wtf::util::now_secs();
+    let gnonce = wtf::rand::hex(16);
+    let gsig = wtf::auth::sign(&secret, "GET", path, gts, &gnonce, b"").unwrap();
+    let got = wtf::client::request(
+        &format!("{url}{path}"),
+        "GET",
+        &head("boxw", gts, &gnonce, &gsig),
+        b"",
+    )
+    .unwrap();
+    assert_eq!(got.status, 200, "device-signed bin read must pass");
+    let gotv = got.json().expect("bin json");
+    assert_eq!(
+        gotv.get("content").and_then(|v| v.as_str()),
+        Some("device-signed write from boxw")
+    );
+    assert_eq!(gotv.get("updated_by").and_then(|v| v.as_str()), Some("boxw"));
+
+    // 3. Wrong signature is rejected.
+    let wts = wtf::util::now_secs();
+    let wnonce = wtf::rand::hex(16);
+    let wrong = wtf::auth::sign(&secret, "PUT", "/api/v1/bins/2", wts, &wnonce, &body).unwrap();
+    let r = wtf::client::request(
+        &format!("{url}{path}"),
+        "PUT",
+        &head("boxw", wts, &wnonce, &wrong),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(r.status, 401, "signature over a different path must fail");
+
+    // 4. Tampered body is rejected: signature was computed over a different
+    // payload than the one on the wire.
+    let tts = wtf::util::now_secs();
+    let tnonce = wtf::rand::hex(16);
+    let tsig = wtf::auth::sign(&secret, "PUT", path, tts, &tnonce, &body).unwrap();
+    let r = wtf::client::request(
+        &format!("{url}{path}"),
+        "PUT",
+        &head("boxw", tts, &tnonce, &tsig),
+        b"{\"content\":\"tampered\"}",
+    )
+    .unwrap();
+    assert_eq!(r.status, 401, "tampered body must fail");
+
+    // 5. Replay of the exact first request is rejected (nonce cache).
+    let r = wtf::client::request(
+        &format!("{url}{path}"),
+        "PUT",
+        &head("boxw", ts, &nonce, &sig),
+        &body,
+    )
+    .unwrap();
+    assert_eq!(r.status, 401, "replayed request must fail");
+
+    // 6. Unsigned PUT is rejected.
+    let r = wtf::client::request(
+        &format!("{url}{path}"),
+        "PUT",
+        &[("Content-Type".to_string(), "application/json".to_string())],
+        &body,
+    )
+    .unwrap();
+    assert_eq!(r.status, 401, "unsigned bin write must fail");
+
+    // 7. The dashboard-key path still writes the same bin.
+    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
+    let dkey = wtf::json::parse(&cfg_text)
+        .unwrap()
+        .get("dashboard_key")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = wtf::client::request(
+        &format!("{url}{path}?k={dkey}"),
+        "PUT",
+        &[],
+        b"{\"content\":\"dashboard overwrote bin 3\"}",
+    )
+    .unwrap();
+    assert_eq!(r.status, 200, "dashboard-key write must still pass");
+    let r = wtf::client::request(&format!("{url}{path}?k={dkey}"), "GET", &[], b"").unwrap();
+    assert_eq!(r.status, 200);
+    let v = r.json().expect("bin json");
+    assert_eq!(v.get("content").and_then(|x| x.as_str()), Some("dashboard overwrote bin 3"));
+    assert_eq!(v.get("updated_by").and_then(|x| x.as_str()), Some("dashboard"));
 
     let _ = hub.kill();
     let _ = std::fs::remove_dir_all(&home);
