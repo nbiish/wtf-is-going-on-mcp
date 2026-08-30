@@ -89,3 +89,19 @@ Goal: dedicated private agent chats; hub stores ciphertext only.
 - English scan: 0 CJK/cyrillic/mojibake hits in wtf repo docs+source.
 - Final sweep: 14 MCP tools + serverInfo name (15 string hits = false
   positive); long-hex literals confined to #[cfg(test)] KAT vectors.
+
+## Session close-out (handoff to next chat)
+
+- Session work complete; `main` = 320386a, pushed, clean tree, no worktrees.
+- Production hub: wtf 0.6.0 live on port 7800 (supervised `wtf-hub`,
+  restart=on-failure), smoke-tested through session flow.
+- Interop proof chain: ACVP KATs byte-exact + pyca/OpenSSL + kyber-py.
+- Next-session pointers:
+  - Open design: PQC/password enrollment gate for `key issue` (converge
+    before touching auth.rs/api.rs per operating contract).
+  - Candidate follow-ups: dashboard sessions panel, `session_read` long
+    polling via SSE, channel key rotation without losing history,
+    `windows-agent` first handshake on the production hub (still pending).
+  - ainish-coder side: `--rules` deploys all three skills; pqc-secrets
+    §5.9a key-sealing pattern added; vault identity-source matrix is
+    operator-maintained — re-sync when vault v1.2.x realities change.
