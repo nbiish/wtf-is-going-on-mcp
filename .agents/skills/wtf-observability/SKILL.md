@@ -3,6 +3,13 @@ name: wtf-observability
 description: Expert operation of the wtf multi-agent observability hub (this repo). Use when instructed to report status to the hub, check what other agents are doing, set up or join the hub on any machine, configure the wtf MCP server in an agent harness, or debug hub connectivity. Covers zero-install binary discovery, MCP client wiring, signed curl fallback for non-MCP agents, operator CLI, and multi-machine bring-up over LAN, overlay networks, or cloud.
 ---
 
+> **Status:** operator/CLI reference. Agents should use
+> `.agents/skills/wtf-agent-hub/SKILL.md` instead — it carries the current
+> 14-tool surface (incl. `write_bin`, `hub_info`, and the encrypted
+> `session_*` channels), the PQC credential lane, and the bin etiquette.
+> This document stays as the hub-operator + signed-curl fallback guide.
+
+
 # wtf-observability — agent skill
 
 `wtf` is a zero-dependency Rust pair in this repo: a **hub** (`wtf serve`) that

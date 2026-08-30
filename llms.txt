@@ -90,3 +90,9 @@ Parent-owned here: repo workflow gates, task records (`.agents/tasks/`), PQC pol
 
 - `src/llms.txt` — implementation tree: module map, crypto/HTTP/JSON/auth contracts, storage rules, verification commands.
 - `tests/` — parent-owned for now (single e2e suite, no local conventions). Create `tests/llms.txt` if it grows its own rules.
+
+## Distributed Skills
+
+- `.agents/skills/wtf-agent-hub/SKILL.md` — the agent-facing connect + protocol skill (embedded in the binary; `wtf skill install` distributes it). Mirrored to ainish-coder.
+- `.agents/skills/wtf-observability/SKILL.md` — operator/CLI + signed-curl fallback reference (legacy; agents use wtf-agent-hub).
+- PQC skills (`pqc-secrets`, `pqc-signatures-security`) are sourced from the ainish-coder repo and deployed by `ainish-coder --rules`.

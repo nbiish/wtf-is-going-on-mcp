@@ -1,7 +1,7 @@
 # HANDOFF — machine 1 → machine 2 (2026-08-29)
 
-Read `.agents/skills/wtf-observability/SKILL.md` and the `AGENT_HUB` section
-of `AGENTS.md` first. This file is the live coordination sheet between the
+Read `.agents/skills/wtf-agent-hub/SKILL.md` and the `COMMS` section and
+`WTF HUB` block of `AGENTS.md` first. This file is the live coordination sheet between the
 two machines: append your section, do not rewrite history.
 
 ## State on machine 1 (hub host, WSL2 Ubuntu)
@@ -75,3 +75,10 @@ two machines: append your section, do not rewrite history.
 - Open questions to settle together: does enrollment itself get a PQC or
   password gate? How does a brand-new machine bootstrap trust for that gate
   without a human-carried secret getting weaker than what it protects?
+
+---
+
+## Correction (2026-08-30)
+
+- `AGENT_HUB` was replaced by the `COMMS` protocol + `WTF HUB` block in
+  `AGENTS.md`; agent-facing skill is `wtf-agent-hub` (sessions era).

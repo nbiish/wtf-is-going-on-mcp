@@ -4,11 +4,14 @@
 All hub and bridge code lives here on the Rust standard library only. Zero external crates is a hard constraint: every capability (crypto, JSON, HTTP, MCP) is implemented in-tree and unit-tested.
 
 ## Ownership
-- `sha256.rs`, `hmac.rs`, `rand.rs` — crypto primitives. FIPS 180-4 / RFC 2104/4231 vectors are load-bearing; do not weaken or remove them.
+- `sha256.rs`, `hmac.rs`, `rand.rs`, `util.rs` — crypto primitives + shared helpers. FIPS 180-4 / RFC 2104/4231 vectors are load-bearing; do not weaken or remove them. `rand.rs` is kernel-CSPRNG-only (fails closed); `util.rs` holds constant-time compare, hex, clamping, query parsing.
+- `client.rs` — hand-rolled HTTP/1.1 client used by the bridge and `wtf status`/`dashboard-url`; 30 s default timeouts.
+- `lib.rs` — module registry; every module is `pub` for integration testing.
 - `keccak.rs` — FIPS 202 SHA3-256/512 + SHAKE128/256 (sponge over Keccak-f[1600]); FIPS 202 KATs load-bearing.
 - `aes.rs` — FIPS 197 AES-256 block cipher; Appendix C.3 + SP 800-38A vectors load-bearing.
 - `gcm.rs` — AES-256-GCM (SP 800-38D): CTR keystream + GHASH; tag compare constant-time; McGrew-Viega appendix-B vectors load-bearing. 96-bit nonces only, never reuse key+nonce.
-- `ntt_tables.rs`, `mlkem768.rs` — FIPS 203 ML-KEM-768 (Kyber-derived NTT with Montgomery zetas, basemul with zetas[64±i] pairing, tomont in keygen). Official NIST ACVP KATs in `tests/vectors/` are load-bearing (keygen/encaps/decaps byte-exact). Cross-validated against pyca/cryptography and kyber-py.
+- `ntt_tables.rs` — Kyber NTT twiddle tables verbatim (Montgomery form, signed); do not regenerate by hand — source is pq-crystals kyber ref/ntt.c.
+- `mlkem768.rs` — FIPS 203 ML-KEM-768: keygen/encaps/decaps. Key invariants: SampleNTT = raw rejection samples (no post-NTT); ntt consumes ZETAS[1..] ascending, intt consumes ZETAS[127..1] descending with f = 1441 = mont²/128; basemul gammas = ZETAS[64±i]; keygen applies poly_tomont (f = 2³² mod q) after accumulation; encaps returns K = G(m‖H(ek))[0..32] directly (no KDF). Official NIST ACVP KATs in `tests/vectors/` are load-bearing (keygen/encaps/decaps byte-exact). Cross-validated against pyca/cryptography (OpenSSL) and kyber-py.
 - `sessions.rs` — hub-side encrypted session channel registry: members, ML-KEM-768 sealed key packages, seq-numbered ciphertext ring per session; hub stores ciphertext only and can read nothing. Fail-closed caps (sessions, members, msgs).
 - `identity.rs` — bridge-side ML-KEM-768 identity keypair in `$WTF_HOME/identity.json` (0600), auto-generated on first use, corrupt file fails closed.
 - `session_crypto.rs` — client-side sealing: ML-KEM-768 encapsulate of the 256-bit session key per member (AES-256-GCM wrap under SHA3-256(shared)), per-(session, sender) subkeys, AAD binds (session, sender, seq), deterministic 96-bit nonces from subkey+seq.
