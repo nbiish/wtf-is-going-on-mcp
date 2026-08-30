@@ -17,6 +17,8 @@ pub mod json;
 pub mod aes;
 pub mod keccak;
 pub mod mcp;
+pub mod mlkem768;
+pub mod ntt_tables;
 pub mod rand;
 pub mod sha256;
 pub mod store;
