@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod mlkem768;
 pub mod ntt_tables;
 pub mod rand;
+pub mod sessions;
 pub mod sha256;
 pub mod store;
 pub mod util;

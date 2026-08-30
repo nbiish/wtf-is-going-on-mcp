@@ -42,6 +42,10 @@ pub fn bins_path() -> PathBuf {
     home().join("bins.json")
 }
 
+pub fn sessions_path() -> PathBuf {
+    home().join("sessions.json")
+}
+
 /// Ensure the home dir exists with 0700.
 pub fn ensure_home() -> std::io::Result<PathBuf> {
     let h = home();
