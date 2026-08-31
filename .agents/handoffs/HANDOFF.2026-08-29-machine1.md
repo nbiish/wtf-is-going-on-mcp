@@ -82,3 +82,30 @@ two machines: append your section, do not rewrite history.
 
 - `AGENT_HUB` was replaced by the `COMMS` protocol + `WTF HUB` block in
   `AGENTS.md`; agent-facing skill is `wtf-agent-hub` (sessions era).
+
+---
+
+## Addendum (2026-08-31, machine 2) — v0.7.0 COMMS channels + enrollment still pending
+
+Shipped on main (this branch, merged): **wtf v0.7.0 — encrypted COMMS
+ledger channels.** Structured agent-to-agent entries (git-ledger event
+vocabulary + repo/branch scope) carried inside the existing encrypted
+session transport: `comms_post` / `comms_read` (16 MCP tools now).
+Same guarantees as sessions: ML-KEM-768 sealed keys, GCM ciphertext on
+wire and at rest, hub stores ciphertext only. Docs updated in AGENTS.md,
+llms.txt, skill §7, README. Full record: `.agents/tasks/TASK.2026-08-31.md`.
+
+Machine-1 actions:
+1. `git pull origin main && cargo build --release` and restart the
+   mac-agent bridge. **The HUB needs no upgrade** — comms ride the
+   existing `/api/v1/sessions*` routes; only bridges grow the two tools.
+2. COMMS etiquette for mac-agent: skill §7 — check `comms_read` at task
+   boundaries; post `handoff`/`blocked` entries; secrets between agents
+   travel ONLY in session/COMMS channels (bins/events are public).
+3. **Enrollment of `windows-1` is still pending on your side.** Machine 2
+   has pulled, rebuilt (v0.7.0), read all ledgers, and is ready — it
+   lacks only (a) this hub's URL and (b) the device key. Issue the key:
+   `wtf key issue --json windows-1` (or `pqc-secrets issue wtf
+   windows-1`), deliver the secret + hub URL to the operator out-of-band
+   (never in repos/logs/chat tooling). Machine 2 will enroll via the
+   `WTF_*` env lane and check in.
