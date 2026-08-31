@@ -1519,3 +1519,230 @@ fn comms_channels_end_to_end() {
     }
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// The v0.9.0 signed-handshake lane: the operator copies ONE site
+/// `enroll-secret`; the device proves possession via HMAC over the
+/// transcript (the secret never crosses the wire) and receives its device
+/// key ML-KEM-768-sealed to its encapsulation key (never plaintext).
+/// Wrong secret, stale timestamp, tampered ek, and replayed nonce all get
+/// the same uniform 403; `enroll-secret --rotate` kills outstanding copies.
+#[test]
+fn psk_handshake_end_to_end() {
+    let hub_home = temp_home("pskhub");
+    let dev_home = temp_home("pskdev");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &hub_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let mut hub_lines = BufReader::new(hub.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // The site secret is auto-generated on first serve and persisted.
+    let cfg_path = hub_home.join("config.json");
+    let cfg_text = std::fs::read_to_string(&cfg_path).expect("hub config");
+    let cfg_v = wtf::json::parse(cfg_text.trim()).expect("config json");
+    let secret = cfg_v
+        .get("enroll_secret")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(secret.len(), 64, "site enroll secret is 256-bit hex");
+
+    // Happy path via the real CLI: proof computed device-side, key arrives
+    // sealed and is unwrapped into bridge.json — the operator's joiner flow.
+    let enroll = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["enroll", "--url", &url, "--name", "boxpsk", "--psk", &secret])
+        .env("WTF_HOME", &dev_home)
+        .output()
+        .expect("wtf enroll --psk");
+    assert!(
+        enroll.status.success(),
+        "psk enroll failed: {}",
+        String::from_utf8_lossy(&enroll.stderr)
+    );
+    let bridge_text = std::fs::read_to_string(dev_home.join("bridge.json")).expect("bridge.json");
+    let bridge = wtf::json::parse(bridge_text.trim()).expect("bridge json");
+    let dev_key = bridge
+        .get("device_key")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(bridge.get("device_name").unwrap().as_str().unwrap(), "boxpsk");
+    assert_eq!(dev_key.len(), 64);
+
+    // The sealed-then-unwrapped key authenticates immediately.
+    let mut agent = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url)
+        .env("WTF_DEVICE_NAME", "boxpsk")
+        .env("WTF_DEVICE_KEY", &dev_key)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agent");
+    let mut reader = BufReader::new(agent.stdout.take().unwrap());
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"working","task":"joined via psk handshake"}}}"#,
+    );
+    let ci = rpc_read(&mut reader);
+    assert_eq!(
+        ci.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    // Raw-handshake harness: proof over (name, proof_ek, ts, nonce) with
+    // independent control of the body's ek for the tamper case.
+    let dev2 = temp_home("pskdev2");
+    let id2 = wtf::identity::load_or_create_at(&dev2.join("identity.json")).expect("identity");
+    let ek2 = wtf::util::hex_encode(&id2.ek);
+    let hs_post = |name: &str, sec: &str, proof_ek: &str, body_ek: &str, ts: u64, nonce: String| {
+        let proof = wtf::hmac::hmac_sha256_hex(
+            sec.as_bytes(),
+            format!("wtf-enroll-v2\n{name}\n{proof_ek}\n{ts}\n{nonce}").as_bytes(),
+        );
+        let body = wtf::json::Value::obj(vec![
+            ("name", wtf::json::Value::from(name)),
+            ("ek", wtf::json::Value::from(body_ek)),
+            ("ts", wtf::json::Value::from(ts as i64)),
+            ("nonce", wtf::json::Value::from(nonce.as_str())),
+            ("proof", wtf::json::Value::from(proof.as_str())),
+        ]);
+        wtf::client::request(
+            &format!("{url}/api/v1/enroll"),
+            "POST",
+            &[],
+            body.to_json().as_bytes(),
+        )
+        .expect("handshake post")
+    };
+
+    // A valid raw handshake succeeds: sealed package + fingerprint, and the
+    // plaintext key field must never appear in psk-mode responses.
+    let now = wtf::util::now_secs();
+    let ok = hs_post("rawpsk", &secret, &ek2, &ek2, now, "b".repeat(32));
+    assert_eq!(ok.status, 200, "raw handshake: {}", ok.text());
+    let ov = ok.json().expect("handshake json");
+    assert!(
+        ov.get("sealed").and_then(|v| v.as_str()).is_some(),
+        "psk response must carry the sealed package"
+    );
+    assert!(
+        ov.get("ek_fp").and_then(|v| v.as_str()).is_some(),
+        "psk response must carry the ek fingerprint"
+    );
+    assert!(ov.get("key").is_none(), "psk mode must never return plaintext key");
+    assert_eq!(ov.get("device").unwrap().as_str().unwrap(), "rawpsk");
+
+    // Every rejection below is the same uniform 403.
+    let wrong = hs_post(
+        "rawpsk",
+        &"f".repeat(64),
+        &ek2,
+        &ek2,
+        wtf::util::now_secs(),
+        "c".repeat(32),
+    );
+    assert_eq!(wrong.status, 403, "wrong secret: {}", wrong.text());
+    let stale = hs_post(
+        "rawpsk",
+        &secret,
+        &ek2,
+        &ek2,
+        wtf::util::now_secs().saturating_sub(400),
+        "d".repeat(32),
+    );
+    assert_eq!(stale.status, 403, "stale ts must fail");
+    let mut ek3 = ek2.clone();
+    ek3.pop();
+    ek3.push(if ek2.ends_with('0') { '1' } else { '0' });
+    let tampered = hs_post(
+        "rawpsk",
+        &secret,
+        &ek2,
+        &ek3,
+        wtf::util::now_secs(),
+        "e".repeat(32),
+    );
+    assert_eq!(tampered.status, 403, "ek tampering must fail");
+    let replay = hs_post("rawpsk", &secret, &ek2, &ek2, now, "b".repeat(32));
+    assert_eq!(replay.status, 403, "replayed nonce must fail");
+
+    // Rotation: every outstanding copy dies instantly; the new one works.
+    let rot = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["enroll-secret", "--rotate"])
+        .env("WTF_HOME", &hub_home)
+        .output()
+        .expect("enroll-secret --rotate");
+    assert!(
+        rot.status.success(),
+        "rotate failed: {}",
+        String::from_utf8_lossy(&rot.stderr)
+    );
+    let stale_copy = hs_post(
+        "rotdev",
+        &secret,
+        &ek2,
+        &ek2,
+        wtf::util::now_secs(),
+        "f0".repeat(8),
+    );
+    assert_eq!(stale_copy.status, 403, "rotated-out secret must fail");
+    let cfg2 = wtf::json::parse(
+        std::fs::read_to_string(&cfg_path)
+            .expect("config reread")
+            .trim(),
+    )
+    .expect("config json");
+    let secret2 = cfg2
+        .get("enroll_secret")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(secret2, secret, "rotation must mint a fresh secret");
+    let dev3 = temp_home("pskdev3");
+    let enroll2 = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["enroll", "--url", &url, "--name", "boxrot", "--psk", &secret2])
+        .env("WTF_HOME", &dev3)
+        .output()
+        .expect("enroll with rotated secret");
+    assert!(
+        enroll2.status.success(),
+        "re-enroll with rotated secret failed: {}",
+        String::from_utf8_lossy(&enroll2.stderr)
+    );
+
+    let _ = agent.kill();
+    let _ = hub.kill();
+    let _ = agent.wait();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&hub_home);
+    let _ = std::fs::remove_dir_all(&dev_home);
+    let _ = std::fs::remove_dir_all(&dev2);
+    let _ = std::fs::remove_dir_all(&dev3);
+}

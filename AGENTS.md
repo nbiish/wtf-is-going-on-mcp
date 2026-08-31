@@ -1,5 +1,5 @@
 ---
-description: PQC secrets for all API keys. Worktree per task — branch from main, merge back to main after verification, then clean up. Polyglot (Rust, TS, Py, etc). Chain-of-Draft: ≤5 words per step, output after ####. llms.txt is the PRD anchor — read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops; standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Branch naming `<type>/<scope>-<slug>`. Ask before merging. Output full production code. Concurrent agents coordinate via AGENTS/{date}.COMMS.md. Cross-machine reporting goes through the wtf hub (mandatory; chain-of-draft; see .agents/skills/wtf-agent-hub/SKILL.md).
+description: wtf-is-going-on-mcp — one zero-dependency Rust binary that is the cross-machine agent observability hub (dashboard + signed API + MCP stdio bridge). PQC for every secret the hub touches; HMAC-SHA256 proofs on the request lane. Worktree per task — branch from main, pass gates, merge back after user confirm, clean up. Chain-of-Draft: ≤5 words per step, output after ####. llms.txt (root + src/) is the PRD anchor — read it. No secrets in tasks, PRD, events, bins, or commits. Hub serve logs print the dashboard key — never paste them. One hub per fleet; machines run bridges and enroll via signed handshake. Never add external crates — [dependencies] stays empty. Audit for banned algorithms and secrets every cycle. Never work directly on main. Branch naming `<type>/<scope>-<slug>`. Ask before merging. Concurrent agents coordinate via AGENTS/{date}.COMMS.md; cross-machine reporting goes through the wtf hub (mandatory; see .agents/skills/wtf-agent-hub/SKILL.md).
 ---
 
 # 🚧 WORKTREE GATE — MANDATORY CHECKPOINT
@@ -40,6 +40,59 @@ Conflict → fail closed, explain, ask.
 
 ---
 
+<REPO_STATE>
+## REPO STATE & INTENT
+
+**What this repo is:** `wtf-is-going-on-mcp` — a single, zero-external-dependency
+Rust binary (`wtf`) that runs the cross-machine agent observability layer: hub
+(dashboard + HMAC-signed API + identity registry + sealed sessions + enrollment)
+and agent (MCP stdio bridge). The hub never sees plaintext session keys
+(ML-KEM-768 sealed, FIPS 203/197/800-38D); device requests are HMAC-signed
+(`auth.rs`); enrollment is the only unauthenticated surface and is rate-limited
+(20/5min global) with uniform failures.
+
+**Shipped (main @ `989c8f4`, v0.8.0):** one-time enrollment tokens —
+`wtf enroll-token` (stored SHA-256-hashed, single-use, TTL, burn-on-success),
+`wtf enroll --token`; 88 unit + 9 e2e green; dogfooded on a live hub.
+
+**In flight (v0.9.0, branch `feat/psk-enroll`, worktree `/mnt/d/Code/wtf-psk-enroll`):**
+signed-handshake enrollment — the hub holds one site `enroll_secret` (256-bit
+hex, config.json 0600, auto-generated; pre-0.9 configs are backfilled on load).
+A joining device proves possession with `proof = HMAC-SHA256(enroll_secret,
+"wtf-enroll-v2\\n{name}\\n{ek}\\n{ts}\\n{nonce}")` where `ek` is its ML-KEM-768
+encapsulation key; the hub answers with the fresh device key **ML-KEM-768-sealed
+to that ek** (`sealed` + `ek_fp`) — the secret never crosses the wire, the key
+never crosses in plaintext. Guards: name/ek/nonce/proof shape, ±300s clock skew,
+nonce replay cache (`Hub.enroll_nonces`, 600s prune, filled only after a valid
+proof), constant-time compare. CLI: `wtf enroll --psk`, `wtf enroll-secret
+[--rotate] [--json]`. Token mode stays working; in-tree ML-DSA-65 handshake
+signing is the documented future upgrade.
+
+**Fleet intent:** ONE hub per fleet. The canonical hub runs on machine-1 (Mac).
+Every other machine — including this Windows/WSL box — runs only its `wtf agent`
+bridge. Migration path: both ends on 0.9.0 → operator copies the Mac hub URL +
+its `enroll-secret` once → `wtf enroll --psk` on each joiner → local hubs shut
+down. Keep the hub at or above the joiners' version (enrollment is the
+cross-version seam).
+
+**Repo invariants:**
+- `auth.rs` is security-critical (request HMAC lane) — no changes without
+  operator sign-off; note any `api.rs` convergence-contract overrides in the
+  handoff sheets every time.
+- `[dependencies]` stays **empty** — std-only by design; no new crates, ever.
+- `SKILL.md` is embedded in the binary at build time (`include_str!`) — keep it
+  byte-identical with `.agents/skills/wtf-agent-hub/SKILL.md` and the
+  ainish-coder mirror; sync via a worktree in that repo, merge, push, verify.
+- API/CLI/storage changes update BOTH `llms.txt` files (root + `src/`) and the
+  README in the same task; append the release record to the current
+  `.agents/tasks/TASK.*.md`.
+- Hub serve logs contain the dashboard key — never paste them into chats,
+  tickets, or commits. IPs get redacted by tooling — store hit IPs in files,
+  not stdout.
+</REPO_STATE>
+
+---
+
 <TASK_PRIMER>
 ## TASK COORDINATION & CHAIN-OF-DRAFT
 
@@ -61,7 +114,9 @@ When ≥1 agent or subagent works at once (multiple branches, features, updates,
 - **Bracket every input and output with `start:` / `end:` ISO-8601 timestamps** — one block per input→output unit, never a published `start:` without its `end:`. Stamp `start:` when work begins (input received), `end:` when the output is complete. Abandoned actions still close with `end:` + `status: abandoned`.
 - **Carve-out:** appending to the main repo's `AGENTS/{date}.COMMS.md` working file by absolute path is the *only* permitted edit outside a worktree — it is a live board, never a `git commit` on `main`. Commits land via task branches and merge to `main`.
 - Full entry format, lifecycle events, and merge-conflict rules: see the protocol spec at the top of `AGENTS/{date}.COMMS.md`.
-- Scroll deploy lifecycle events (`intent-deploy` / `deployed` / `deploy-failed`, with manifest digest) are appended by the integrity layer in `src/scroll_integrity.sh` (`scrolls_comms_log`).
+- Merge/deploy lifecycle: post `intent-merge` before merging; after a hub
+  binary ships, append `deployed` with the version to the ledger and confirm
+  the live hub reports it via `/healthz` before enrolling devices against it.
 </COMMS>
 
 ---
@@ -80,16 +135,30 @@ no secrets.
 1. Read `.agents/skills/wtf-agent-hub/SKILL.md` (install it anywhere with
    `wtf skill install --dir <project>`; the skill ships inside the `wtf`
    binary from the `wtf-is-going-on-mcp` repo).
-2. Credentials ride the PQC lane: pack `WTF_HUB_URL` / `WTF_DEVICE_NAME` /
-   `WTF_DEVICE_KEY` into the bundle, `eval "$(pqc-secrets export | grep
-   '^export WTF_')"` at session start — or `wtf setup` to write
-   `bridge.json` (0600) — or self-enroll with a one-time token: the
-   operator runs `wtf enroll-token <name>` on the hub, the device runs
-   `wtf enroll --url http://HUB:7800 --name <name> --token <token>`;
-   the key comes back over that single call (token expires, burns on
-   use, stored hashed).
+2. Credentials, three paths — in order of preference:
+   - **Signed handshake (v0.9.0, preferred):** the operator prints the site
+     secret ONCE with `wtf enroll-secret` on the hub machine and copies it to
+     the joining machine. There: `wtf enroll --url http://HUB:7800 --name
+     <name> --psk <secret>`. The device proves possession via HMAC-SHA256
+     over (name, its ML-KEM-768 ek, ts, nonce) — the secret never crosses the
+     wire — and the fresh device key arrives ML-KEM-768-sealed to that ek,
+     opened only in memory. Hub/device clocks must agree within ±5 min.
+     `wtf enroll-secret --rotate` on the hub instantly invalidates every
+     outstanding copy.
+   - **One-time token (v0.8.0):** `wtf enroll-token <name>` on the hub, then
+     `wtf enroll --url http://HUB:7800 --name <name> --token <token>` on the
+     device; the key comes back over that single call (token expires, burns
+     on use, stored hashed).
+   - **Manual/PQC lane:** pack `WTF_HUB_URL` / `WTF_DEVICE_NAME` /
+     `WTF_DEVICE_KEY` into the bundle, `eval "$(pqc-secrets export | grep
+     '^export WTF_')"` at session start — or `wtf setup` to write
+     `bridge.json` (0600).
 3. Register the bridge with the MCP harness:
    `{ "command": "<abs>/wtf", "args": ["agent"] }`.
+
+**Topology:** one hub per fleet (canonical: machine-1). Machines run the
+bridge only — never spawn a second hub on a joiner; enroll against the
+canonical hub instead.
 
 **Reporting contract (mirrors COMMS, cross-machine):**
 - `check_in` working/blocked/done at task boundaries; `log_event` for
@@ -209,36 +278,45 @@ Validate types and paths (CWE-22). Parameterize SQL. `shell=False` for subproces
 1. **Isolate:** branch + worktree from `main`. Read `llms.txt` → write `.agents/tasks/TASK.$(date).md`. Check in to `AGENTS/{date}.COMMS.md` if concurrent.
 2. **Iterate & Track:** commit atomically and frequently in the worktree with descriptive messages — excellent history lets us step backward if an approach fails.
 3. **Audit:** scan code, task file, `llms.txt` for banned crypto or secrets every cycle.
-4. **Pre-Commit:** pass native gates (`cargo clippy`, `tsc`, `ruff`) + security gates (`gitleaks`, `detect-secrets`).
-5. **Verify (worktree):** smoke-test before merge — see [Verification Procedure](#verification-procedure). Post `intent-merge` to the COMMS ledger if concurrent.
+4. **Pre-Commit:** pass the repo gates — `cargo test` (unit + e2e) green,
+   `cargo build --release` clean, secret grep zero
+   (`git diff <base> -- . ':(exclude)tests/vectors/*' | grep -cE
+   '\b[0-9a-f]{40,}\b'` → 0; review any hits). `cargo clippy` welcome, not
+   gating. No external crates to audit — `[dependencies]` must remain empty.
+5. **Verify (worktree):** smoke-test before merge — see [Verification Procedure](#verification-procedure-this-repo). Post `intent-merge` to the COMMS ledger if concurrent.
 6. **Merge → `main`:** when gates pass, ask: *"Ready to merge `<branch>` → `main`? [diff summary]. Confirm?"* Merge only after user confirms.
 7. **Cleanup (mandatory):** immediately after merge — remove worktree, delete branch, verify clean. See [Post-Merge Cleanup](#post-merge-cleanup). **Do not skip.** Append `checkout` to the COMMS ledger.
 
 **Completion gate:** incomplete until `main` holds the verified merge, every task worktree is removed, every merged branch is deleted (local + remote), and the operator is back on a clean `main`.
 
-### Verification Procedure
+### Verification Procedure (this repo)
 
-**Read-only, safe on any branch.** Run after step 4, before step 6, to confirm the change is observable live.
+**Live smoke, worktree binary only, temp `WTF_HOME` — never the operator's
+real hub state.** Run after the gates (step 4), before merge:
 
 ```bash
-# 1. Kill strays on the verification port
-lsof -ti:<VERIFY_PORT> | xargs -r kill 2>/dev/null
-
-# 2. Start a verification instance in the worktree (NOT main), non-default port
+# 1. Spawn a throwaway hub on an ephemeral port
 cd <worktree-path>
-<START_COMMAND> > /tmp/verify.log 2>&1 &
+WTF_HOME=$(mktemp -d) ./target/release/wtf serve --bind localhost:0 --no-open \
+  > /tmp/verify.log 2> /tmp/verify.err &
 echo $! > /tmp/verify.pid
-sleep 4
 
-# 3. Smoke-test the change is observable (API endpoints, CLI output, etc.)
-<SMOKE_TEST_COMMAND>
+# 2. Parse the printed URL, then exercise the changed flow end-to-end
+#    (tests/e2e.rs is the template: enroll, check_in, bins, sessions...)
+WTF_HOME=$(mktemp -d) ./target/release/wtf enroll --url <url> --name smoke --psk <secret>
 
-# 4. Stop, return to main for safety
+# 3. Stop the instance
 kill $(cat /tmp/verify.pid) 2>/dev/null
-cd <main-repo-path> && git checkout main
 ```
 
-**Look for:** new diff entries appear with correct identifiers; PQC bundle loads (`[PQC] Loaded N provider key(s)`); no log errors beyond expected pre-existing failures. **Why:** catches wiring bugs, missing keys, naming collisions pre-merge; yields a screenshot-ready receipt.
+**Look for:** the e2e suite passing against the real binary; enroll responses
+carrying `sealed`/`ek_fp` (never plaintext `key`) in psk mode; failures staying
+uniform (one generic 403 wording). **Why:** catches wiring bugs and leaks
+pre-merge; the e2e suite doubles as the executable spec.
+
+**Post-merge on hub machines:** rebuild release, restart the `wtf serve`
+process, confirm `/healthz` reports the new version before enrolling anything
+against it.
 
 ### Post-Merge Cleanup
 
@@ -316,5 +394,5 @@ Run before any code touching crypto, secrets storage, or networking:
 ---
 
 <REINFORCEMENT>
-PQC for every API key. Respect the codebase's native language. One task = one worktree from `main`, merged back to `main` after verification, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`. Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code.
+PQC for every secret the hub touches; enrollment keys travel sealed, never plaintext. Rust, zero external dependencies — `[dependencies]` stays empty. One task = one worktree from `main`, gates green, merged back after the user confirms, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`; cross-machine truth flows through the wtf hub — one hub per fleet, bridges everywhere else. Never paste hub serve logs (dashboard key). Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code.
 </REINFORCEMENT>

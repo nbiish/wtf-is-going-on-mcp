@@ -130,6 +130,13 @@ no external assets, works offline.
   Redemption (`POST /api/v1/enroll`) is rate-limited and every refusal is
   a uniform 403; the token burns only on success, so a typo does not
   brick it.
+- **Signed-handshake enrollment (v0.9.0)**: the hub holds ONE site
+  `enroll_secret` (256-bit hex, 0600). A joiner proves possession with an
+  HMAC over (name, its ML-KEM-768 encapsulation key, timestamp, nonce) —
+  the secret never crosses the wire — plus ±300 s skew and a replay
+  cache, and receives its device key **ML-KEM-768-sealed** (FIPS 203,
+  AES-256-GCM): the key never crosses in plaintext. Rotate the secret
+  (`wtf enroll-secret --rotate`) to invalidate every outstanding copy.
 - **Transport topologies**: on a trusted LAN, plain HTTP is fine. Across
   machines or off-LAN, run an encrypted overlay (WireGuard/Tailscale) and point
   the bridge at the overlay address — no code changes; the HMAC signature
@@ -137,10 +144,14 @@ no external assets, works offline.
   `https://` hub URLs are accepted. Raw port-forwarding plain HTTP to the
   public internet remains unsupported; TLS is the proxy's job, never
   hand-rolled here.
-- **PQC-compatible key delivery**: credentials can be delivered via env vars
-  (`WTF_HUB_URL`, `WTF_DEVICE_NAME`, `WTF_DEVICE_KEY`), which is the delivery
-  path a PQC secrets bundle would use. The PQC (FIPS 203/204/205) lane is
-  reserved for future secrets-at-rest features; none exist yet.
+- **PQC key delivery**: since v0.9.0, signed-handshake enrollment delivers
+  the device key ML-KEM-768-sealed to the joiner's encapsulation key
+  (FIPS 203 / AES-256-GCM; SP 800-38D) — it is unwrapped only in memory.
+  Credentials can also ride env vars (`WTF_HUB_URL`, `WTF_DEVICE_NAME`,
+  `WTF_DEVICE_KEY`), the path a PQC secrets bundle uses. The in-tree
+  ML-DSA-65 identity is the documented future upgrade for handshake
+  signing (today's proof is HMAC-SHA256, the same standard-transport lane
+  as request auth).
 
 ## Deployment topologies
 
@@ -169,7 +180,28 @@ cargo build --release
 ./target/release/wtf join you@HUB-HOST --name laptop   # add --url to override the hub address
 ```
 
-### Enrollment token (no ssh, no hand-copied key)
+### Signed handshake (recommended: one secret per site)
+
+The hub auto-generates a single site enrollment secret; the operator
+prints it once and copies it to each joining machine — no ssh, no
+per-device hand-copied key. The joiner proves possession of the secret
+via HMAC (the secret never crosses the wire) and receives its device key
+ML-KEM-768-sealed to its own encapsulation key, unwrapped only in
+memory:
+
+```
+# on the hub (prints the secret + the ready-made join command)
+./target/release/wtf enroll-secret            # or --json; --rotate invalidates all copies
+# on the joining machine
+./target/release/wtf enroll --url http://HUB-LAN-IP:7800 --name laptop --psk <SECRET>
+```
+
+Wrong secret, stale clock (>±300 s), replayed handshake, tampered
+encapsulation key, and rotated-out copies all get the same uniform 403,
+under the same global rate cap (20 attempts per 5 minutes). Hub and
+joiner clocks must agree within ±5 minutes.
+
+### Enrollment token (no ssh, single-use token)
 
 The hub operator mints a one-time token; the joining machine redeems it
 and receives its device key over that single call — no ssh access to the
@@ -373,7 +405,7 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | `POST /api/v1/checkin` | device auth | Upsert agent status |
 | `POST /api/v1/event` | device auth | Append event |
 | `POST /api/v1/heartbeat` | device auth | Liveness touch |
-| `POST /api/v1/enroll` | none (token-gated, rate-limited) | Redeem a one-time enrollment token: `{"name":…,"token":…}` → `{"hub_url":…,"device":…,"key":…}` |
+| `POST /api/v1/enroll` | none (token- or proof-gated, rate-limited) | Two modes: `{"name":…,"token":…}` → one-time `{"hub_url":…,"device":…,"key":…}`; or signed handshake `{"name":…,"ek":…,"ts":…,"nonce":…,"proof":…}` → `{"hub_url":…,"device":…,"ek_fp":…,"sealed":…}` with the device key ML-KEM-768-sealed, never plaintext |
 
 Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
 `Transfer-Encoding` requests are rejected `501` by design.
@@ -382,7 +414,7 @@ Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
 
 All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
 
-- `config.json` — hub bind address, port, dashboard key, optional advertised URL (0600)
+- `config.json` — hub bind address, port, dashboard key, optional advertised URL, site enroll secret (0600)
 - `keys.json` — device records (0600)
 - `bridge.json` — agent-side hub URL + credentials (0600)
 - `enroll_tokens.json` — pending one-time enrollment tokens, hashed (0600)
@@ -428,7 +460,9 @@ wtf url [URL | clear]   # URL handed to joining devices (overlay/https aware)
 wtf setup --url URL --name NAME --key KEY
 wtf join user@hub [--name NAME] [--url URL]   # self-enroll over ssh
 wtf enroll-token <name> [--ttl SECS] [--json] | enroll-token revoke <name>  # one-time token (hub side)
+wtf enroll-secret [--rotate] [--json]           # site enrollment secret (hub side; rotate kills copies)
 wtf enroll --url URL --name NAME --token TOKEN  # redeem a token to enroll this machine
+wtf enroll --url URL --name NAME --psk SECRET   # signed-handshake enroll (key arrives sealed)
 wtf agent        # MCP stdio server — what your MCP client launches
 wtf status       # plain-text hub state (same formatter as the tool)
 wtf dashboard-url # clickable dashboard URL (hub machine; never over MCP)
@@ -451,7 +485,7 @@ wtf version
 ## Development
 
 ```
-cargo test              # 88 unit tests + 9 e2e tests (real hub + real bridge over stdio)
+cargo test              # 91 unit tests + 10 e2e tests (real hub + real bridge over stdio)
 cargo build --release   # lto, panic=abort, overflow checks
 ```
 

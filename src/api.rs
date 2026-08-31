@@ -13,16 +13,22 @@
 //! - `/api/v1/sessions/{id}` — GET: dashboard key OR device
 //! - `/api/v1/sessions/{id}/{join,seal,seals,send,recv}` — device auth only;
 //!   seal/seals/send/recv additionally require session membership.
-//! - `/api/v1/enroll` — NO HMAC: the credential is a one-time enrollment
-//!   token minted hub-side by `wtf enroll-token` (SHA-256-hashed at rest,
-//!   single-use, short TTL). Global rate limiter blunts online guessing.
+//! - `/api/v1/enroll` — NO device HMAC: two credential modes. (1) a one-time
+//!   enrollment token (v0.8.0; SHA-256-hashed at rest, single-use, short
+//!   TTL); (2) a signed PSK handshake (v0.9.0): an HMAC proof of possession
+//!   of the site enrollment secret over (name, ek, ts, nonce) with skew and
+//!   replay guards, answered with the fresh device key ML-KEM-768-sealed to
+//!   the device's ek — the key never crosses in plaintext. A global rate
+//!   limiter blunts online guessing on both modes.
 //! All failures are 401 with a generic message; never leak which factor failed.
 
 use crate::auth::{self, NonceCache};
 use crate::bins::Bins;
-use crate::config::KeyStore;
+use crate::config::{HubConfig, KeyStore};
+use crate::hmac;
 use crate::http::{HandlerResult, Request, Response, SseSession};
 use crate::json::{self, Value};
+use crate::session_crypto;
 use crate::sessions::{Sessions, MAX_CIPHERTEXT_CHARS};
 use crate::store::{LEVELS, STATUSES, Store};
 use crate::util::{ct_eq_str, now_secs};
@@ -42,6 +48,8 @@ pub struct Hub {
     pub sessions: Sessions,
     /// Sliding window of enroll attempt timestamps (rate limiter state).
     pub enroll_hits: Mutex<Vec<u64>>,
+    /// PSK-handshake replay guard: (nonce, first-seen ts), pruned past 600 s.
+    pub enroll_nonces: Mutex<Vec<(String, u64)>>,
 }
 
 pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
@@ -342,10 +350,11 @@ fn enroll_allowed(hits: &mut Vec<u64>, now: u64) -> bool {
     true
 }
 
-/// POST /api/v1/enroll { name, token } — redeem a one-time enrollment token
-/// for this device's key. Response shape matches `wtf key issue --json` so
-/// the device-side `wtf enroll` can share `wtf join`'s parser. Failures are
-/// uniform; the token burns only on success (a typo must not brick it).
+/// POST /api/v1/enroll { name, token } or { name, ek, ts, nonce, proof } —
+/// redeem a one-time enrollment token (v0.8.0) or run the signed PSK
+/// handshake (v0.9.0). Response shape matches `wtf key issue --json` (token
+/// mode) or carries the key ML-KEM-768-sealed (psk mode). Failures are
+/// uniform; tokens burn only on success (a typo must not brick it).
 fn enroll(hub: &Arc<Hub>, req: &Request) -> Response {
     if !enroll_allowed(hub.enroll_hits.lock().unwrap().as_mut(), now_secs()) {
         return Response::error(429, "too many enrollment attempts; slow down");
@@ -357,9 +366,18 @@ fn enroll(hub: &Arc<Hub>, req: &Request) -> Response {
     let Some(name) = body.get("name").and_then(|v| v.as_str()) else {
         return Response::error(400, "missing 'name'");
     };
-    let Some(token) = body.get("token").and_then(|v| v.as_str()) else {
-        return Response::error(400, "missing 'token'");
-    };
+    match body.get("token").and_then(|v| v.as_str()) {
+        Some(token) => enroll_token(hub, name, token),
+        None => match body.get("proof").and_then(|v| v.as_str()) {
+            Some(proof) => enroll_psk(hub, name, proof, &body),
+            None => Response::error(400, "missing 'token' or 'proof'"),
+        },
+    }
+}
+
+/// Token mode (v0.8.0): the token is the credential; the fresh device key
+/// crosses in the one-time `key issue --json` response shape.
+fn enroll_token(hub: &Arc<Hub>, name: &str, token: &str) -> Response {
     if !crate::config::valid_name(name)
         || token.len() != 64
         || !token.bytes().all(|b| b.is_ascii_hexdigit())
@@ -378,8 +396,73 @@ fn enroll(hub: &Arc<Hub>, req: &Request) -> Response {
             _ => Response::error(403, "invalid or expired enrollment token"),
         };
     }
-    // Token redeemed. Mint the device key exactly like `wtf key issue` does;
-    // the hub's per-request keystore reload picks it up immediately.
+    issue_and_respond(hub, name, "enrollment token")
+}
+
+/// Replay guard for PSK handshakes: (nonce, first-seen ts) entries are pruned
+/// after 600 s; a nonce seen twice is a replay and fails closed. Only proofs
+/// that already passed verification reach this cache.
+fn enroll_nonce_fresh(cache: &mut Vec<(String, u64)>, nonce: &str, now: u64) -> bool {
+    cache.retain(|(_, ts)| now.saturating_sub(*ts) < 600);
+    if cache.iter().any(|(n, _)| n == nonce) {
+        return false;
+    }
+    cache.push((nonce.to_string(), now));
+    true
+}
+
+/// PSK mode (v0.9.0): the device proves possession of the site enrollment
+/// secret with proof = HMAC(enroll_secret, "wtf-enroll-v2\n{name}\n{ek}\n{ts}
+/// \n{nonce}") — the secret itself never travels — and receives the fresh
+/// device key ML-KEM-768-sealed to its own encapsulation key. Every failure
+/// is the same uniform 403; success is operator-sanctioned by the secret
+/// copy, and `key revoke` / secret rotation remain the instant kill switches.
+fn enroll_psk(hub: &Arc<Hub>, name: &str, proof: &str, body: &Value) -> Response {
+    let ek = match body.get("ek").and_then(|v| v.as_str()) {
+        Some(e) => e,
+        None => return Response::error(403, "invalid or expired enrollment proof"),
+    };
+    let ts = body.get("ts").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
+    let nonce = match body.get("nonce").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return Response::error(403, "invalid or expired enrollment proof"),
+    };
+    let now = now_secs();
+    let shape_ok = crate::config::valid_name(name)
+        && ek.len() == crate::identity::EK_HEX
+        && ek.bytes().all(|b| b.is_ascii_hexdigit())
+        && nonce.len() >= 16
+        && nonce.len() <= 128
+        && nonce.bytes().all(|b| b.is_ascii_hexdigit())
+        && proof.len() == 64
+        && proof.bytes().all(|b| b.is_ascii_hexdigit())
+        && now.saturating_sub(ts) <= 300
+        && ts.saturating_sub(now) <= 300;
+    if !shape_ok {
+        return Response::error(403, "invalid or expired enrollment proof");
+    }
+    // Read per-request like the keystore: `enroll-secret --rotate` is instant.
+    let cfg = match HubConfig::load_or_create() {
+        Ok(c) => c,
+        Err(_) => return Response::error(500, "enrollment store unavailable"),
+    };
+    let expected = hmac::hmac_sha256_hex(
+        cfg.enroll_secret.as_bytes(),
+        format!("wtf-enroll-v2\n{name}\n{ek}\n{ts}\n{nonce}").as_bytes(),
+    );
+    if !ct_eq_str(&expected, proof) {
+        return Response::error(403, "invalid or expired enrollment proof");
+    }
+    // Only verified proofs reach the replay cache, so it cannot be poisoned.
+    if !enroll_nonce_fresh(hub.enroll_nonces.lock().unwrap().as_mut(), nonce, now) {
+        return Response::error(403, "invalid or expired enrollment proof");
+    }
+    issue_and_respond_sealed(hub, name, ek, &cfg)
+}
+
+/// Token-mode tail: mint the device key (hot-reloaded keystore) and respond
+/// in the one-time `key issue --json` shape.
+fn issue_and_respond(hub: &Arc<Hub>, name: &str, via: &str) -> Response {
     let mut ks = match KeyStore::load() {
         Ok(k) => k,
         Err(_) => return Response::error(500, "keystore unavailable"),
@@ -388,18 +471,57 @@ fn enroll(hub: &Arc<Hub>, req: &Request) -> Response {
         Ok(s) => s,
         Err(e) => return Response::error(400, &e),
     };
-    let hub_url = crate::config::HubConfig::load_or_create()
-        .map(|c| c.lan_url())
-        .unwrap_or_default();
-    let _ = hub
-        .store
-        .log_event("enroll", name, "info", &format!("device '{name}' enrolled via enrollment token"));
+    let hub_url = HubConfig::load_or_create().map(|c| c.lan_url()).unwrap_or_default();
+    let _ = hub.store.log_event(
+        "enroll",
+        name,
+        "info",
+        &format!("device '{name}' enrolled via {via}"),
+    );
     Response::json(
         200,
         &Value::obj(vec![
             ("hub_url", Value::from(hub_url.as_str())),
             ("device", Value::from(name)),
             ("key", Value::from(secret.as_str())),
+        ]),
+    )
+}
+
+fn issue_and_respond_sealed(hub: &Arc<Hub>, name: &str, ek: &str, cfg: &HubConfig) -> Response {
+    let mut ks = match KeyStore::load() {
+        Ok(k) => k,
+        Err(_) => return Response::error(500, "keystore unavailable"),
+    };
+    let secret = match ks.issue(name) {
+        Ok(s) => s,
+        Err(e) => return Response::error(400, &e),
+    };
+    let key32 = match crate::util::hex_decode(&secret) {
+        Some(k) if k.len() == 32 => {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&k);
+            out
+        }
+        _ => return Response::error(500, "keystore unavailable"),
+    };
+    let sealed = match session_crypto::seal_session_key(ek, &key32, &format!("wtf-enroll-v2:{name}")) {
+        Ok(s) => s,
+        Err(_) => return Response::error(500, "key sealing failed"),
+    };
+    let _ = hub.store.log_event(
+        "enroll",
+        name,
+        "info",
+        &format!("device '{name}' enrolled via signed handshake (psk)"),
+    );
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("hub_url", Value::from(cfg.lan_url().as_str())),
+            ("device", Value::from(name)),
+            ("ek_fp", Value::from(session_crypto::ek_fp(ek).as_str())),
+            ("sealed", Value::from(sealed.as_str())),
         ]),
     )
 }
@@ -721,5 +843,16 @@ mod tests {
         // The window slides: aged-out attempts stop counting.
         assert!(enroll_allowed(&mut hits, t0 + ENROLL_WINDOW_SECS));
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn enroll_nonce_cache_rejects_replay() {
+        let mut cache = Vec::new();
+        assert!(enroll_nonce_fresh(&mut cache, "aaaa", 1_000_000));
+        assert!(!enroll_nonce_fresh(&mut cache, "aaaa", 1_000_001));
+        assert!(enroll_nonce_fresh(&mut cache, "bbbb", 1_000_001));
+        // Entries age out after 600 s (the upstream ±300 s skew guard would
+        // reject the stale ts of a genuine replay anyway).
+        assert!(enroll_nonce_fresh(&mut cache, "aaaa", 1_000_000 + 600));
     }
 }

@@ -98,6 +98,10 @@ pub struct HubConfig {
     /// URL handed out to joining devices (overlay IP, public https host).
     /// When set, it wins over the auto-detected LAN address in lan_url().
     pub advertised_url: Option<String>,
+    /// Site enrollment secret (256-bit hex): holders may self-enroll via the
+    /// signed PSK handshake. Copied once per site by the operator; rotate to
+    /// instantly invalidate every outstanding copy.
+    pub enroll_secret: String,
 }
 
 impl HubConfig {
@@ -124,7 +128,27 @@ impl HubConfig {
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string())
                 .filter(|s| !s.is_empty());
-            return Ok(HubConfig { bind_ip, port, dashboard_key, created_at, advertised_url });
+            let mut cfg = HubConfig {
+                bind_ip,
+                port,
+                dashboard_key,
+                created_at,
+                advertised_url,
+                enroll_secret: v
+                    .get("enroll_secret")
+                    .and_then(|x| x.as_str())
+                    .filter(|s| s.len() == 64)
+                    .unwrap_or_default()
+                    .to_string(),
+            };
+            // Pre-v0.9 configs carry no enrollment secret; backfill one so
+            // `wtf enroll-secret` works without deleting the config. The
+            // persist is best-effort: the hub still serves if it fails.
+            if cfg.enroll_secret.is_empty() {
+                cfg.enroll_secret = rand::key_hex();
+                let _ = Self::save_at(path, &cfg);
+            }
+            return Ok(cfg);
         }
         let cfg = HubConfig {
             bind_ip: std::net::Ipv4Addr::UNSPECIFIED.to_string(),
@@ -132,15 +156,26 @@ impl HubConfig {
             dashboard_key: rand::key_hex(),
             created_at: crate::util::now_secs(),
             advertised_url: None,
+            enroll_secret: rand::key_hex(),
         };
-        let v = Value::obj(vec![
+        Self::save_at(path, &cfg)?;
+        Ok(cfg)
+    }
+
+    /// Persist every config field (0600, atomic). Single write path for
+    /// create / advertised-url / rotate so fields never drift apart.
+    fn save_at(path: &Path, cfg: &HubConfig) -> Result<(), String> {
+        let mut fields = vec![
             ("bind_ip", Value::from(cfg.bind_ip.as_str())),
             ("port", Value::from(cfg.port as i64)),
             ("dashboard_key", Value::from(cfg.dashboard_key.as_str())),
             ("created_at", Value::from(cfg.created_at as i64)),
-        ]);
-        save_json(path, &v, 0o600)?;
-        Ok(cfg)
+        ];
+        if let Some(u) = &cfg.advertised_url {
+            fields.push(("advertised_url", Value::from(u.as_str())));
+        }
+        fields.push(("enroll_secret", Value::from(cfg.enroll_secret.as_str())));
+        save_json(path, &Value::obj(fields), 0o600)
     }
 
     pub fn url(&self) -> String {
@@ -175,21 +210,25 @@ impl HubConfig {
             }
             None => None,
         };
-        let mut fields = vec![
-            ("bind_ip", Value::from(cfg.bind_ip.as_str())),
-            ("port", Value::from(cfg.port as i64)),
-            ("dashboard_key", Value::from(cfg.dashboard_key.as_str())),
-            ("created_at", Value::from(cfg.created_at as i64)),
-        ];
-        if let Some(u) = &cfg.advertised_url {
-            fields.push(("advertised_url", Value::from(u.as_str())));
-        }
-        save_json(path, &Value::obj(fields), 0o600)?;
+        Self::save_at(path, &cfg)?;
         Ok(cfg)
     }
 
     pub fn set_advertised_url(url: Option<String>) -> Result<HubConfig, String> {
         Self::set_advertised_url_at(&config_path(), url)
+    }
+
+    /// Mint a fresh site enrollment secret, instantly invalidating every
+    /// outstanding copy. Returns the new secret.
+    pub fn rotate_enroll_secret() -> Result<String, String> {
+        Self::rotate_enroll_secret_at(&config_path())
+    }
+
+    pub fn rotate_enroll_secret_at(path: &Path) -> Result<String, String> {
+        let mut cfg = HubConfig::load_or_create_at(path)?;
+        cfg.enroll_secret = rand::key_hex();
+        Self::save_at(path, &cfg)?;
+        Ok(cfg.enroll_secret)
     }
 }
 
@@ -530,6 +569,37 @@ impl BridgeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enroll_secret_generated_and_rotates() {
+        let path = temp_dir("pskcfg").join("config.json");
+        let cfg = HubConfig::load_or_create_at(&path).expect("create");
+        assert_eq!(cfg.enroll_secret.len(), 64);
+        let fresh = HubConfig::rotate_enroll_secret_at(&path).expect("rotate");
+        assert_eq!(fresh.len(), 64);
+        let reloaded = HubConfig::load_or_create_at(&path).expect("reload");
+        assert_eq!(reloaded.enroll_secret, fresh);
+        assert_ne!(reloaded.enroll_secret, cfg.enroll_secret);
+    }
+
+    #[test]
+    fn enroll_secret_backfills_older_configs() {
+        let dir = temp_dir("pskupg");
+        let path = dir.join("config.json");
+        // A v0.8-era config carries no enroll_secret field.
+        let legacy = Value::obj(vec![
+            ("bind_ip", Value::from("127.0.0.1")),
+            ("port", Value::from(DEFAULT_PORT as i64)),
+            ("dashboard_key", Value::from("k".repeat(64).as_str())),
+            ("created_at", Value::from(1i64)),
+        ]);
+        save_json(&path, &legacy, 0o600).expect("write legacy config");
+        let cfg = HubConfig::load_or_create_at(&path).expect("load legacy");
+        assert_eq!(cfg.enroll_secret.len(), 64);
+        // The backfill persists: a second load returns the same secret.
+        let again = HubConfig::load_or_create_at(&path).expect("reload");
+        assert_eq!(again.enroll_secret, cfg.enroll_secret);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(
