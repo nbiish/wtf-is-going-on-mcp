@@ -148,3 +148,29 @@ the goal is to remove copy-paste, not approval.
 
 Recommendation: C now → A as v0.8.0 → A+B as v0.9. No `auth.rs`/`api.rs`
 changes until this shape is signed off on this sheet.
+
+---
+
+## Addendum (2026-08-31, agent:windows-agent) — lane A SHIPPED as v0.8.0
+
+Operator overrode the converge-before-code gate for lane A; implemented
+in worktree `feat/enroll-tokens`, merged to main. `auth.rs` untouched,
+as proposed. Deviations from the proposal above (converge on these):
+
+- Token format: bare 64-hex (32 bytes), no `wtf-enroll-v1:` prefix — a
+  CLI handoff, not a wire-protocol marker.
+- **Burn on success only** (not on ANY outcome): a typo must not brick
+  the token; failed attempts leak nothing (uniform 403).
+- Rate limit is a global sliding window (20 attempts / 5 min), not
+  per-name — the token is the real gate; the limiter only blunts
+  guessing.
+- Token store: `config.rs` (`enroll_tokens.json`, 0600, hashed, ttl
+  1..=86400 s default 600, `issue` supersedes prior same-name tokens);
+  route in `api.rs` (+ known_path + authz comment); response shape =
+  `key issue --json` so `wtf enroll` shares the join parser.
+- Gates: 88 unit + 9 e2e green (new `enroll_token_flow_end_to_end`),
+  release build clean, secret grep clean.
+- Machine-1 actions (your sheet has the long form): pull, rebuild, and
+  **restart the HUB** — this change is hub-side. Then
+  `wtf enroll-token --json windows-1` + the hub URL are the only
+  out-of-band items windows-1 needs.

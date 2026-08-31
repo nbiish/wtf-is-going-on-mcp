@@ -46,6 +46,10 @@ pub fn sessions_path() -> PathBuf {
     home().join("sessions.json")
 }
 
+pub fn enroll_tokens_path() -> PathBuf {
+    home().join("enroll_tokens.json")
+}
+
 /// Ensure the home dir exists with 0700.
 pub fn ensure_home() -> std::io::Result<PathBuf> {
     let h = home();
@@ -286,6 +290,157 @@ impl KeyStore {
     }
 }
 
+/// A one-time enrollment token record. Only the SHA-256 hash of the token is
+/// stored; the plaintext crosses the hub once (`enroll-token` output) and the
+/// wire once (`POST /api/v1/enroll`).
+#[derive(Clone, Debug)]
+pub struct EnrollToken {
+    pub name: String,
+    pub token_hash: String,
+    pub expires_at: u64,
+    pub used: bool,
+}
+
+/// Why a token failed to redeem. Callers map every variant to the same generic
+/// refusal — never leak which check failed (except `Store`, an operator-side
+/// outage, which gets a 5xx so the device knows to retry later).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TokenError {
+    Unknown,
+    Expired,
+    Used,
+    BadToken,
+    Store,
+}
+
+/// Store of pending/used enrollment tokens at `enroll_tokens.json` (0600),
+/// next to the keystore it feeds. The hub-side answer to operator copy-paste:
+/// `wtf enroll-token` mints, `wtf enroll` redeems, expiry + single-use bound
+/// the blast radius of a leaked token.
+#[derive(Default)]
+pub struct EnrollTokenStore {
+    path: PathBuf,
+    records: Vec<EnrollToken>,
+}
+
+impl EnrollTokenStore {
+    pub fn load() -> Result<Self, String> {
+        Self::load_at(&enroll_tokens_path())
+    }
+
+    pub fn load_at(path: &Path) -> Result<Self, String> {
+        let records = match load_json(path)? {
+            None => Vec::new(),
+            Some(v) => match v.get("tokens").and_then(|d| d.as_arr()) {
+                Some(arr) => arr
+                    .iter()
+                    .filter_map(|d| {
+                        Some(EnrollToken {
+                            name: d.get("name")?.as_str()?.to_string(),
+                            token_hash: d.get("token_hash")?.as_str()?.to_string(),
+                            expires_at: d
+                                .get("expires_at")
+                                .and_then(|x| x.as_i64())
+                                .unwrap_or(0) as u64,
+                            used: d.get("used").and_then(|x| x.as_bool()).unwrap_or(false),
+                        })
+                    })
+                    .collect(),
+                None => return Err(format!("{}: missing tokens array", path.display())),
+            },
+        };
+        Ok(EnrollTokenStore { path: path.to_path_buf(), records })
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let tokens: Vec<Value> = self
+            .records
+            .iter()
+            .map(|r| {
+                Value::obj(vec![
+                    ("name", Value::from(r.name.as_str())),
+                    ("token_hash", Value::from(r.token_hash.as_str())),
+                    ("expires_at", Value::from(r.expires_at as i64)),
+                    ("used", Value::from(r.used)),
+                ])
+            })
+            .collect();
+        let v = Value::obj(vec![("tokens", Value::Arr(tokens))]);
+        save_json(&self.path, &v, 0o600)
+    }
+
+    /// Mint a token for `name`; the plaintext is returned once and only its
+    /// hash is stored. Reissuing for the same name supersedes any pending
+    /// token for that name — an old token can never be resurrected.
+    pub fn issue(&mut self, name: &str, ttl_secs: u64) -> Result<String, String> {
+        if !valid_name(name) {
+            return Err("device name must match [A-Za-z0-9._-]{1,64}".into());
+        }
+        if ttl_secs == 0 || ttl_secs > 86_400 {
+            return Err("ttl must be 1..=86400 seconds".into());
+        }
+        let now = crate::util::now_secs();
+        // Reissue supersedes any prior record for this name; lazily prune
+        // other names' expired-and-unused records.
+        self.records.retain(|r| {
+            if r.name == name {
+                false
+            } else {
+                r.used || r.expires_at > now
+            }
+        });
+        let token = rand::key_hex();
+        self.records.push(EnrollToken {
+            name: name.to_string(),
+            token_hash: crate::sha256::hexdigest(token.as_bytes()),
+            expires_at: now + ttl_secs,
+            used: false,
+        });
+        self.persist()?;
+        Ok(token)
+    }
+
+    /// Redeem `token` for `name`. Burns the record on success; failed attempts
+    /// do NOT burn (a typo must not brick the token) — the hub-side rate
+    /// limiter is the anti-guessing control.
+    pub fn consume(&mut self, name: &str, token: &str) -> Result<(), TokenError> {
+        let now = crate::util::now_secs();
+        let idx = match self.records.iter().position(|r| r.name == name) {
+            Some(i) => i,
+            None => return Err(TokenError::Unknown),
+        };
+        let rec = &mut self.records[idx];
+        if rec.used {
+            return Err(TokenError::Used);
+        }
+        if rec.expires_at <= now {
+            return Err(TokenError::Expired);
+        }
+        let expect = crate::sha256::hexdigest(token.as_bytes());
+        if !crate::util::ct_eq_str(&rec.token_hash, &expect) {
+            return Err(TokenError::BadToken);
+        }
+        rec.used = true;
+        if self.persist().is_err() {
+            self.records[idx].used = false;
+            return Err(TokenError::Store);
+        }
+        Ok(())
+    }
+
+    /// Drop pending (unused) tokens for `name` — `wtf enroll-token revoke`.
+    pub fn revoke(&mut self, name: &str) -> bool {
+        let before = self.records.len();
+        self.records.retain(|r| !(r.name == name && !r.used));
+        if self.records.len() != before {
+            self.persist().ok();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -441,6 +596,48 @@ mod tests {
         assert!(HubConfig::set_advertised_url_at(&p, Some("ftp://x".into())).is_err());
         let c4 = HubConfig::set_advertised_url_at(&p, None).unwrap();
         assert!(c4.advertised_url.is_none());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn enroll_token_lifecycle() {
+        let d = temp_dir("entoken");
+        let mut ts = EnrollTokenStore::load_at(&d.join("tokens.json")).unwrap();
+        let t = ts.issue("box1", 600).unwrap();
+        assert_eq!(t.len(), 64);
+        assert!(ts.issue("bad name!", 600).is_err());
+        assert!(ts.issue("box1", 0).is_err());
+        assert!(ts.issue("box1", 86_401).is_err());
+        // Failures do not burn: wrong token, unknown name — then the real
+        // token still redeems exactly once.
+        assert_eq!(
+            ts.consume("box1", &"0".repeat(64)),
+            Err(TokenError::BadToken)
+        );
+        assert_eq!(ts.consume("ghost", &t), Err(TokenError::Unknown));
+        assert!(ts.consume("box1", &t).is_ok());
+        assert_eq!(ts.consume("box1", &t), Err(TokenError::Used));
+        // The burned flag persists across reload.
+        let mut ts2 = EnrollTokenStore::load_at(&d.join("tokens.json")).unwrap();
+        assert_eq!(ts2.consume("box1", &t), Err(TokenError::Used));
+        // Expiry: deterministic via a crafted record (no sleeping).
+        let mut ts3 = EnrollTokenStore::load_at(&d.join("tokens.json")).unwrap();
+        let t3 = ts3.issue("box3", 600).unwrap();
+        let i3 = ts3.records.iter().position(|r| r.name == "box3").unwrap();
+        ts3.records[i3].expires_at = 1;
+        assert_eq!(ts3.consume("box3", &t3), Err(TokenError::Expired));
+        // Reissue supersedes the pending token for the same name.
+        let mut ts4 = EnrollTokenStore::load_at(&d.join("tokens.json")).unwrap();
+        let t4 = ts4.issue("box4", 600).unwrap();
+        let _t4b = ts4.issue("box4", 600).unwrap();
+        assert_eq!(ts4.consume("box4", &t4), Err(TokenError::BadToken));
+        // Revoke drops pending tokens.
+        assert!(ts4.revoke("box4"));
+        assert_eq!(ts4.consume("box4", "x"), Err(TokenError::Unknown));
+        assert!(!ts4.revoke("nobody"));
+        // File mode is operator-only.
+        let meta = std::fs::metadata(d.join("tokens.json")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         std::fs::remove_dir_all(&d).ok();
     }
 

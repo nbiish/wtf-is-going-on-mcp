@@ -13,6 +13,9 @@
 //! - `/api/v1/sessions/{id}` — GET: dashboard key OR device
 //! - `/api/v1/sessions/{id}/{join,seal,seals,send,recv}` — device auth only;
 //!   seal/seals/send/recv additionally require session membership.
+//! - `/api/v1/enroll` — NO HMAC: the credential is a one-time enrollment
+//!   token minted hub-side by `wtf enroll-token` (SHA-256-hashed at rest,
+//!   single-use, short TTL). Global rate limiter blunts online guessing.
 //! All failures are 401 with a generic message; never leak which factor failed.
 
 use crate::auth::{self, NonceCache};
@@ -37,6 +40,8 @@ pub struct Hub {
     pub identities: Mutex<Vec<(String, String)>>,
     /// Encrypted agent-to-agent session channels.
     pub sessions: Sessions,
+    /// Sliding window of enroll attempt timestamps (rate limiter state).
+    pub enroll_hits: Mutex<Vec<u64>>,
 }
 
 pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
@@ -52,6 +57,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/identity"
             | "/api/v1/devices"
             | "/api/v1/sessions"
+            | "/api/v1/enroll"
     ) || bin_id_of(&req.path).is_some()
         || req.path.starts_with("/api/v1/sessions/");
     match (req.method.as_str(), req.path.as_str()) {
@@ -68,6 +74,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         }
         ("POST", "/api/v1/identity") => HandlerResult::Respond(identity_register(hub, req)),
         ("GET", "/api/v1/devices") => HandlerResult::Respond(devices_list(hub, req)),
+        ("POST", "/api/v1/enroll") => HandlerResult::Respond(enroll(hub, req)),
         ("GET", "/api/v1/sessions") => HandlerResult::Respond(sessions_list(hub, req)),
         ("POST", "/api/v1/sessions") => HandlerResult::Respond(session_create(hub, req)),
         (_, p) if p == "/api/v1/sessions" || p.starts_with("/api/v1/sessions/") => {
@@ -315,6 +322,86 @@ fn heartbeat(hub: &Arc<Hub>, req: &Request) -> Response {
     };
     hub.store.heartbeat(&device, &agent);
     Response::json(200, &Value::obj(vec![("ok", Value::from(true))]))
+}
+
+// ---------- enrollment tokens ----------
+
+/// Global sliding-window limiter for the unauthenticated enroll route. The
+/// token is the real gate; this only blunts online guessing of a 256-bit
+/// secret. 20 tries / 5 min is orders of magnitude above any legitimate flow
+/// and far below what a brute force needs.
+const ENROLL_WINDOW_SECS: u64 = 300;
+const ENROLL_MAX_ATTEMPTS: usize = 20;
+
+fn enroll_allowed(hits: &mut Vec<u64>, now: u64) -> bool {
+    hits.retain(|t| now.saturating_sub(*t) < ENROLL_WINDOW_SECS);
+    if hits.len() >= ENROLL_MAX_ATTEMPTS {
+        return false;
+    }
+    hits.push(now);
+    true
+}
+
+/// POST /api/v1/enroll { name, token } — redeem a one-time enrollment token
+/// for this device's key. Response shape matches `wtf key issue --json` so
+/// the device-side `wtf enroll` can share `wtf join`'s parser. Failures are
+/// uniform; the token burns only on success (a typo must not brick it).
+fn enroll(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !enroll_allowed(hub.enroll_hits.lock().unwrap().as_mut(), now_secs()) {
+        return Response::error(429, "too many enrollment attempts; slow down");
+    }
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(name) = body.get("name").and_then(|v| v.as_str()) else {
+        return Response::error(400, "missing 'name'");
+    };
+    let Some(token) = body.get("token").and_then(|v| v.as_str()) else {
+        return Response::error(400, "missing 'token'");
+    };
+    if !crate::config::valid_name(name)
+        || token.len() != 64
+        || !token.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Response::error(403, "invalid or expired enrollment token");
+    }
+    let mut tokens = match crate::config::EnrollTokenStore::load() {
+        Ok(t) => t,
+        Err(_) => return Response::error(500, "enrollment store unavailable"),
+    };
+    if let Err(e) = tokens.consume(name, token) {
+        return match e {
+            crate::config::TokenError::Store => {
+                Response::error(500, "enrollment store unavailable")
+            }
+            _ => Response::error(403, "invalid or expired enrollment token"),
+        };
+    }
+    // Token redeemed. Mint the device key exactly like `wtf key issue` does;
+    // the hub's per-request keystore reload picks it up immediately.
+    let mut ks = match KeyStore::load() {
+        Ok(k) => k,
+        Err(_) => return Response::error(500, "keystore unavailable"),
+    };
+    let secret = match ks.issue(name) {
+        Ok(s) => s,
+        Err(e) => return Response::error(400, &e),
+    };
+    let hub_url = crate::config::HubConfig::load_or_create()
+        .map(|c| c.lan_url())
+        .unwrap_or_default();
+    let _ = hub
+        .store
+        .log_event("enroll", name, "info", &format!("device '{name}' enrolled via enrollment token"));
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("hub_url", Value::from(hub_url.as_str())),
+            ("device", Value::from(name)),
+            ("key", Value::from(secret.as_str())),
+        ]),
+    )
 }
 
 // ---------- identity registry ----------
@@ -615,5 +702,24 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             }
         }
         _ => Response::error(404, "not found"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enroll_limiter_sliding_window() {
+        let mut hits = Vec::new();
+        let t0 = 1_000_000u64;
+        for _ in 0..ENROLL_MAX_ATTEMPTS {
+            assert!(enroll_allowed(&mut hits, t0));
+        }
+        assert!(!enroll_allowed(&mut hits, t0 + 1));
+        assert!(!enroll_allowed(&mut hits, t0 + ENROLL_WINDOW_SECS - 1));
+        // The window slides: aged-out attempts stop counting.
+        assert!(enroll_allowed(&mut hits, t0 + ENROLL_WINDOW_SECS));
+        assert_eq!(hits.len(), 1);
     }
 }

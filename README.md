@@ -126,6 +126,10 @@ no external assets, works offline.
   `?k=`. `/api/v1/state` accepts either the dashboard key or device auth.
 - **Constant-time** comparison for every secret check. Auth failures are
   uniform 401s that do not reveal which factor failed.
+- **Enrollment tokens**: one-time, hashed at rest, expiring, revocable.
+  Redemption (`POST /api/v1/enroll`) is rate-limited and every refusal is
+  a uniform 403; the token burns only on success, so a typo does not
+  brick it.
 - **Transport topologies**: on a trusted LAN, plain HTTP is fine. Across
   machines or off-LAN, run an encrypted overlay (WireGuard/Tailscale) and point
   the bridge at the overlay address — no code changes; the HMAC signature
@@ -165,6 +169,25 @@ cargo build --release
 ./target/release/wtf join you@HUB-HOST --name laptop   # add --url to override the hub address
 ```
 
+### Enrollment token (no ssh, no hand-copied key)
+
+The hub operator mints a one-time token; the joining machine redeems it
+and receives its device key over that single call — no ssh access to the
+hub, no secret copied by hand. The token is a 256-bit secret, stored
+hashed (0600), expires on its own (`--ttl` seconds, default 600), can be
+dropped early with `enroll-token revoke`, and burns on redemption:
+
+```
+# on the hub
+./target/release/wtf enroll-token laptop                # prints the token ONCE (or --json)
+# on the joining machine
+./target/release/wtf enroll --url http://HUB-LAN-IP:7800 --name laptop --token <TOKEN>
+```
+
+Wrong, unknown, truncated, expired, and reused tokens all get the same
+uniform 403; a typo does not burn the token, and a global cap (20 attempts
+per 5 minutes) blunts online guessing.
+
 ### Manual
 
 Issue the key on the hub, then configure the joining machine with it:
@@ -176,7 +199,7 @@ Issue the key on the hub, then configure the joining machine with it:
 ./target/release/wtf setup --url http://HUB-LAN-IP:7800 --name laptop --key <DEVICE_KEY>
 ```
 
-Both paths end the same way: `bridge.json` (0600) exists and a signed
+All three paths end the same way: `bridge.json` (0600) exists and a signed
 round-trip against the hub has succeeded. For automation,
 `wtf key issue --json <name>` prints one machine-readable line:
 `{"hub_url":…,"device":…,"key":…}`.
@@ -350,6 +373,7 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | `POST /api/v1/checkin` | device auth | Upsert agent status |
 | `POST /api/v1/event` | device auth | Append event |
 | `POST /api/v1/heartbeat` | device auth | Liveness touch |
+| `POST /api/v1/enroll` | none (token-gated, rate-limited) | Redeem a one-time enrollment token: `{"name":…,"token":…}` → `{"hub_url":…,"device":…,"key":…}` |
 
 Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
 `Transfer-Encoding` requests are rejected `501` by design.
@@ -361,6 +385,7 @@ All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
 - `config.json` — hub bind address, port, dashboard key, optional advertised URL (0600)
 - `keys.json` — device records (0600)
 - `bridge.json` — agent-side hub URL + credentials (0600)
+- `enroll_tokens.json` — pending one-time enrollment tokens, hashed (0600)
 - `bins.json` — shared paste-bins, content included (0600)
 - `events.jsonl` — append-only log, rotates to `events.jsonl.old` at 10 MB
 - `sessions.json` — session channels: members, ML-KEM-768 sealed key packages, ciphertext ring per channel — never plaintext (0600)
@@ -402,6 +427,8 @@ wtf key issue [--json] <name> | key list | key revoke <name>
 wtf url [URL | clear]   # URL handed to joining devices (overlay/https aware)
 wtf setup --url URL --name NAME --key KEY
 wtf join user@hub [--name NAME] [--url URL]   # self-enroll over ssh
+wtf enroll-token <name> [--ttl SECS] [--json] | enroll-token revoke <name>  # one-time token (hub side)
+wtf enroll --url URL --name NAME --token TOKEN  # redeem a token to enroll this machine
 wtf agent        # MCP stdio server — what your MCP client launches
 wtf status       # plain-text hub state (same formatter as the tool)
 wtf dashboard-url # clickable dashboard URL (hub machine; never over MCP)
@@ -424,7 +451,7 @@ wtf version
 ## Development
 
 ```
-cargo test              # 48 unit tests + 5 e2e tests (real hub + real bridge over stdio)
+cargo test              # 88 unit tests + 9 e2e tests (real hub + real bridge over stdio)
 cargo build --release   # lto, panic=abort, overflow checks
 ```
 

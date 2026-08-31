@@ -50,3 +50,58 @@ ML-KEM-768 sealed keys, per-(session, sender) subkeys, and
   re-send hint. Candidate followup: client-side retry.
 - Machine 2 still blocked on enrollment inputs (machine-1 hub URL +
   windows-1 device key) — see handoff addendum.
+
+---
+
+# TASK — v0.8.0 one-time enroll tokens (2026-08-31, machine 2)
+
+Operator directive: implement the autonomous-enrollment proposal (lane A
+from `HANDOFF.2026-08-29-machine2.md`). A joining device should not need
+ssh access to the hub or a hand-copied device key. The converge-before-code
+gate on `api.rs` was explicitly overridden by the operator for this lane;
+`auth.rs` untouched. Sheet notes to machine-1 follow on both handoff
+sheets.
+
+## Shipped
+
+- `src/config.rs`: `EnrollTokenStore` (`enroll_tokens.json`, 0600) —
+  records carry name + SHA-256(token) + expiry + `used`; `issue` mints a
+  64-hex kernel-CSPRNG token, supersedes prior same-name records, ttl
+  1..=86400 s (default 600); `consume` burns on success only (a typo
+  must not brick the token); atomic persist, `TokenError::Store` rolls
+  the in-memory burn back.
+- `src/api.rs`: `POST /api/v1/enroll` — global sliding-window limiter
+  (20 attempts / 5 min), uniform 403 for unknown/expired/used/wrong-
+  length/non-hex tokens (400 only for unparseable JSON), 500 only on
+  store failures, `KeyStore::issue` on success (hot reload), enroll
+  event logged, response shape identical to `key issue --json`.
+- `src/main.rs`: `wtf enroll-token <name> [--ttl SECS] [--json]` (+
+  `revoke` subcommand; token printed once, only the hash stored) and
+  `wtf enroll --url URL --name N --token T` (redeem → `run_setup`;
+  `--url` wins as the stored hub address; non-200 → generic error +
+  fresh-token hint). Help updated.
+- Docs: skill §2 (token enrollment path), AGENTS.md WTF-HUB setup,
+  root + `src/llms.txt`, README (onboarding path, security model, API
+  table, storage, CLI, test counts). Cargo.toml 0.7.0 → 0.8.0.
+
+## Gates
+
+- [x] cargo test: 88 unit + 9 e2e green (new `enroll_token_flow_end_to_end`:
+      mint `--json` advertises the real hub URL; wrong/ghost/truncated
+      tokens all 403; redeem 200 in key-issue shape; reuse 403; redeemed
+      key checks in immediately). Two test-side bugs fixed during
+      bring-up: a raw-string `\"` produced invalid JSON (hub rightly 400'd)
+      and the truncation assert had lost its `[..32]` slice. Manual curl
+      reproduction (403/200/403) proved the hub code correct first.
+- [x] cargo build --release clean (wtf 0.8.0).
+- [x] Secret grep of diff: clean.
+
+## Followups / notes
+
+- Hub-side route → machine 1 must pull, rebuild, AND restart the hub
+  (bridges alone are not enough this time).
+- Deviations from the pushed proposal, flagged for convergence: burn on
+  success only (not on any outcome); global rate limiter (not per-name);
+  bare 64-hex token (no `wtf-enroll-v1:` prefix).
+- Proposal lanes B (PQC-wrapped request/approve) and C (ssh join) remain
+  open; B composes on top of A.
