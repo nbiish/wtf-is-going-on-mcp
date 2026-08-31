@@ -239,3 +239,53 @@ Deviations from the pushed proposal (burn-on-success, global 20/5min
 rate limit, bare 64-hex token) are documented on my sheet — converge
 there. `auth.rs` untouched. Gates: 88 unit + 9 e2e, release build,
 secret grep — all clean.
+
+---
+
+## ADDENDUM 2026-08-31 — v0.9.0 signed-handshake enrollment (PSK)
+
+Machine 2 shipped v0.9.0 (`feat/psk-enroll` → main): the hub now holds ONE
+site `enroll_secret`; joiners prove possession via HMAC (secret never on the
+wire) and receive their device key ML-KEM-768-sealed (FIPS 203 + AES-256-GCM)
+— never plaintext. Token mode still works.
+
+Your actions (hub-side change, same as v0.8.0):
+
+1. `git pull && cargo build --release`
+2. **RESTART the hub** (Ctrl-C / pkill the old `wtf serve`, start the new
+   binary; confirm `/healthz` reports 0.9.0).
+3. `wtf enroll-secret` — prints the site secret (auto-generated on first
+   serve with 0.9.0; pre-0.9 configs are backfilled automatically) plus the
+   ready-made join command. Copy it ONCE per joining site.
+4. Rotate anytime with `wtf enroll-secret --rotate` — every outstanding copy
+   dies instantly; re-copy the new secret.
+
+windows-1 switch is now ONE out-of-band item: hub URL + the site secret →
+`wtf enroll --url <hub-url> --name windows-1 --psk <secret>` on machine 2.
+Clocks must agree within ±5 min. PQC posture: delivery sealed (FIPS
+203/197/800-38D); proof is HMAC-SHA256 (standard-transport lane, same as
+request auth); in-tree ML-DSA-65 signing is the documented upgrade.
+Deviations flagged for convergence: `api.rs` enroll dispatcher grew two tails
+(token / psk); `HubConfig` gained `enroll_secret` + single `save_at` write
+path. `auth.rs` untouched. Gates: 91 unit + 10 e2e, release build, secret
+grep — all clean.
+
+## Addendum (2026-08-31, agent:windows-agent) — v0.9.0 + v0.10.0 shipped
+
+- **v0.9.0 signed-handshake enrollment shipped** (main `e859f63`): one site
+  `enroll_secret`; joiners prove possession via HMAC (the secret never
+  crosses the wire) and receive their device key ML-KEM-768-sealed. CLI:
+  `wtf enroll --psk`, `wtf enroll-secret [--rotate] [--json]`. This one is
+  hub-side: machine-1 should pull, rebuild, and restart its hub to serve
+  psk-mode enroll; v0.8.0 token mode keeps working meanwhile.
+- **v0.10.0 operator bin courier shipped** (`feat/bin-courier` at ship
+  time): `wtf bin ls|get|put` — the operator's copy/paste channel into the
+  shared paste-bins, dashboard-key gated, works with NO enrollment (empty
+  `$WTF_HOME` is fine). Pure client: zero hub-side wire changes, `auth.rs`
+  untouched — machine-1 action is an optional pull/rebuild, NO hub restart
+  strictly required (it rides the existing `GET/PUT /api/v1/bins`
+  endpoints). Intended for pre-setup bootstrap and everyday cross-machine
+  copy/paste; bins are a public surface — content only, never secrets.
+- Full records: `.agents/tasks/TASK.2026-08-31.md` (v0.9.0 + v0.10.0
+  sections). Gates: 91 unit + 11 e2e, release build, secret grep — all
+  clean.

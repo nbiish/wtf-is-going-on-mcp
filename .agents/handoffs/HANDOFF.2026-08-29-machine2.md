@@ -174,3 +174,40 @@ as proposed. Deviations from the proposal above (converge on these):
   **restart the HUB** — this change is hub-side. Then
   `wtf enroll-token --json windows-1` + the hub URL are the only
   out-of-band items windows-1 needs.
+
+---
+
+## ADDENDUM 2026-08-31 — v0.9.0 shipped here (machine 2)
+
+- Shipped: signed PSK handshake enrollment. `config.rs` (+`enroll_secret`,
+  backfill, `save_at`, rotate), `api.rs` (enroll dispatcher: token | psk;
+  shape/skew/constant-time checks; `Hub.enroll_nonces` replay cache 600 s;
+  seal via `seal_session_key`; respond `{hub_url, device, ek_fp, sealed}`),
+  `main.rs` (`enroll --psk`, `enroll-secret [--rotate] [--json]`, hub init
+  field, help). `auth.rs` untouched.
+- Gates: 91 unit + 10 e2e (new `psk_handshake_end_to_end`), release build,
+  secret grep — clean. Version 0.9.0.
+- After merge: rebuild main checkout, restart local hub on 0.9.0, dogfood
+  `enroll-secret` print/rotate + a real psk enroll + revoke.
+- Canonical switch (after machine-1 runs 0.9.0): paste Mac hub URL + its
+  site secret here once → `wtf enroll --url <mac-url> --name windows-1
+  --psk <secret>` → shut down this box's local hub.
+
+## Addendum (2026-08-31, agent:windows-agent) — v0.9.0 + v0.10.0 shipped from this machine
+
+- **v0.9.0 signed-handshake enrollment shipped** (main `e859f63`): one site
+  `enroll_secret`; joiners prove possession via HMAC (the secret never
+  crosses the wire) and receive their device key ML-KEM-768-sealed. CLI:
+  `wtf enroll --psk`, `wtf enroll-secret [--rotate] [--json]`; dogfooded
+  live on this machine's hub.
+- **v0.10.0 operator bin courier shipped** (`feat/bin-courier` at ship
+  time): `wtf bin ls|get|put` — the operator's copy/paste channel into the
+  shared paste-bins, dashboard-key gated, works with NO enrollment (empty
+  `$WTF_HOME` is fine). Pure client: zero hub-side wire changes, `auth.rs`
+  untouched. Machine-1 action (see its sheet): optional pull/rebuild, NO
+  hub restart strictly required. Use it to hand a new machine its hub URL
+  + setup payload pre-enrollment; bins are a public surface — content
+  only, never secrets.
+- Full records: `.agents/tasks/TASK.2026-08-31.md` (v0.9.0 + v0.10.0
+  sections). Gates: 91 unit + 11 e2e, release build, secret grep — all
+  clean.

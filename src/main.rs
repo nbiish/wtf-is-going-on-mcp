@@ -41,6 +41,7 @@ fn run() -> i32 {
         Some("enroll-token") => cmd_enroll_token(&args[1..]),
         Some("enroll") => cmd_enroll(&args[1..]),
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
+        Some("bin") => cmd_bin(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
         Some("dashboard-url") => cmd_dashboard_url(),
@@ -76,6 +77,9 @@ fn print_help() {
     println!("  wtf enroll --url URL --name N --token T    redeem a token to enroll this machine");
     println!("  wtf enroll --url URL --name N --psk S      signed-handshake enroll (key arrives sealed)");
     println!("  wtf enroll-secret [--rotate] [--json]      print/rotate the site enrollment secret (hub)");
+    println!("  wtf bin ls [--url U] [--k K] [--json]      operator bin courier: list bins");
+    println!("  wtf bin get N [-o F] [--url U] [--k K]     read a bin raw to stdout (pre-setup OK)");
+    println!("  wtf bin put N TEXT|--file F|- [--url U] [--k K]   write a bin (dashboard-key gated)");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
     println!("  wtf dashboard-url                          print the clickable dashboard URL (hub machine)");
@@ -696,6 +700,226 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
     println!();
     println!("rotate with `wtf enroll-secret --rotate` to invalidate every outstanding copy.");
     0
+}
+
+/// Operator bin courier: read/write the hub's three paste-bins with the
+/// dashboard key — no enrolled agent required, so this works pre-setup on
+/// any machine or harness (the hub records "dashboard" as the last writer).
+/// `get` prints raw content to stdout (pipe/copy friendly); `put` takes a
+/// positional TEXT, `--file F`, or `-` for stdin. Hub URL resolves from
+/// --url, $WTF_HUB_URL, bridge.json, or the local hub config; the key from
+/// --k, $WTF_DASHBOARD_KEY, or the local hub config. Prefer the env var:
+/// a key passed as --k can leak through shell history.
+fn cmd_bin(args: &[String]) -> i32 {
+    let usage = "usage:\n  wtf bin ls [--url U] [--k K] [--json]\n  wtf bin get N [-o FILE] [--url U] [--k K]\n  wtf bin put N (TEXT | --file F | -) [--url U] [--k K] [--json]";
+    let Some(op) = args.first().map(|s| s.as_str()) else {
+        eprintln!("{usage}");
+        return 2;
+    };
+    if !matches!(op, "ls" | "get" | "put") {
+        eprintln!("{usage}");
+        return 2;
+    }
+    let rest = &args[1..];
+    let url_flag = flag_value(rest, "--url");
+    let k_flag = flag_value(rest, "--k");
+    let out_flag = flag_value(rest, "-o");
+    let file_flag = flag_value(rest, "--file");
+    let as_json = rest.iter().any(|a| a == "--json");
+
+    let home = config::home();
+    let hub_url = match url_flag {
+        Some(u) => Some(u.trim_end_matches('/').to_string()),
+        None => match std::env::var("WTF_HUB_URL") {
+            Ok(u) if !u.trim().is_empty() => Some(u.trim().trim_end_matches('/').to_string()),
+            _ => {
+                let bridge = home.join("bridge.json");
+                let cfg = home.join("config.json");
+                if bridge.exists() {
+                    read_json_field(&bridge, "hub_url")
+                } else if cfg.exists() {
+                    HubConfig::load_or_create_at(&cfg).map(|c| c.lan_url()).ok()
+                } else {
+                    None
+                }
+            }
+        },
+    };
+    let Some(hub_url) = hub_url else {
+        eprintln!("error: no hub URL: pass --url, set WTF_HUB_URL, or run where bridge.json/config.json exists");
+        return 2;
+    };
+
+    let key = match k_flag {
+        Some(k) => Some(k),
+        None => match std::env::var("WTF_DASHBOARD_KEY") {
+            Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
+            _ => {
+                let cfg = home.join("config.json");
+                if cfg.exists() {
+                    read_json_field(&cfg, "dashboard_key")
+                } else {
+                    None
+                }
+            }
+        },
+    };
+    let Some(key) = key else {
+        eprintln!("error: no dashboard key: pass --k or set WTF_DASHBOARD_KEY (argv can leak via shell history; prefer the env var)");
+        return 2;
+    };
+
+    let bin_id = |rest: &[String]| -> Option<u8> {
+        rest.first()
+            .and_then(|s| s.parse::<u8>().ok())
+            .filter(|n| (1..=3).contains(n))
+    };
+
+    match op {
+        "ls" => {
+            let resp = match client::request(
+                &format!("{hub_url}/api/v1/bins?k={key}"),
+                "GET",
+                &[],
+                b"",
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: cannot reach hub: {e}");
+                    return 1;
+                }
+            };
+            if resp.status != 200 {
+                eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+                return 1;
+            }
+            let Some(v) = resp.json() else {
+                eprintln!("error: hub returned a non-JSON response");
+                return 1;
+            };
+            if as_json {
+                println!("{}", v.to_json());
+                return 0;
+            }
+            let bins = v.get("bins").and_then(|x| x.as_arr()).unwrap_or(&[]);
+            for b in bins {
+                let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+                let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
+                let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
+                println!("bin {id}: {size} chars, by {by}");
+            }
+            0
+        }
+        "get" => {
+            let Some(id) = bin_id(rest) else {
+                eprintln!("{usage}");
+                return 2;
+            };
+            let resp = match client::request(
+                &format!("{hub_url}/api/v1/bins/{id}?k={key}"),
+                "GET",
+                &[],
+                b"",
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: cannot reach hub: {e}");
+                    return 1;
+                }
+            };
+            if resp.status != 200 {
+                eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+                return 1;
+            }
+            let Some(content) = resp
+                .json()
+                .and_then(|v| v.get("content").and_then(|x| x.as_str()).map(|s| s.to_string()))
+            else {
+                eprintln!("error: hub response missing content");
+                return 1;
+            };
+            match out_flag {
+                Some(f) => {
+                    if let Err(e) = std::fs::write(&f, &content) {
+                        eprintln!("error: cannot write {f}: {e}");
+                        return 1;
+                    }
+                    println!("wrote {} chars to {f}", content.chars().count());
+                }
+                None => print!("{content}"),
+            }
+            0
+        }
+        "put" => {
+            let Some(id) = bin_id(rest) else {
+                eprintln!("{usage}");
+                return 2;
+            };
+            let content = if let Some(f) = file_flag {
+                match std::fs::read_to_string(&f) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("error: cannot read {f}: {e}");
+                        return 1;
+                    }
+                }
+            } else if rest.get(1).map(|s| s.as_str()) == Some("-") {
+                let mut s = String::new();
+                use std::io::Read;
+                if let Err(e) = std::io::stdin().read_to_string(&mut s) {
+                    eprintln!("error: cannot read stdin: {e}");
+                    return 1;
+                }
+                s
+            } else if let Some(t) = rest.get(1) {
+                t.clone()
+            } else {
+                eprintln!("{usage}");
+                return 2;
+            };
+            if content.chars().count() > 65_536 {
+                eprintln!(
+                    "error: content is {} chars; bins hold at most 65,536",
+                    content.chars().count()
+                );
+                return 1;
+            }
+            let body = json::Value::obj(vec![("content", json::Value::from(content.as_str()))]);
+            let resp = match client::request(
+                &format!("{hub_url}/api/v1/bins/{id}?k={key}"),
+                "PUT",
+                &[],
+                body.to_json().as_bytes(),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: cannot reach hub: {e}");
+                    return 1;
+                }
+            };
+            if resp.status != 200 {
+                eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+                return 1;
+            }
+            if as_json {
+                println!("{}", resp.text().trim());
+            } else {
+                println!("bin {id} updated ({} chars, by dashboard)", content.chars().count());
+            }
+            0
+        }
+        _ => {
+            eprintln!("{usage}");
+            2
+        }
+    }
+}
+
+/// Read one string field from a JSON file without creating or upgrading it.
+fn read_json_field(path: &std::path::Path, field: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v = json::parse(text.trim()).ok()?;
+    v.get(field).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
 
 /// Print the full dashboard URL (including the `?k=` key) for the operator

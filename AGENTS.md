@@ -51,22 +51,34 @@ and agent (MCP stdio bridge). The hub never sees plaintext session keys
 (`auth.rs`); enrollment is the only unauthenticated surface and is rate-limited
 (20/5min global) with uniform failures.
 
-**Shipped (main @ `989c8f4`, v0.8.0):** one-time enrollment tokens —
+**Shipped (v0.8.0 → v0.9.0, main @ `e859f63`):** one-time enrollment tokens —
 `wtf enroll-token` (stored SHA-256-hashed, single-use, TTL, burn-on-success),
-`wtf enroll --token`; 88 unit + 9 e2e green; dogfooded on a live hub.
-
-**In flight (v0.9.0, branch `feat/psk-enroll`, worktree `/mnt/d/Code/wtf-psk-enroll`):**
-signed-handshake enrollment — the hub holds one site `enroll_secret` (256-bit
-hex, config.json 0600, auto-generated; pre-0.9 configs are backfilled on load).
-A joining device proves possession with `proof = HMAC-SHA256(enroll_secret,
+`wtf enroll --token` — then signed-handshake enrollment: the hub holds one
+site `enroll_secret` (256-bit hex, config.json 0600, auto-generated;
+pre-0.9 configs are backfilled on load). A joining device proves possession
+with `proof = HMAC-SHA256(enroll_secret,
 "wtf-enroll-v2\\n{name}\\n{ek}\\n{ts}\\n{nonce}")` where `ek` is its ML-KEM-768
-encapsulation key; the hub answers with the fresh device key **ML-KEM-768-sealed
-to that ek** (`sealed` + `ek_fp`) — the secret never crosses the wire, the key
-never crosses in plaintext. Guards: name/ek/nonce/proof shape, ±300s clock skew,
-nonce replay cache (`Hub.enroll_nonces`, 600s prune, filled only after a valid
-proof), constant-time compare. CLI: `wtf enroll --psk`, `wtf enroll-secret
+encapsulation key; the hub answers with the fresh device key
+**ML-KEM-768-sealed to that ek** (`sealed` + `ek_fp`) — the secret never
+crosses the wire, the key never crosses in plaintext. Guards:
+name/ek/nonce/proof shape, ±300s clock skew, nonce replay cache
+(`Hub.enroll_nonces`, 600s prune, filled only after a valid proof),
+constant-time compare. CLI: `wtf enroll --psk`, `wtf enroll-secret
 [--rotate] [--json]`. Token mode stays working; in-tree ML-DSA-65 handshake
 signing is the documented future upgrade.
+
+**Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
+three paste-bins into the operator's copy/paste channel between machines and
+agents, gated by the dashboard key (`?k=`) — content moves *before* any
+enrollment exists (pre-setup bootstrap, empty `$WTF_HOME` is fine) or any
+time after; enrolled agents read the same bins via `read_bin`. Pure client
+feature: zero hub-side wire changes, `auth.rs` untouched, hub records
+`dashboard` as last writer. URL/key resolution: `--url`/`--k` → env
+(`WTF_HUB_URL`/`WTF_DASHBOARD_KEY`) → `bridge.json` `hub_url` / `config.json`
+`dashboard_key` (files only read, never created, as a side effect). `get`
+prints content raw (no added newline; pipe/copy safe), `put` takes a
+positional TEXT, `--file F`, or `-` (stdin); 64 KiB bin cap enforced
+client-side. 91 unit + 11 e2e green.
 
 **Fleet intent:** ONE hub per fleet. The canonical hub runs on machine-1 (Mac).
 Every other machine — including this Windows/WSL box — runs only its `wtf agent`

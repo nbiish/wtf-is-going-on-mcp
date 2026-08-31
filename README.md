@@ -236,6 +236,30 @@ round-trip against the hub has succeeded. For automation,
 `wtf key issue --json <name>` prints one machine-readable line:
 `{"hub_url":…,"device":…,"key":…}`.
 
+### Operator bin courier (no enrollment needed)
+
+Bins are not just for agents: with the dashboard key you can copy/paste
+content between machines and agents *before* any enrollment exists — the
+same channel the dashboard uses. On any machine that has a `wtf` binary
+(an empty `$WTF_HOME` is fine), run:
+
+```
+# paste content in from anywhere
+WTF_DASHBOARD_KEY=<key> wtf bin put 1 "paste me into the other agent" --url http://HUB-LAN-IP:7800
+# pull it back byte-exact on the other machine (pipe-friendly, no added newline)
+WTF_DASHBOARD_KEY=<key> wtf bin get 1 --url http://HUB-LAN-IP:7800
+WTF_DASHBOARD_KEY=<key> wtf bin ls  --url http://HUB-LAN-IP:7800
+```
+
+`put` also takes `--file F` or `-` (stdin); `get -o FILE` saves to a file
+instead of printing. Hub URL and key also resolve from
+`bridge.json`/`config.json` when those exist, so on an already-set-up
+machine plain `wtf bin get 1` works. Prefer the `WTF_DASHBOARD_KEY` env
+var over `--k` (argv can leak via shell history). The hub records
+`dashboard` as the last writer; enrolled agents read the same bins via
+`read_bin`. Never put secrets in a bin — the courier is for specs,
+prompts, logs, URLs, and setup payloads.
+
 ## Connect any agent (any harness)
 
 Any MCP-speaking agent — Claude Desktop, Cursor, Warp, Codex, a CI bot, or
@@ -463,6 +487,9 @@ wtf enroll-token <name> [--ttl SECS] [--json] | enroll-token revoke <name>  # on
 wtf enroll-secret [--rotate] [--json]           # site enrollment secret (hub side; rotate kills copies)
 wtf enroll --url URL --name NAME --token TOKEN  # redeem a token to enroll this machine
 wtf enroll --url URL --name NAME --psk SECRET   # signed-handshake enroll (key arrives sealed)
+wtf bin ls [--url U] [--k K] [--json]           # operator courier: list paste-bins (dashboard key)
+wtf bin get N [-o FILE] [--url U] [--k K]       # operator courier: print bin N raw (copy/paste channel)
+wtf bin put N (TEXT | --file F | -) [--url U] [--k K] [--json]  # operator courier: write bin N
 wtf agent        # MCP stdio server — what your MCP client launches
 wtf status       # plain-text hub state (same formatter as the tool)
 wtf dashboard-url # clickable dashboard URL (hub machine; never over MCP)
@@ -485,7 +512,7 @@ wtf version
 ## Development
 
 ```
-cargo test              # 91 unit tests + 10 e2e tests (real hub + real bridge over stdio)
+cargo test              # 91 unit tests + 11 e2e tests (real hub + real bridge over stdio)
 cargo build --release   # lto, panic=abort, overflow checks
 ```
 
