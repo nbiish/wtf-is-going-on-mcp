@@ -11,9 +11,12 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use wtf::client;
 use wtf::config::{self, BridgeConfig, HubConfig, KeyStore};
-use wtf::json;
+use wtf::hmac;
 use wtf::http;
+use wtf::identity;
+use wtf::json;
 use wtf::mcp;
+use wtf::session_crypto;
 use wtf::store::Store;
 use wtf::util;
 use wtf::VERSION;
@@ -37,6 +40,7 @@ fn run() -> i32 {
         Some("join") => cmd_join(&args[1..]),
         Some("enroll-token") => cmd_enroll_token(&args[1..]),
         Some("enroll") => cmd_enroll(&args[1..]),
+        Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
         Some("dashboard-url") => cmd_dashboard_url(),
@@ -70,6 +74,8 @@ fn print_help() {
     println!("  wtf join user@host [--name N] [--url U]    enroll this machine via ssh");
     println!("  wtf enroll-token <name> [--ttl SECS]       mint a one-time enrollment token (hub side)");
     println!("  wtf enroll --url URL --name N --token T    redeem a token to enroll this machine");
+    println!("  wtf enroll --url URL --name N --psk S      signed-handshake enroll (key arrives sealed)");
+    println!("  wtf enroll-secret [--rotate] [--json]      print/rotate the site enrollment secret (hub)");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
     println!("  wtf dashboard-url                          print the clickable dashboard URL (hub machine)");
@@ -160,6 +166,7 @@ fn cmd_serve(args: &[String]) -> i32 {
         identities: Mutex::new(Vec::new()),
         sessions: wtf::sessions::Sessions::load(),
         enroll_hits: Mutex::new(Vec::new()),
+        enroll_nonces: Mutex::new(Vec::new()),
     });
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
@@ -493,66 +500,63 @@ fn cmd_enroll_token(args: &[String]) -> i32 {
     0
 }
 
-/// Redeem an enrollment token over HTTP: the device key crosses the wire
-/// once, bound to the single-use token. `--url` is the address to store —
-/// use it to override the hub's auto-detected/advertised address (overlay
-/// IPs, NAT, TLS proxies).
+/// Enroll this machine over HTTP. Two modes:
+/// - `--token T` (v0.8.0): the single-use token is the credential; the fresh
+///   device key crosses in the one-time response.
+/// - `--psk S` (v0.9.0): signed handshake — we prove possession of the site
+///   secret via HMAC (the secret itself never travels) and receive the device
+///   key ML-KEM-768-sealed to this machine's encapsulation key.
+/// `--url` is the address to store — use it to override the hub's
+/// auto-detected/advertised address (overlay IPs, NAT, TLS proxies).
 fn cmd_enroll(args: &[String]) -> i32 {
-    let (url, name, token) = (
-        flag_value(args, "--url"),
-        flag_value(args, "--name"),
-        flag_value(args, "--token"),
-    );
-    let (Some(url), Some(name), Some(token)) = (url, name, token) else {
-        eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE --token TOKEN");
-        return 2;
+    let url = match flag_value(args, "--url") {
+        Some(u) => u.trim_end_matches('/').to_string(),
+        None => {
+            eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE (--token TOKEN | --psk SECRET)");
+            return 2;
+        }
     };
-    let url = url.trim_end_matches('/').to_string();
+    let name = match flag_value(args, "--name") {
+        Some(n) => n,
+        None => {
+            eprintln!("error: --name is required");
+            return 2;
+        }
+    };
     if !config::valid_name(&name) {
         eprintln!("error: --name must match [A-Za-z0-9._-]{{1,64}}");
         return 2;
     }
-    let body = json::Value::obj(vec![
-        ("name", json::Value::from(name.as_str())),
-        ("token", json::Value::from(token.as_str())),
-    ]);
-    eprintln!("enrolling '{name}' at {url} ...");
-    let resp = match client::request(
-        &format!("{url}/api/v1/enroll"),
-        "POST",
-        &[],
-        body.to_json().as_bytes(),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: cannot reach hub: {e}");
-            return 1;
+    let token = flag_value(args, "--token");
+    let psk = flag_value(args, "--psk");
+    let key = match (token, psk) {
+        (Some(_), Some(_)) => {
+            eprintln!("error: --token and --psk are mutually exclusive");
+            return 2;
         }
-    };
-    if resp.status != 200 {
-        eprintln!(
-            "error: enrollment refused (HTTP {}): {}",
-            resp.status,
-            resp.text().trim()
-        );
-        eprintln!("hint: tokens are single-use and expire; ask the hub operator for a fresh `wtf enroll-token`.");
-        return 1;
-    }
-    let parsed = match resp.json() {
-        Some(v) => v,
-        None => {
-            eprintln!("error: hub returned a non-JSON response");
-            return 1;
+        (Some(t), None) => match redeem_token(&url, &name, &t) {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        },
+        (None, Some(s)) => match redeem_psk(&url, &name, &s) {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        },
+        (None, None) => {
+            eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE (--token TOKEN | --psk SECRET)");
+            return 2;
         }
-    };
-    let Some(key) = parsed.get("key").and_then(|x| x.as_str()) else {
-        eprintln!("error: hub response missing key field.");
-        return 1;
     };
     let cfg = BridgeConfig {
         hub_url: url,
         device_name: name,
-        device_key: key.to_string(),
+        device_key: key,
     };
     if let Err(e) = cfg.validate() {
         eprintln!("error: {e}");
@@ -569,6 +573,128 @@ fn cmd_enroll(args: &[String]) -> i32 {
     println!();
     println!("add this to your MCP client configuration:");
     println!(r#"  {{ "command": "wtf", "args": ["agent"] }}"#);
+    0
+}
+
+/// Token mode: POST { name, token }, expect the one-time `key` response.
+fn redeem_token(url: &str, name: &str, token: &str) -> Result<String, String> {
+    let body = json::Value::obj(vec![
+        ("name", json::Value::from(name)),
+        ("token", json::Value::from(token)),
+    ]);
+    eprintln!("enrolling '{name}' at {url} (token) ...");
+    let resp = client::request(
+        &format!("{url}/api/v1/enroll"),
+        "POST",
+        &[],
+        body.to_json().as_bytes(),
+    )
+    .map_err(|e| format!("cannot reach hub: {e}"))?;
+    if resp.status != 200 {
+        eprintln!("enrollment refused (HTTP {}): {}", resp.status, resp.text().trim());
+        return Err("tokens are single-use and expire; ask the hub operator for a fresh `wtf enroll-token`.".into());
+    }
+    let parsed = resp.json().ok_or("hub returned a non-JSON response")?;
+    parsed
+        .get("key")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .ok_or("hub response missing key field".into())
+}
+
+/// PSK mode: prove possession of the site secret with an HMAC over the
+/// handshake transcript, then open the ML-KEM-768-sealed key package that
+/// comes back. The secret never crosses the wire; the device key arrives
+/// sealed and is unwrapped only in memory.
+fn redeem_psk(url: &str, name: &str, psk: &str) -> Result<String, String> {
+    let psk = psk.trim().to_lowercase();
+    if psk.len() != 64 || !psk.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("--psk must be the 64-hex site enrollment secret (print it on the hub with `wtf enroll-secret`)".into());
+    }
+    let id = identity::load_or_create()?;
+    let ek = util::hex_encode(&id.ek);
+    let ts = util::now_secs();
+    let nonce = wtf::rand::hex(16);
+    let proof = hmac::hmac_sha256_hex(
+        psk.as_bytes(),
+        format!("wtf-enroll-v2\n{name}\n{ek}\n{ts}\n{nonce}").as_bytes(),
+    );
+    let body = json::Value::obj(vec![
+        ("name", json::Value::from(name)),
+        ("ek", json::Value::from(ek.as_str())),
+        ("ts", json::Value::from(ts as i64)),
+        ("nonce", json::Value::from(nonce.as_str())),
+        ("proof", json::Value::from(proof.as_str())),
+    ]);
+    eprintln!("enrolling '{name}' at {url} (signed handshake) ...");
+    let resp = client::request(
+        &format!("{url}/api/v1/enroll"),
+        "POST",
+        &[],
+        body.to_json().as_bytes(),
+    )
+    .map_err(|e| format!("cannot reach hub: {e}"))?;
+    if resp.status != 200 {
+        eprintln!("enrollment refused (HTTP {}): {}", resp.status, resp.text().trim());
+        return Err("handshake rejected: wrong/expired secret, stale clock, replayed handshake, or the secret was rotated (`wtf enroll-secret --rotate` invalidates every copy)".into());
+    }
+    let parsed = resp.json().ok_or("hub returned a non-JSON response")?;
+    let Some(sealed) = parsed.get("sealed").and_then(|x| x.as_str()) else {
+        return Err("hub response missing sealed key package".into());
+    };
+    let key32 = session_crypto::open_sealed_package(
+        sealed,
+        &id.dk,
+        &format!("wtf-enroll-v2:{name}"),
+    )?;
+    Ok(util::hex_encode(&key32))
+}
+
+/// Hub-side: print (or rotate) the site enrollment secret that the operator
+/// copies once to each joining machine (`wtf enroll --psk`).
+fn cmd_enroll_secret(args: &[String]) -> i32 {
+    let rotate = args.iter().any(|a| a == "--rotate");
+    let as_json = args.iter().any(|a| a == "--json");
+    let secret = if rotate {
+        match HubConfig::rotate_enroll_secret() {
+            Ok(s) => {
+                eprintln!("rotated: every previously copied secret is now invalid.");
+                s
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    } else {
+        match HubConfig::load_or_create() {
+            Ok(c) => c.enroll_secret,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    };
+    if as_json {
+        let url = HubConfig::load_or_create().map(|c| c.lan_url()).unwrap_or_default();
+        println!(
+            "{}",
+            json::Value::obj(vec![
+                ("hub_url", json::Value::from(url.as_str())),
+                ("enroll_secret", json::Value::from(secret.as_str())),
+            ])
+            .to_json()
+        );
+        return 0;
+    }
+    let url = HubConfig::load_or_create().map(|c| c.lan_url()).unwrap_or_default();
+    println!("site enrollment secret (copy once per joining machine):");
+    println!("{secret}");
+    println!();
+    println!("then on the joining machine:");
+    println!("  wtf enroll --url {url} --name DEVICE --psk {secret}");
+    println!();
+    println!("rotate with `wtf enroll-secret --rotate` to invalidate every outstanding copy.");
     0
 }
 

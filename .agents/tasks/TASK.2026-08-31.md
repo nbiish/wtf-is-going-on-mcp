@@ -105,3 +105,53 @@ sheets.
   bare 64-hex token (no `wtf-enroll-v1:` prefix).
 - Proposal lanes B (PQC-wrapped request/approve) and C (ssh join) remain
   open; B composes on top of A.
+
+## v0.9.0 — signed-handshake enrollment (PSK bootstrap, PQC-sealed delivery)
+
+**Status:** code-complete, all gates green (2026-08-31).
+
+### What shipped
+
+- **Site enroll secret (hub):** `HubConfig.enroll_secret` — 256-bit hex,
+  auto-generated on first serve (0600), backfilled into pre-0.9 configs on
+  load; single `save_at` write path shared with advertised-url; minted fresh
+  by `rotate_enroll_secret[_at]`.
+- **Signed PSK handshake (route):** `POST /api/v1/enroll` now dispatches on
+  presence of `token` (v0.8.0, unchanged) or `proof` (v0.9.0). PSK mode:
+  shape checks (name / 2368-hex ek / 16..=128-hex nonce / 64-hex proof /
+  ±300 s skew) → constant-time HMAC compare against
+  `HMAC-SHA256(enroll_secret, "wtf-enroll-v2\n{name}\n{ek}\n{ts}\n{nonce}")`
+  → nonce replay cache (`Hub.enroll_nonces`, 600 s prune, filled only after a
+  valid proof) → `KeyStore::issue` → key sealed via
+  `session_crypto::seal_session_key` (ML-KEM-768 + AES-256-GCM, context
+  `wtf-enroll-v2:{name}`) → response `{hub_url, device, ek_fp, sealed}` — the
+  secret never crosses the wire, the key never crosses in plaintext. All
+  failures share one uniform 403; global limiter (20/5 min) covers both modes.
+- **CLI:** `wtf enroll --psk S` (mutually exclusive with `--token`; loads the
+  bridge identity, posts the transcript + proof, opens the sealed package with
+  `open_sealed_package`, `run_setup`s the unwrapped key) and `wtf enroll-secret
+  [--rotate] [--json]` (hub machine; rotate prints an invalidation notice).
+- **Tests:** unit +3 (`enroll_secret_generated_and_rotates`,
+  `enroll_secret_backfills_older_configs`, `enroll_nonce_cache_rejects_replay`);
+  e2e +1 (`psk_handshake_end_to_end`: real-CLI enroll → bridge.json + agent
+  check-in; wire carries `sealed`/`ek_fp` and never plaintext `key`; wrong
+  secret / stale ts / tampered ek / replayed nonce all uniform 403; rotate
+  kills the old copy and the fresh secret enrolls).
+
+### Gates
+
+- [x] cargo test: 91 unit + 10 e2e, all green.
+- [x] cargo build --release clean (wtf 0.9.0).
+- [x] Secret grep of diff vs 989c8f4: clean.
+
+### Notes / deviations
+
+- `auth.rs` untouched. api.rs convergence contract: hub-side route grew a
+  dispatcher + two tails (`enroll_token` / `enroll_psk`); flagged on both
+  handoff sheets per operator override.
+- PQC posture: delivery is PQC (FIPS 203 / 197 / SP 800-38D); the proof is
+  HMAC-SHA256 — the repo's standard-transport lane, same as request auth.
+  In-tree ML-DSA-65 handshake signing is the documented future upgrade.
+- Debugging note: a stray quote after a raw-string closer (invalid Rust that
+  some file tools rendered as valid) cost a bisect to find; fixed byte-exactly
+  via python3. File tools on this box can mis-render — verify via shell/od/git.
