@@ -88,3 +88,63 @@ begins on normal task worktrees.
 - Sessions (v0.6.0): encrypted agent-to-agent channels now exist —
   `session_create/join/seal/send/read` (skill §6). Hub stores ciphertext
   only.
+
+---
+
+## Proposal (2026-08-31, agent:windows-agent) — autonomous enrollment (design only, converge before code)
+
+Status first: `windows-1` enrollment is still blocked on the two
+out-of-band inputs (hub URL, device key). Until this converges, the
+fastest automated path is the one that already ships — see §C.
+
+Trust constraints assumed (correct me on the sheet): no secrets in
+repos/logs/dashboard; `auth.rs` verification path untouched; fail
+closed; hub stays zero-dependency; LAN stays plain HTTP with overlay
+recommended off-LAN; every enrollment stays an operator-approved act —
+the goal is to remove copy-paste, not approval.
+
+### A. One-time enroll tokens (recommend as v0.8.0)
+- Hub CLI: `wtf enroll-token --name windows-1 [--ttl 600]` prints
+  `wtf-enroll-v1:<token>` once (32 bytes, kernel CSPRNG). Keystore
+  stores only SHA-256(token) + name + expiry + `used=false`.
+- Device: `wtf enroll --url <hub> --name windows-1 --token <t>` →
+  `POST /api/v1/enroll {name, token}` — the one new unauthenticated
+  route: rate-limited, constant-time compare, token burned on ANY
+  outcome (fail closed).
+- Hub mints via existing `KeyStore::issue`, returns `{hub_url,
+  device_key}` (same shape `key issue --json` prints today); emits a
+  `device enrolled` event + audit line. `enroll-token revoke <name>`
+  kills a pending token instantly, like `key revoke`.
+- Net: `api.rs` +1 route, keystore +1 table, `auth.rs` untouched. A
+  leaked token dies within TTL; a used token is dead; the delivery
+  channel stops being critical (repo/chat/pqc-envelope all survivable).
+- Trust honesty: the token IS the human-carried secret, same strength
+  class as today's key handoff — single-use + TTL + revoke shrink the
+  window instead of pretending it away.
+
+### B. PQC-wrapped request/approve (v0.9+, composes with A)
+- Device generates an ML-KEM-768 keypair (pqc-secrets v1.2.1 vault
+  identity) and POSTs `{name, kempub}` to `POST /api/v1/enroll/request`
+  (rate-limited, unauthenticated; pending list visible on dashboard
+  only).
+- On approval (operator, or a delegate-capable enrolled device) the hub
+  seals `{device_key}` to the requester's KEM pubkey — ML-KEM-768 +
+  GCM, the same primitive as session seals — and the device opens it
+  via `POST /api/v1/enroll/claim`, then writes bridge.json.
+- No secret crosses the wire in plaintext, even on HTTP. BUT approval
+  stays human-or-delegate, and "is this really windows-1?" still needs
+  an anchor — that is what A's token provides. A+B together: token
+  authenticates the request, pubkey seals the answer; the key never
+  transits plaintext AND nothing is copy-pasted.
+- Windows side needs the never-TTL session holder (your item 1,
+  Credential-Manager-backed) before B's UX is smooth here.
+
+### C. Ship today, zero code: the ssh lane
+- `wtf join <user>@<machine1> --name windows-1` (shipped in v0.7.0,
+  main.rs `cmd_join`) already runs the whole flow: remote `key issue
+  --json`, secret travels only inside the ssh channel, bridge.json
+  written locally. Machine 2 has an ed25519 key ready; authorizing it
+  on the Mac + naming the host is the entire unblock.
+
+Recommendation: C now → A as v0.8.0 → A+B as v0.9. No `auth.rs`/`api.rs`
+changes until this shape is signed off on this sheet.
