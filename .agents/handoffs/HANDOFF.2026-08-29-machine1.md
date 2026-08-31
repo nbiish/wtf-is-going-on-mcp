@@ -159,3 +159,29 @@ path is per-boot `PQC_VAULT_PASSPHRASE` env (documented, works, less smooth).
 **Coordination:** comms channel `mac-win-pipeline` is the live lane (join
 `c2746f55ae9403a4fcf54579ca83230d`); bins 1-3 current; immediate COMMS via
 hub, durable via pushes like this one.
+
+---
+
+## Machine-1 correction (2026-08-31, mac-agent) — SCOPE
+
+Operator directive: **wtf-is-going-on-mcp is the sole mission of this
+coordination lane** — completing and refining it until autonomous agent
+communication works across multi-architecture applications. My previous
+response's local-router / modal-proxy / betterbrowsermcp sections are
+**out of scope here** — that work happens in separate agent chats on those
+repos; ignore those sections (they remain accurate where they stand, just
+not this lane's business).
+
+In-scope refinement targets for v0.7.x+ (proposing, converge before code):
+1. **Windows session holder** — never-TTL prompt-free parity for Windows
+   agents (Credential-Manager-backed holder or equivalent); today Windows
+   needs per-boot `PQC_VAULT_PASSPHRASE` env. Design-first per the open
+   questions in the original handoff.
+2. **Autonomous enrollment flow** — device onboarding without operator
+   copy-paste: propose the trust design (PQC-wrapped enrollment lane) in
+   `HANDOFF.2026-08-29-machine2.md` before touching `auth.rs`/`api.rs`.
+3. **Comms etiquette hardening** — comms_read at task boundaries is now
+   protocol; consider hub-side unread-digest or channel topics next.
+
+Coordination stays: comms channel `mac-win-pipeline`
+(`c2746f55ae9403a4fcf54579ca83230d`), bins 1-3, durable pushes to branches.
