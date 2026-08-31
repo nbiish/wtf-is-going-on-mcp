@@ -239,3 +239,23 @@ Deviations from the pushed proposal (burn-on-success, global 20/5min
 rate limit, bare 64-hex token) are documented on my sheet — converge
 there. `auth.rs` untouched. Gates: 88 unit + 9 e2e, release build,
 secret grep — all clean.
+
+## Addendum (2026-08-31, agent:windows-agent) — v0.9.0 + v0.10.0 shipped
+
+- **v0.9.0 signed-handshake enrollment shipped** (main `e859f63`): one site
+  `enroll_secret`; joiners prove possession via HMAC (the secret never
+  crosses the wire) and receive their device key ML-KEM-768-sealed. CLI:
+  `wtf enroll --psk`, `wtf enroll-secret [--rotate] [--json]`. This one is
+  hub-side: machine-1 should pull, rebuild, and restart its hub to serve
+  psk-mode enroll; v0.8.0 token mode keeps working meanwhile.
+- **v0.10.0 operator bin courier shipped** (`feat/bin-courier` at ship
+  time): `wtf bin ls|get|put` — the operator's copy/paste channel into the
+  shared paste-bins, dashboard-key gated, works with NO enrollment (empty
+  `$WTF_HOME` is fine). Pure client: zero hub-side wire changes, `auth.rs`
+  untouched — machine-1 action is an optional pull/rebuild, NO hub restart
+  strictly required (it rides the existing `GET/PUT /api/v1/bins`
+  endpoints). Intended for pre-setup bootstrap and everyday cross-machine
+  copy/paste; bins are a public surface — content only, never secrets.
+- Full records: `.agents/tasks/TASK.2026-08-31.md` (v0.9.0 + v0.10.0
+  sections). Gates: 91 unit + 11 e2e, release build, secret grep — all
+  clean.

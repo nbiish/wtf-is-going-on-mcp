@@ -1746,3 +1746,180 @@ fn psk_handshake_end_to_end() {
     let _ = std::fs::remove_dir_all(&dev2);
     let _ = std::fs::remove_dir_all(&dev3);
 }
+
+/// The v0.10.0 operator-courier lane: an operator on a machine with NO wtf
+/// state (empty home) pastes content into a hub bin using only --url and the
+/// dashboard key, and the other side pulls it back byte-exact — pre-setup
+/// bootstrap and general cross-machine copy/paste. A wrong key is refused
+/// with the uniform 401. Finally, an enrolled agent (device auth, no
+/// dashboard key) sees the same payload through the MCP read_bin tool.
+#[test]
+fn bin_operator_courier_end_to_end() {
+    let home = temp_home("bin");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let mut hub_lines = BufReader::new(hub.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // The operator holds only the dashboard key; read it from the hub's own
+    // config the way the operator does after `wtf dashboard`.
+    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
+    let key = wtf::json::parse(cfg_text.trim())
+        .unwrap()
+        .get("dashboard_key")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(key.len(), 64);
+
+    // Remote simulation: an empty operator home (no bridge.json/config.json)
+    // and no env credentials — every run below must authenticate via --url
+    // and --k alone.
+    let op = temp_home("operator");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(args)
+            .env("WTF_HOME", &op)
+            .env("WTF_HUB_URL", "")
+            .env("WTF_DASHBOARD_KEY", "")
+            .output()
+            .expect("wtf bin")
+    };
+
+    // put by argv, get back byte-exact (raw stdout, no added newline).
+    let payload = "paste me into the other agent";
+    let put = run(&["bin", "put", "1", payload, "--url", &url, "--k", &key]);
+    assert!(
+        put.status.success(),
+        "bin put failed: {}",
+        String::from_utf8_lossy(&put.stderr)
+    );
+    let get = run(&["bin", "get", "1", "--url", &url, "--k", &key]);
+    assert!(
+        get.status.success(),
+        "bin get failed: {}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&get.stdout), payload);
+
+    // put by stdin (`-`), get back byte-exact including the embedded newline.
+    let mut putin = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["bin", "put", "2", "-", "--url", &url, "--k", &key])
+        .env("WTF_HOME", &op)
+        .env("WTF_HUB_URL", "")
+        .env("WTF_DASHBOARD_KEY", "")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bin put -");
+    putin
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"line one\nline two")
+        .unwrap();
+    drop(putin.stdin.take());
+    let putin = putin.wait_with_output().expect("wait bin put -");
+    assert!(
+        putin.status.success(),
+        "stdin put failed: {}",
+        String::from_utf8_lossy(&putin.stderr)
+    );
+    let get2 = run(&["bin", "get", "2", "--url", &url, "--k", &key]);
+    assert!(get2.status.success());
+    assert_eq!(String::from_utf8_lossy(&get2.stdout), "line one\nline two");
+
+    // ls lists both bins without leaking content.
+    let ls = run(&["bin", "ls", "--url", &url, "--k", &key]);
+    assert!(
+        ls.status.success(),
+        "bin ls failed: {}",
+        String::from_utf8_lossy(&ls.stderr)
+    );
+    let lstext = String::from_utf8_lossy(&ls.stdout);
+    assert!(lstext.contains("bin 1:"), "ls missing bin 1: {lstext}");
+    assert!(lstext.contains("bin 2:"), "ls missing bin 2: {lstext}");
+    assert!(!lstext.contains(payload), "ls must not leak bin content");
+
+    // A wrong key is refused uniformly (401) with a nonzero exit.
+    let bad = run(&["bin", "get", "1", "--url", &url, "--k", &"f".repeat(64)]);
+    assert!(!bad.status.success(), "wrong key must fail");
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("401"),
+        "wrong key must report 401: {}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+
+    // The other side of the courier: an enrolled agent reads the same bin
+    // through MCP with plain device auth — no dashboard key involved.
+    let issue = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "--json", "courier-agent"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("key issue");
+    assert!(
+        issue.status.success(),
+        "key issue failed: {}",
+        String::from_utf8_lossy(&issue.stderr)
+    );
+    let jline = String::from_utf8_lossy(&issue.stdout)
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .expect("key issue json line")
+        .to_string();
+    let jv = wtf::json::parse(jline.trim()).expect("key issue json valid");
+    let agent_key = jv.get("key").unwrap().as_str().unwrap().to_string();
+    let agent_name = jv.get("device").unwrap().as_str().unwrap().to_string();
+
+    let mut agent = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url)
+        .env("WTF_DEVICE_NAME", &agent_name)
+        .env("WTF_DEVICE_KEY", &agent_key)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agent");
+    let mut reader = BufReader::new(agent.stdout.take().unwrap());
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":1}}}"#,
+    );
+    let rb = rpc_read(&mut reader);
+    assert!(
+        rb.to_json().contains(payload),
+        "read_bin must see the courier payload: {}",
+        rb.to_json()
+    );
+
+    let _ = agent.kill();
+    let _ = hub.kill();
+    let _ = agent.wait();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&op);
+}

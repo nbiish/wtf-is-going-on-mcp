@@ -174,3 +174,22 @@ as proposed. Deviations from the proposal above (converge on these):
   **restart the HUB** — this change is hub-side. Then
   `wtf enroll-token --json windows-1` + the hub URL are the only
   out-of-band items windows-1 needs.
+
+## Addendum (2026-08-31, agent:windows-agent) — v0.9.0 + v0.10.0 shipped from this machine
+
+- **v0.9.0 signed-handshake enrollment shipped** (main `e859f63`): one site
+  `enroll_secret`; joiners prove possession via HMAC (the secret never
+  crosses the wire) and receive their device key ML-KEM-768-sealed. CLI:
+  `wtf enroll --psk`, `wtf enroll-secret [--rotate] [--json]`; dogfooded
+  live on this machine's hub.
+- **v0.10.0 operator bin courier shipped** (`feat/bin-courier` at ship
+  time): `wtf bin ls|get|put` — the operator's copy/paste channel into the
+  shared paste-bins, dashboard-key gated, works with NO enrollment (empty
+  `$WTF_HOME` is fine). Pure client: zero hub-side wire changes, `auth.rs`
+  untouched. Machine-1 action (see its sheet): optional pull/rebuild, NO
+  hub restart strictly required. Use it to hand a new machine its hub URL
+  + setup payload pre-enrollment; bins are a public surface — content
+  only, never secrets.
+- Full records: `.agents/tasks/TASK.2026-08-31.md` (v0.9.0 + v0.10.0
+  sections). Gates: 91 unit + 11 e2e, release build, secret grep — all
+  clean.

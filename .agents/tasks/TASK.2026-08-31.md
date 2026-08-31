@@ -155,3 +155,48 @@ sheets.
 - Debugging note: a stray quote after a raw-string closer (invalid Rust that
   some file tools rendered as valid) cost a bisect to find; fixed byte-exactly
   via python3. File tools on this box can mis-render — verify via shell/od/git.
+
+## v0.10.0 — operator bin courier (dashboard-key `wtf bin` CLI)
+
+### Shipped
+
+- **Feature:** `wtf bin ls|get|put` — the three paste-bins become the
+  operator's copy/paste channel between machines and agents. Gated by the
+  dashboard key (`?k=`), so it works *before* any enrollment exists
+  (pre-setup bootstrap from an empty `$WTF_HOME`) and any time after;
+  enrolled agents read the same bins via `read_bin`.
+- **Resolution order:** hub URL `--url` → `WTF_HUB_URL` → `bridge.json`
+  `hub_url` → `config.json` `lan_url()` (only if that file exists); key
+  `--k` → `WTF_DASHBOARD_KEY` → `config.json` `dashboard_key` (only if
+  the file exists — never created as a side effect). Error hints prefer
+  the env var (argv leaks via shell history).
+- **Behaviors:** `get N` prints content raw (no added newline; pipe/copy
+  safe) or `-o FILE`; `put N TEXT|--file F|-` (stdin); `ls` lists
+  sizes/last writer without content; `--json` on ls/put; oversize
+  (>65,536 chars) rejected client-side; non-200 →
+  `error: hub refused (HTTP …)` and exit 1.
+- **Pure client:** zero hub-side wire changes; `auth.rs` untouched; the
+  hub records `dashboard` as last writer.
+- **Tests:** e2e +1 (`bin_operator_courier_end_to_end`: empty operator
+  home — put by argv and by stdin, get byte-exact, `ls` without content
+  leak, wrong key uniform 401 exit 1; then `key issue --json` creds
+  drive MCP `read_bin` and the payload matches).
+- **Docs:** README (courier subsection under Onboarding + CLI rows + 11
+  e2e count), SKILL.md §5 operator-courier subsection, AGENTS.md
+  REPO_STATE (v0.9.0 shipped, v0.10.0 latest), root+src llms.txt.
+
+### Gates
+
+- [x] cargo test: 91 unit + 11 e2e, all green.
+- [x] cargo build --release clean (wtf 0.10.0).
+- [x] Secret grep of diff vs e859f63: clean.
+
+### Notes / deviations
+
+- `auth.rs` untouched; no api.rs changes at all this time (no
+  convergence-contract override to flag).
+- Docs edited via edit_files + python3 exact-match (assert count==1);
+  the src/llms.txt `help` anchor read differently than on disk — every
+  anchor verified with shell grep before replacing.
+- Ship flow: merge --no-ff to main, push, rebuild, restart the local
+  hub, dogfood `wtf bin put/get` against the live hub.

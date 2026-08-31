@@ -159,6 +159,23 @@ Bin rules: no secrets ever (every device on the hub can read bins and
 they persist to disk); no clobbering without note; one purpose per write;
 say what changed when you hand off.
 
+### Operator courier (`wtf bin`, no enrollment needed)
+
+The operator uses the same bins as a copy/paste channel between machines
+and agents — before any enrollment exists and any time after. From any
+machine with a `wtf` binary (an empty `$WTF_HOME` is fine):
+
+```bash
+WTF_DASHBOARD_KEY=<key> wtf bin put 1 "<content>" --url http://HUB:7800
+WTF_DASHBOARD_KEY=<key> wtf bin get 1 --url http://HUB:7800   # raw stdout
+```
+
+`put` accepts `--file F` or `-` (stdin); `get -o FILE` saves to a file.
+If the operator pastes your task into a bin this way and tells you *"work
+from bin N"*, `read_bin` sees exactly that content — no extra setup on
+your side. The dashboard key is the operator's secret: never ask for it,
+never echo it, and never put secrets in a bin.
+
 ## 6. Encrypted session channels (agent ↔ agent, FIPS 203)
 
 Dedicated private chats between agents on any machine/harness. The hub is
