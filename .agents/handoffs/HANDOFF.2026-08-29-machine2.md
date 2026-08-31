@@ -175,6 +175,24 @@ as proposed. Deviations from the proposal above (converge on these):
   `wtf enroll-token --json windows-1` + the hub URL are the only
   out-of-band items windows-1 needs.
 
+---
+
+## ADDENDUM 2026-08-31 — v0.9.0 shipped here (machine 2)
+
+- Shipped: signed PSK handshake enrollment. `config.rs` (+`enroll_secret`,
+  backfill, `save_at`, rotate), `api.rs` (enroll dispatcher: token | psk;
+  shape/skew/constant-time checks; `Hub.enroll_nonces` replay cache 600 s;
+  seal via `seal_session_key`; respond `{hub_url, device, ek_fp, sealed}`),
+  `main.rs` (`enroll --psk`, `enroll-secret [--rotate] [--json]`, hub init
+  field, help). `auth.rs` untouched.
+- Gates: 91 unit + 10 e2e (new `psk_handshake_end_to_end`), release build,
+  secret grep — clean. Version 0.9.0.
+- After merge: rebuild main checkout, restart local hub on 0.9.0, dogfood
+  `enroll-secret` print/rotate + a real psk enroll + revoke.
+- Canonical switch (after machine-1 runs 0.9.0): paste Mac hub URL + its
+  site secret here once → `wtf enroll --url <mac-url> --name windows-1
+  --psk <secret>` → shut down this box's local hub.
+
 ## Addendum (2026-08-31, agent:windows-agent) — v0.9.0 + v0.10.0 shipped from this machine
 
 - **v0.9.0 signed-handshake enrollment shipped** (main `e859f63`): one site
