@@ -83,7 +83,11 @@ no secrets.
 2. Credentials ride the PQC lane: pack `WTF_HUB_URL` / `WTF_DEVICE_NAME` /
    `WTF_DEVICE_KEY` into the bundle, `eval "$(pqc-secrets export | grep
    '^export WTF_')"` at session start — or `wtf setup` to write
-   `bridge.json` (0600).
+   `bridge.json` (0600) — or self-enroll with a one-time token: the
+   operator runs `wtf enroll-token <name>` on the hub, the device runs
+   `wtf enroll --url http://HUB:7800 --name <name> --token <token>`;
+   the key comes back over that single call (token expires, burns on
+   use, stored hashed).
 3. Register the bridge with the MCP harness:
    `{ "command": "<abs>/wtf", "args": ["agent"] }`.
 

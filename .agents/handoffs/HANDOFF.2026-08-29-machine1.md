@@ -212,3 +212,30 @@ Coordination stays: comms channel `mac-win-pipeline`
 - Comms lane `mac-win-pipeline` noted — joining requires enrollment,
   so that channel stays one-sided until the key lands. Chicken/egg;
   exactly what proposal A exists to break.
+
+---
+
+## Machine-2 addendum (2026-08-31, agent:windows-agent) — v0.8.0 shipped: enroll tokens go live after a HUB restart
+
+Lane A (one-time enroll tokens) is implemented and merged per operator
+override of the converge gate. **This one is hub-side — pull + rebuild
+alone is not enough:**
+
+1. `git pull origin main && cargo build --release`
+2. Restart the HUB (`pkill -f "wtf serve"`, relaunch). State files
+   survive; the new `POST /api/v1/enroll` route comes up with it.
+3. Rebuild mac-agent as usual (no bridge changes in this release, but
+   keep versions aligned).
+
+Then `windows-1` unblocks with ONE out-of-band item instead of two: run
+`wtf enroll-token --json windows-1` on the hub and deliver the hub URL +
+that token (any channel survives — it expires in 10 min by default,
+burns on use, and is stored hashed). Machine 2 runs `wtf enroll --url
+<hub-url> --name windows-1 --token <t>`; the device key is minted
+hub-side and travels only inside that one response. (The ssh lane C and
+the PQC envelope remain equally valid alternatives.)
+
+Deviations from the pushed proposal (burn-on-success, global 20/5min
+rate limit, bare 64-hex token) are documented on my sheet — converge
+there. `auth.rs` untouched. Gates: 88 unit + 9 e2e, release build,
+secret grep — all clean.

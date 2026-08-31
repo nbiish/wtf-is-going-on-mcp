@@ -557,6 +557,150 @@ fn key_issue_json_and_hot_enrollment() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// The v0.8.0 autonomous-enrollment lane: `wtf enroll-token` mints a
+/// single-use token hub-side; redeeming it at /api/v1/enroll returns the
+/// device key in the same shape as `key issue --json`. Wrong token, unknown
+/// name, and reuse all get the same uniform 403; the redeemed key works
+/// immediately (hot keystore reload).
+#[test]
+fn enroll_token_flow_end_to_end() {
+    let home = temp_home("enroll");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let mut hub_lines = BufReader::new(hub.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // Advertise the real (ephemeral) URL so the token json hands it out.
+    let set = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["url", &url])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("wtf url");
+    assert!(
+        set.status.success(),
+        "wtf url failed: {}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+
+    // Mint a token hub-side (JSON shape for tooling).
+    let mint = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["enroll-token", "--json", "boxtok"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("enroll-token");
+    assert!(
+        mint.status.success(),
+        "enroll-token failed: {}",
+        String::from_utf8_lossy(&mint.stderr)
+    );
+    let mline = String::from_utf8_lossy(&mint.stdout)
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .expect("token json line")
+        .to_string();
+    let mv = wtf::json::parse(mline.trim()).expect("token json valid");
+    let token = mv.get("token").unwrap().as_str().unwrap().to_string();
+    let minted_hub_url = mv.get("hub_url").unwrap().as_str().unwrap();
+    assert_eq!(minted_hub_url, url, "token json must advertise the real hub url");
+    assert_eq!(token.len(), 64);
+
+    let post = |name: &str, tok: &str| {
+        wtf::client::request(
+            &format!("{url}/api/v1/enroll"),
+            "POST",
+            &[],
+            &format!(r#"{{"name":"{name}","token":"{tok}"}}"#).into_bytes(),
+        )
+        .expect("enroll request")
+    };
+
+    // Uniform refusals: wrong token and unknown name are indistinguishable.
+    let wrong = post("boxtok", &"0".repeat(64));
+    assert_eq!(
+        wrong.status,
+        403,
+        "wrong token -> {} {}",
+        wrong.status,
+        wrong.text()
+    );
+    let ghost = post("ghost", &token);
+    assert_eq!(
+        ghost.status,
+        403,
+        "unknown name -> {} {}",
+        ghost.status,
+        ghost.text()
+    );
+    assert_eq!(
+        post("boxtok", &token[..32]).status,
+        403,
+        "truncated token must fail"
+    );
+
+    // The right token redeems: key issued in `key issue --json` shape.
+    let ok = post("boxtok", &token);
+    assert_eq!(ok.status, 200, "body: {}", ok.text());
+    let v = ok.json().expect("enroll json");
+    let key = v.get("key").unwrap().as_str().unwrap().to_string();
+    assert_eq!(v.get("device").unwrap().as_str().unwrap(), "boxtok");
+    assert_eq!(v.get("hub_url").unwrap().as_str().unwrap(), url);
+    assert_eq!(key.len(), 64);
+
+    // Single-use: the burned token is dead.
+    assert_eq!(post("boxtok", &token).status, 403);
+
+    // The redeemed key authenticates immediately (hot keystore reload).
+    let mut agent = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url)
+        .env("WTF_DEVICE_NAME", "boxtok")
+        .env("WTF_DEVICE_KEY", &key)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn agent");
+    let mut reader = BufReader::new(agent.stdout.take().unwrap());
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"working","task":"joined via token"}}}"#,
+    );
+    let ci = rpc_read(&mut reader);
+    assert_eq!(
+        ci.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    let _ = agent.kill();
+    let _ = hub.kill();
+    let _ = agent.wait();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn skill_install_distributes_portable_skill() {
     let home = temp_home("skill");

@@ -35,6 +35,8 @@ fn run() -> i32 {
         Some("setup") => cmd_setup(&args[1..]),
         Some("url") => cmd_url(&args[1..]),
         Some("join") => cmd_join(&args[1..]),
+        Some("enroll-token") => cmd_enroll_token(&args[1..]),
+        Some("enroll") => cmd_enroll(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
         Some("dashboard-url") => cmd_dashboard_url(),
@@ -66,6 +68,8 @@ fn print_help() {
     println!("  wtf url [URL | clear]                      show/set the URL handed to joiners");
     println!("  wtf setup --url URL --name N --key K       configure this machine's bridge");
     println!("  wtf join user@host [--name N] [--url U]    enroll this machine via ssh");
+    println!("  wtf enroll-token <name> [--ttl SECS]       mint a one-time enrollment token (hub side)");
+    println!("  wtf enroll --url URL --name N --token T    redeem a token to enroll this machine");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
     println!("  wtf dashboard-url                          print the clickable dashboard URL (hub machine)");
@@ -155,6 +159,7 @@ fn cmd_serve(args: &[String]) -> i32 {
         started_at: util::now_secs(),
         identities: Mutex::new(Vec::new()),
         sessions: wtf::sessions::Sessions::load(),
+        enroll_hits: Mutex::new(Vec::new()),
     });
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
@@ -420,6 +425,151 @@ fn cmd_skill(args: &[String]) -> i32 {
             2
         }
     }
+}
+
+/// Mint a one-time enrollment token (hub machine). The token is printed once;
+/// only its SHA-256 hash is stored. It expires on its own, burns on
+/// redemption, and can be dropped early with `enroll-token revoke <name>` —
+/// so it can travel to the joining device over any channel.
+fn cmd_enroll_token(args: &[String]) -> i32 {
+    if args.first().map(|s| s.as_str()) == Some("revoke") {
+        let Some(name) = args.get(1) else {
+            eprintln!("usage: wtf enroll-token revoke <name>");
+            return 2;
+        };
+        let mut tokens = match config::EnrollTokenStore::load() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
+        if tokens.revoke(name) {
+            println!("pending enrollment tokens for '{name}' dropped.");
+            return 0;
+        }
+        eprintln!("error: no pending enrollment token for '{name}'");
+        return 1;
+    }
+    let Some(name) = args.iter().find(|a| !a.starts_with('-')) else {
+        eprintln!("usage: wtf enroll-token <name> [--ttl SECS] [--json] | wtf enroll-token revoke <name>");
+        return 2;
+    };
+    let ttl: u64 = flag_value(args, "--ttl")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    let mut tokens = match config::EnrollTokenStore::load() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let token = match tokens.issue(name, ttl) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let hub_url = HubConfig::load_or_create()
+        .map(|c| c.lan_url())
+        .unwrap_or_else(|_| "http://<hub-host>:7800".to_string());
+    if has_flag(args, "--json") {
+        let v = json::Value::obj(vec![
+            ("hub_url", json::Value::from(hub_url.as_str())),
+            ("device", json::Value::from(name.as_str())),
+            ("token", json::Value::from(token.as_str())),
+            ("expires_in", json::Value::from(ttl as i64)),
+        ]);
+        println!("{}", v.to_json());
+        return 0;
+    }
+    println!("enrollment token for '{name}' (valid {ttl}s, shown once):");
+    println!("  {token}");
+    println!();
+    println!("on the joining device, run:");
+    println!("  wtf enroll --url {hub_url} --name {name} --token {token}");
+    0
+}
+
+/// Redeem an enrollment token over HTTP: the device key crosses the wire
+/// once, bound to the single-use token. `--url` is the address to store —
+/// use it to override the hub's auto-detected/advertised address (overlay
+/// IPs, NAT, TLS proxies).
+fn cmd_enroll(args: &[String]) -> i32 {
+    let (url, name, token) = (
+        flag_value(args, "--url"),
+        flag_value(args, "--name"),
+        flag_value(args, "--token"),
+    );
+    let (Some(url), Some(name), Some(token)) = (url, name, token) else {
+        eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE --token TOKEN");
+        return 2;
+    };
+    let url = url.trim_end_matches('/').to_string();
+    if !config::valid_name(&name) {
+        eprintln!("error: --name must match [A-Za-z0-9._-]{{1,64}}");
+        return 2;
+    }
+    let body = json::Value::obj(vec![
+        ("name", json::Value::from(name.as_str())),
+        ("token", json::Value::from(token.as_str())),
+    ]);
+    eprintln!("enrolling '{name}' at {url} ...");
+    let resp = match client::request(
+        &format!("{url}/api/v1/enroll"),
+        "POST",
+        &[],
+        body.to_json().as_bytes(),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: cannot reach hub: {e}");
+            return 1;
+        }
+    };
+    if resp.status != 200 {
+        eprintln!(
+            "error: enrollment refused (HTTP {}): {}",
+            resp.status,
+            resp.text().trim()
+        );
+        eprintln!("hint: tokens are single-use and expire; ask the hub operator for a fresh `wtf enroll-token`.");
+        return 1;
+    }
+    let parsed = match resp.json() {
+        Some(v) => v,
+        None => {
+            eprintln!("error: hub returned a non-JSON response");
+            return 1;
+        }
+    };
+    let Some(key) = parsed.get("key").and_then(|x| x.as_str()) else {
+        eprintln!("error: hub response missing key field.");
+        return 1;
+    };
+    let cfg = BridgeConfig {
+        hub_url: url,
+        device_name: name,
+        device_key: key.to_string(),
+    };
+    if let Err(e) = cfg.validate() {
+        eprintln!("error: {e}");
+        return 2;
+    }
+    if let Err(e) = run_setup(&cfg) {
+        eprintln!("error: {e}");
+        return 1;
+    }
+    println!(
+        "enrolled: '{}' reaching the hub at {}.",
+        cfg.device_name, cfg.hub_url
+    );
+    println!();
+    println!("add this to your MCP client configuration:");
+    println!(r#"  {{ "command": "wtf", "args": ["agent"] }}"#);
+    0
 }
 
 /// Print the full dashboard URL (including the `?k=` key) for the operator
