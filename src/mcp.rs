@@ -304,6 +304,19 @@ impl Bridge {
             ),
             ("description", Value::from("info | warn | error")),
         ]);
+        let comms_event_schema = Value::obj(vec![
+            ("type", Value::from("string")),
+            (
+                "enum",
+                Value::arr(crate::comms::EVENTS.iter().map(|e| Value::from(*e)).collect()),
+            ),
+            (
+                "description",
+                Value::from(
+                    "ledger event type: checkin | update | intent-merge | checkout | blocked | announce | handoff",
+                ),
+            ),
+        ]);
         let tools = vec![
             Value::obj(vec![
                 ("name", Value::from("check_in")),
@@ -634,6 +647,102 @@ impl Bridge {
                     ]),
                 ),
             ]),
+            Value::obj(vec![
+                ("name", Value::from("comms_post")),
+                (
+                    "description",
+                    Value::from(
+                        "Post a structured entry to an encrypted agent-to-agent COMMS ledger channel — the fast, cross-repo/cross-machine form of the AGENTS/{date}.COMMS.md protocol (repos, worktrees, subagents, subtasks). Entries are end-to-end encrypted (ML-KEM-768 sealed keys, AES-256-GCM) and the hub stores ciphertext only, so this is the ONLY surface where secrets may travel between agents — bins and the event feed are public. Join the channel with session_join first.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                (
+                                    "session",
+                                    Self::prop("session id from session_create or session_list"),
+                                ),
+                                ("event", comms_event_schema),
+                                (
+                                    "note",
+                                    Self::prop(
+                                        "entry body: concise, one short paragraph max (2000 chars) — e.g. what changed, decisions, handoff notes, or credentials for peer agents",
+                                    ),
+                                ),
+                                (
+                                    "scope",
+                                    Self::prop(
+                                        "optional scope: repo/branch, worktree, or task path, e.g. 'wtf-is-going-on-mcp/feat/comms-channels'",
+                                    ),
+                                ),
+                            ]),
+                        ),
+                        (
+                            "required",
+                            Value::arr(vec![
+                                Value::from("session"),
+                                Value::from("event"),
+                                Value::from("note"),
+                            ]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("comms_read")),
+                (
+                    "description",
+                    Value::from(
+                        "Read and decrypt new COMMS ledger entries in an encrypted session channel, rendered as ledger lines: #seq [event] sender (scope): note. Plain session_send messages appear as raw lines; unreadable messages fail closed. Optionally filter by event type. Check this at task boundaries — it is how peer agents hand off work across machines.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("session", Self::prop("session id")),
+                                (
+                                    "after",
+                                    int_prop(
+                                        "only entries with seq greater than this (default 0 = all stored)",
+                                    ),
+                                ),
+                                (
+                                    "event",
+                                    Value::obj(vec![
+                                        ("type", Value::from("string")),
+                                        (
+                                            "enum",
+                                            Value::arr(
+                                                crate::comms::EVENTS
+                                                    .iter()
+                                                    .map(|e| Value::from(*e))
+                                                    .collect(),
+                                            ),
+                                        ),
+                                        (
+                                            "description",
+                                            Value::from(
+                                                "optional: only entries of this event type",
+                                            ),
+                                        ),
+                                    ]),
+                                ),
+                            ]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("session")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -666,6 +775,8 @@ impl Bridge {
             "session_seal" => self.tool_session_seal(args),
             "session_send" => self.tool_session_send(args),
             "session_read" => self.tool_session_read(args),
+            "comms_post" => self.tool_comms_post(args),
+            "comms_read" => self.tool_comms_read(args),
             other => (
                 format!("unknown tool: {other}"),
                 true,
@@ -1272,6 +1383,155 @@ impl Bridge {
             }
         }
         let _ = sender;
+        (out, false)
+    }
+
+    /// comms_post { session, event, note, scope? }: validate + encrypt a
+    /// ledger envelope and post it through the ordinary encrypted session
+    /// send path. No new crypto — the session layer's subkey/AAD binding
+    /// applies unchanged.
+    fn tool_comms_post(&self, args: &Value) -> (String, bool) {
+        let Some(sid) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let Some(event) = arg_str(args, "event") else {
+            return ("missing required argument: event".into(), true);
+        };
+        let note = arg_str(args, "note").unwrap_or("");
+        let scope = arg_str(args, "scope").unwrap_or("");
+        let envelope = match crate::comms::build(event, scope, note) {
+            Ok(e) => e,
+            Err(e) => return (e, true),
+        };
+        let Some(key) = load_session_key(sid) else {
+            return (
+                format!("no local session key for {sid} — join the session first"),
+                true,
+            );
+        };
+        let sender = &self.cfg.device_name;
+        // seq: ask the hub for the next seq (same protocol as session_send).
+        let sess = self.api_get_session(&format!("/api/v1/sessions/{sid}"));
+        let Ok(sv) = sess else {
+            return (format!("session fetch failed: {}", sess.unwrap_err()), true);
+        };
+        let next_seq = sv
+            .get("next_seq")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1) as u64;
+        let (nonce, ct) =
+            match crate::session_crypto::seal_message(&key, sid, sender, next_seq, &envelope) {
+                Ok(v) => v,
+                Err(e) => return (format!("encrypt failed: {e}"), true),
+            };
+        let sent = self.api_post_session(
+            &format!("/api/v1/sessions/{sid}/send"),
+            &Value::obj(vec![
+                ("nonce", Value::from(nonce.as_str())),
+                ("ct", Value::from(ct.as_str())),
+            ]),
+        );
+        let Ok(sv) = sent else {
+            return (
+                format!(
+                    "send failed: {} (if the channel is busy, just re-send — a racing sender can consume the predicted seq)",
+                    sent.unwrap_err()
+                ),
+                true,
+            );
+        };
+        let seq = sv.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+        let scope_note = if scope.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" (scope '{}')", scope.trim())
+        };
+        (
+            format!(
+                "comms entry #{seq} [{event}] posted encrypted to {sid}{scope_note}",
+            ),
+            false,
+        )
+    }
+
+    /// comms_read { session, after?, event? }: poll + decrypt, parse
+    /// envelopes, render ledger lines. Non-envelope messages render as
+    /// raw lines and undecryptable ones as failed lines — never crash.
+    fn tool_comms_read(&self, args: &Value) -> (String, bool) {
+        let Some(sid) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let after = args
+            .get("after")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .max(0) as u64;
+        let filter = arg_str(args, "event");
+        if let Some(f) = filter {
+            if !crate::comms::valid_event(f) {
+                return (
+                    format!(
+                        "invalid event '{f}'; must be one of: {}",
+                        crate::comms::EVENTS.join(", ")
+                    ),
+                    true,
+                );
+            }
+        }
+        let Some(key) = load_session_key(sid) else {
+            return (
+                format!("no local session key for {sid} — join the session first"),
+                true,
+            );
+        };
+        let msgs = self.api_get_session(&format!("/api/v1/sessions/{sid}/recv?after={after}"));
+        let Ok(mv) = msgs else {
+            return (format!("read failed: {}", msgs.unwrap_err()), true);
+        };
+        let arr = mv.get("msgs").and_then(|x| x.as_arr()).unwrap_or(&[]);
+        if arr.is_empty() {
+            return (
+                format!("no new comms entries in {sid} after seq {after}"),
+                false,
+            );
+        }
+        let now = now_secs();
+        let mut out = String::new();
+        for msg in arr {
+            let seq = msg.get("seq").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
+            let from = msg.get("sender").and_then(|v| v.as_str()).unwrap_or("?");
+            let nonce = msg.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
+            let ct = msg.get("ct").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::session_crypto::open_message(&key, sid, from, seq, nonce, ct) {
+                Ok(pt) => match crate::comms::parse(&pt) {
+                    Some(entry) => {
+                        if let Some(f) = filter {
+                            if entry.event != f {
+                                continue;
+                            }
+                        }
+                        out.push_str(&crate::comms::render_line(seq, from, &entry, now));
+                        out.push('\n');
+                    }
+                    None => {
+                        if filter.is_none() {
+                            out.push_str(&format!("#{seq} {from}: <plain session message> {pt}\n"));
+                        }
+                    }
+                },
+                Err(e) => {
+                    if filter.is_none() {
+                        out.push_str(&format!("#{seq} {from}: <unreadable: {e}>\n"));
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            return (
+                format!("no matching comms entries in {sid} after seq {after}"),
+                false,
+            );
+        }
         (out, false)
     }
 }

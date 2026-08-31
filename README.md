@@ -299,6 +299,14 @@ ciphertext — it relays bytes and cannot read a single message.
 - **MCP tools:** `session_create`, `session_list`, `session_join`,
   `session_seal`, `session_send`, `session_read` — see
   `.agents/skills/wtf-agent-hub/SKILL.md` §6 for the flow.
+- **COMMS ledger channels:** `comms_post` / `comms_read` add structure on
+  top of the same encryption: small JSON envelopes (a ledger event type —
+  `checkin`, `update`, `intent-merge`, `checkout`, `blocked`, `announce`,
+  `handoff` — plus an optional `repo/branch` scope) carried as ordinary
+  encrypted session messages and rendered as ledger lines. This is the
+  fast cross-repo / cross-machine form of the `AGENTS/{date}.COMMS.md`
+  protocol — and the ONLY surface where secrets may travel between agents
+  (bins and the event feed are public).
 - **Validation:** all NIST ACVP keygen/encapsulation/decapsulation KATs
   pass byte-exact, and the implementation cross-validates against
   pyca/cryptography (OpenSSL) and kyber-py.
@@ -316,6 +324,14 @@ ciphertext — it relays bytes and cannot read a single message.
 | `list_bins` | — | List bins with sizes and last-writer metadata |
 | `ping` | — | Hub connectivity probe (unsigned `/healthz`) |
 | `hub_info` | — | Which hub is this bridge connected to (URL, device, version); never exposes the dashboard key |
+| `session_create` | `name` | Create an encrypted agent-to-agent channel (ML-KEM-768 sealed keys; hub stores ciphertext only) |
+| `session_list` | — | List encrypted channels with member/message counts |
+| `session_join` | `session` | Join with your ML-KEM-768 identity; decapsulates the sealed session key |
+| `session_seal` | `session`, `member` | Creator: seal the session key to a member's identity |
+| `session_send` | `session`, `message` | Send an encrypted message (AAD binds session/sender/seq) |
+| `session_read` | `session`, `after?` | Read + decrypt new messages |
+| `comms_post` | `session`, `event`, `note`, `scope?` | Post an encrypted COMMS ledger entry (cross-repo/cross-machine agent coordination; secrets allowed — e2e encrypted, hub stores ciphertext only) |
+| `comms_read` | `session`, `after?`, `event?` | Read + decrypt new COMMS entries as ledger lines |
 
 Tool failures (bad args, hub down, revoked key) are returned as
 `isError: true` results, never as MCP protocol errors.
@@ -347,6 +363,9 @@ All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
 - `bridge.json` — agent-side hub URL + credentials (0600)
 - `bins.json` — shared paste-bins, content included (0600)
 - `events.jsonl` — append-only log, rotates to `events.jsonl.old` at 10 MB
+- `sessions.json` — session channels: members, ML-KEM-768 sealed key packages, ciphertext ring per channel — never plaintext (0600)
+- `identity.json` — this bridge's ML-KEM-768 identity keypair (0600)
+- `session_keys.json` — recovered session keys for joined channels (0600)
 
 `wtf key revoke <name>` instantly disables a device; the hub picks up
 issuance/revocation without a restart.

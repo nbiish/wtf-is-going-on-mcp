@@ -156,7 +156,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 16);
 
     rpc_write(
         &mut agent,
@@ -1117,4 +1117,261 @@ fn session_channels_end_to_end() {
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&home_a);
     let _ = std::fs::remove_dir_all(&home_b);
+}
+
+/// Encrypted COMMS ledger channels end-to-end: the structured cross-repo/
+/// cross-machine form of the AGENTS/{date}.COMMS.md protocol, carried inside
+/// session channels. Verifies: the full join/seal handshake gates posting,
+/// envelopes post + decrypt to ledger lines for members only, event
+/// filtering and `after` pagination work, invalid events fail closed,
+/// non-members cannot read, plain session messages still render, and the
+/// hub stores no envelope plaintext (encrypted at rest + in transit).
+#[test]
+fn comms_channels_end_to_end() {
+    let home = temp_home("comms");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // Three devices: two members + one non-member.
+    let mut secrets = std::collections::HashMap::new();
+    for dev in ["box-a", "box-b", "box-c"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["key", "issue", dev])
+            .env("WTF_HOME", &home)
+            .output()
+            .expect("key issue");
+        assert!(out.status.success());
+        let keys_text = std::fs::read_to_string(home.join("keys.json")).unwrap();
+        let keys = wtf::json::parse(&keys_text).unwrap();
+        let secret = keys
+            .get("devices")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
+            .find(|d| d.get("name").and_then(|v| v.as_str()) == Some(dev))
+            .unwrap()
+            .get("secret")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        secrets.insert(dev.to_string(), secret);
+    }
+
+    let mut agents = Vec::new();
+    for dev in ["box-a", "box-b", "box-c"] {
+        let dev_home = temp_home(&format!("comms-{dev}"));
+        let child = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["agent"])
+            .env("WTF_HUB_URL", &url)
+            .env("WTF_DEVICE_NAME", dev)
+            .env("WTF_DEVICE_KEY", secrets[dev].clone())
+            .env("WTF_HOME", &dev_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn bridge");
+        agents.push((dev.to_string(), dev_home, child));
+    }
+    let mut reader_a = BufReader::new(agents[0].2.stdout.take().unwrap());
+    let mut reader_b = BufReader::new(agents[1].2.stdout.take().unwrap());
+    let mut reader_c = BufReader::new(agents[2].2.stdout.take().unwrap());
+
+    let mut id = 300u64;
+    macro_rules! call {
+        ($which:expr, $reader:expr, $tool:expr, $args:expr) => {{
+            id += 1;
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
+                id, $tool, $args
+            );
+            rpc_write(&mut $which.2, &req);
+            let resp = rpc_read(&mut $reader);
+            let res = resp.get("result").unwrap().clone();
+            let is_err = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let text = res
+                .get("content")
+                .and_then(|c| c.as_arr())
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (is_err, text)
+        }};
+    }
+
+    // Handshake: A creates, B joins, A seals, B re-joins + recovers the key.
+    let (err, text) = call!(agents[0], reader_a, "session_create", r#"{"name":"team comms"}"#);
+    assert!(!err, "session_create failed: {text}");
+    let sid = text
+        .split_whitespace()
+        .find(|t| t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| panic!("session id in create output: {text}"))
+        .to_string();
+    let (err, _) = call!(agents[1], reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err, "session_join failed");
+    let (err, text) = call!(
+        agents[0],
+        reader_a,
+        "session_seal",
+        &format!(r#"{{"session":"{sid}","member":"box-b"}}"#)
+    );
+    assert!(!err, "session_seal failed: {text}");
+    let (err, text) = call!(agents[1], reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err && text.contains("session key recovered"), "key recovery: {text}");
+
+    // A posts a scoped checkin entry.
+    let (err, text) = call!(
+        agents[0],
+        reader_a,
+        "comms_post",
+        &format!(
+            r#"{{"session":"{sid}","event":"checkin","scope":"wtf-is-going-on-mcp/feat/comms-channels","note":"COMMSRA started ledger channel"}}"#
+        )
+    );
+    assert!(!err, "A comms_post failed: {text}");
+    assert!(text.contains("#1 [checkin]"), "post should report seq + event: {text}");
+
+    // B posts an update, then a handoff.
+    let (err, _) = call!(
+        agents[1],
+        reader_b,
+        "comms_post",
+        &format!(
+            r#"{{"session":"{sid}","event":"update","note":"COMMSRB sealed key recovered; ack"}}"#
+        )
+    );
+    assert!(!err, "B comms_post failed");
+    let (err, _) = call!(
+        agents[1],
+        reader_b,
+        "comms_post",
+        &format!(
+            r#"{{"session":"{sid}","event":"handoff","scope":"local-router/feat/windows-parity","note":"COMMSRB takes verification; secrets only in this channel"}}"#
+        )
+    );
+    assert!(!err, "B handoff failed");
+
+    // B reads the full ledger: sees A's entry with sender + scope.
+    let (err, text) = call!(agents[1], reader_b, "comms_read", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err, "B comms_read failed: {text}");
+    assert!(
+        text.contains("#1 [checkin] box-a (wtf-is-going-on-mcp/feat/comms-channels)"),
+        "ledger line must carry event, sender, scope: {text}"
+    );
+    assert!(text.contains("COMMSRB takes verification"), "B must decrypt own handoff: {text}");
+
+    // A filters by event type: only the update shows, not the checkin.
+    let (err, text) = call!(
+        agents[0],
+        reader_a,
+        "comms_read",
+        &format!(r#"{{"session":"{sid}","event":"update"}}"#)
+    );
+    assert!(!err, "filtered read failed: {text}");
+    assert!(text.contains("[update] box-b"), "filter must keep updates: {text}");
+    assert!(!text.contains("[checkin]"), "filter must drop checkins: {text}");
+
+    // Pagination: after seq 2 only the handoff remains.
+    let (err, text) = call!(
+        agents[0],
+        reader_a,
+        "comms_read",
+        &format!(r#"{{"session":"{sid}","after":2}}"#)
+    );
+    assert!(!err && text.contains("[handoff]"), "after=2 must show handoff: {text}");
+    assert!(!text.contains("COMMSRA started"), "after=2 must hide seq 1: {text}");
+
+    // Fail closed: unknown event type rejected before encryption.
+    let (err, text) = call!(
+        agents[0],
+        reader_a,
+        "comms_post",
+        &format!(r#"{{"session":"{sid}","event":"bogus","note":"x"}}"#)
+    );
+    assert!(err && text.contains("invalid event"), "bogus event must fail: {text}");
+
+    // Non-member cannot read: C has no session key.
+    let (err, text) = call!(agents[2], reader_c, "comms_read", &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(
+        err && text.contains("no local session key"),
+        "non-member must fail closed: {text}"
+    );
+
+    // Plain session messages still render (never crash the ledger view).
+    let (err, _) = call!(
+        agents[0],
+        reader_a,
+        "session_send",
+        &format!(r#"{{"session":"{sid}","message":"plain ping from A"}}"#)
+    );
+    assert!(!err);
+    let (err, text) = call!(agents[1], reader_b, "comms_read", &format!(r#"{{"session":"{sid}","after":3}}"#));
+    assert!(
+        !err && text.contains("<plain session message> plain ping from A"),
+        "plain messages must render as raw: {text}"
+    );
+
+    // The hub stores no envelope plaintext: encrypted at rest + in transit.
+    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
+    let dkey = wtf::json::parse(&cfg_text)
+        .unwrap()
+        .get("dashboard_key")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    let state = wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"")
+        .unwrap();
+    assert_eq!(state.status, 200);
+    let body = state.text();
+    for secret_string in ["COMMSRA started", "COMMSRB takes verification", "secrets only in this channel"] {
+        assert!(
+            !body.contains(secret_string),
+            "hub wire state must not carry envelope plaintext: {secret_string}"
+        );
+    }
+    let sessions_file = std::fs::read_to_string(home.join("sessions.json")).unwrap();
+    assert!(
+        !sessions_file.contains("COMMSRA started") && !sessions_file.contains("COMMSRB"),
+        "sessions.json must store only ciphertext"
+    );
+
+    // Cleanup.
+    for (_, _, child) in agents.iter_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = hub.kill();
+    let _ = hub.wait();
+    for (_, dev_home, _) in agents.iter() {
+        let _ = std::fs::remove_dir_all(dev_home);
+    }
+    let _ = std::fs::remove_dir_all(&home);
 }
