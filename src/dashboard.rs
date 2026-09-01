@@ -51,6 +51,10 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 .bbtns button{background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:4px 12px;font:inherit;cursor:pointer}
 .bbtns button:hover{border-color:var(--dim)}
 .bbtns button.dirty{border-color:var(--warn);color:var(--warn)}
+.ochip{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--info);color:var(--info);margin-right:4px}
+.repo{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--warn);color:var(--warn);margin:0 6px}
+.origin{padding:10px 0 2px;font-size:13px}
+.origin:first-child{padding-top:0}
 </style>
 </head>
 <body>
@@ -62,7 +66,10 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 <section id="bins-sec"><h2>SHARED BINS · paste here and tell any agent “work from bin N” · agents publish back with write_bin</h2><div id="bins"></div></section>
 <script>
 "use strict";
-const K = new URLSearchParams(location.search).get("k") || "";
+const Q = new URLSearchParams(location.search);
+const K = Q.get("k") || "";
+const CAP = Q.get("cap") || "";
+const AUTH = K ? ("k="+encodeURIComponent(K)) : (CAP ? ("cap="+encodeURIComponent(CAP)) : "");
 function esc(s){return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function ago(ts, now){const d=Math.max(0,now-ts);if(d<60)return d+"s";if(d<3600)return Math.floor(d/60)+"m";if(d<86400)return Math.floor(d/3600)+"h";return Math.floor(d/86400)+"d";}
 function hms(ts){const d=ts%86400,p=n=>String(n).padStart(2,"0");return p(Math.floor(d/3600))+":"+p(Math.floor(d%3600/60))+":"+p(d%60);}
@@ -73,20 +80,39 @@ function render(s){
   const ag = document.getElementById("agents");
   if(!s.agents.length){ag.innerHTML = '<span class="dim">no agents have checked in yet</span>';}
   else{
-    ag.innerHTML = s.agents.map(a=>{
-      const cls = a.stale ? "stale" : esc(a.status);
-      const label = esc(a.status)+(a.stale?" · stale":"");
-      return '<div class="agent"><div class="top"><span class="who">'+esc(a.agent)+'@'+esc(a.device)+'</span>'
-        +'<span class="pill '+cls+'">'+label+'</span>'
-        +'<span class="age">'+ago(a.last_seen, now)+' ago</span></div>'
-        +(a.task?'<div class="task">'+esc(a.task)+'</div>':"")
-        +(a.details?'<div class="details">'+esc(a.details)+'</div>':"")
-        +'</div>';
-    }).join("");
+    // group by origin hub, then device; repo chips per agent
+    const groups = {};
+    for(const a of s.agents){
+      const o = a.origin || "local";
+      ((groups[o] = groups[o] || {})[a.device] = groups[o][a.device] || []).push(a);
+    }
+    let html = "";
+    for(const [origin, devs] of Object.entries(groups)){
+      const count = Object.values(devs).reduce((n,d)=>n+d.length,0);
+      html += '<div class="origin"><span class="ochip">'+esc(origin)+'</span><span class="dim"> · '+count+' agent(s)</span></div>';
+      for(const [device, list] of Object.entries(devs)){
+        for(const a of list){
+          const cls = a.stale ? "stale" : esc(a.status);
+          const label = esc(a.status)+(a.stale?" · stale":"");
+          html += '<div class="agent" style="margin-left:14px"><div class="top"><span class="who">'+esc(a.agent)+'@'+esc(a.device)+'</span>'
+            +(a.repo?'<span class="repo">'+esc(a.repo)+'</span>':"")
+            +'<span class="pill '+cls+'">'+label+'</span>'
+            +'<span class="age">'+ago(a.last_seen, now)+' ago</span></div>'
+            +(a.task?'<div class="task">'+esc(a.task)+'</div>':"")
+            +(a.details?'<div class="details">'+esc(a.details)+'</div>':"")
+            +'</div>';
+        }
+      }
+    }
+    ag.innerHTML = html;
   }
   const feed = document.getElementById("feed");
   const rows = s.events.slice().reverse().map(e=>
-    '<li><span class="dim">#'+e.id+' '+hms(e.ts)+'</span> <span class="lv '+esc(e.level)+'">['+esc(e.level)+']</span> <b>'+esc(e.agent)+'@'+esc(e.device)+'</b> '+esc(e.message)+'</li>'
+    '<li><span class="dim">#'+e.id+' '+hms(e.ts)+'</span> <span class="lv '+esc(e.level)+'">['+esc(e.level)+']</span>'
+    +(e.origin?'<span class="ochip">'+esc(e.origin)+'</span> ':"")
+    +'<b>'+esc(e.agent)+'@'+esc(e.device)+'</b> '
+    +(e.repo?'<span class="repo">'+esc(e.repo)+'</span> ':"")
+    +esc(e.message)+'</li>'
   ).join("");
   feed.innerHTML = rows || '<li class="dim">no events yet</li>';
   renderBins(s.bins, now);
@@ -135,7 +161,7 @@ async function saveBin(id){
   const btn=document.getElementById("save-"+id);
   btn.disabled=true;btn.textContent="Saving…";
   try{
-    const r=await fetch("/api/v1/bins/"+id+"?k="+encodeURIComponent(K),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({content:ta.value})});
+    const r=await fetch("/api/v1/bins/"+id+"?"+AUTH,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({content:ta.value})});
     const j=await r.json();
     if(!r.ok||!j.ok)throw new Error(j.error||("HTTP "+r.status));
     dirty[id]=false;btn.classList.remove("dirty");btn.textContent="Saved";
@@ -155,11 +181,11 @@ function copyBin(id){
 }
 function boot(){
   buildBins();
-  fetch("/api/v1/state?k="+encodeURIComponent(K))
+  fetch("/api/v1/state?"+AUTH)
     .then(r=>{if(!r.ok)throw 0;return r.json();})
     .then(render)
-    .catch(()=>{document.getElementById("meta").textContent="state fetch failed — check the ?k= key";});
-  const es = new EventSource("/stream?k="+encodeURIComponent(K));
+    .catch(()=>{document.getElementById("meta").textContent="state fetch failed — open the link printed by wtf dashboard-url";});
+  const es = new EventSource("/stream?"+AUTH);
   const dot = document.getElementById("conn");
   es.addEventListener("state", ev=>{try{render(JSON.parse(ev.data));}catch(e){}});
   es.onopen = ()=>{dot.classList.add("on");};

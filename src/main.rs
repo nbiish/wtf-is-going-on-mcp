@@ -42,6 +42,7 @@ fn run() -> i32 {
         Some("enroll") => cmd_enroll(&args[1..]),
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
         Some("bin") => cmd_bin(&args[1..]),
+        Some("federate") => cmd_federate(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
         Some("dashboard-url") => cmd_dashboard_url(),
@@ -80,6 +81,9 @@ fn print_help() {
     println!("  wtf bin ls [--url U] [--k K] [--json]      operator bin courier: list bins");
     println!("  wtf bin get N [-o F] [--url U] [--k K]     read a bin raw to stdout (pre-setup OK)");
     println!("  wtf bin put N TEXT|--file F|- [--url U] [--k K]   write a bin (dashboard-key gated)");
+    println!("  wtf federate add <name> --url URL --psk SECRET [--as DEV]  link a peer hub (one secret copy per edge)");
+    println!("  wtf federate list                         show the federation peer table");
+    println!("  wtf federate remove <name>                unlink a peer hub");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
     println!("  wtf dashboard-url                          print the clickable dashboard URL (hub machine)");
@@ -132,6 +136,13 @@ fn cmd_serve(args: &[String]) -> i32 {
         }
     };
     let bins = Arc::new(wtf::bins::Bins::load());
+    let capability = match wtf::federation::load_or_create_capability() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
 
     let mut bind_ip = cfg.bind_ip.clone();
     let mut port = cfg.port;
@@ -160,6 +171,21 @@ fn cmd_serve(args: &[String]) -> i32 {
         }
     };
 
+    // Federation: load the peer table, mint the hub name on first serve,
+    // and stamp it as the event origin. Spawn replication only when peers
+    // exist (a lone hub has nothing to sync).
+    let mut fed = wtf::federation::FedConfig::load();
+    let _ = fed.ensure_name();
+    store.set_origin_name(&fed.name);
+    let fed_arc = Arc::new(Mutex::new(fed.clone()));
+    let fed_name_for_rep = fed.name.clone();
+    let rep_store = Arc::clone(&store);
+    let rep_fed = Arc::clone(&fed_arc);
+    let rep_peers = fed.peers.len();
+    if rep_peers > 0 {
+        wtf::replicate::spawn(rep_store, fed_name_for_rep, rep_fed);
+    }
+
     let hub = Arc::new(wtf::api::Hub {
         store,
         bins,
@@ -171,6 +197,10 @@ fn cmd_serve(args: &[String]) -> i32 {
         sessions: wtf::sessions::Sessions::load(),
         enroll_hits: Mutex::new(Vec::new()),
         enroll_nonces: Mutex::new(Vec::new()),
+        fed_name: fed.name.clone(),
+        fed: fed_arc,
+        capability: capability.clone(),
+        loopback_only: ip.is_loopback(),
     });
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
@@ -191,11 +221,17 @@ fn cmd_serve(args: &[String]) -> i32 {
         ip.to_string()
     };
     println!("wtf-hub v{VERSION} listening at http://{local}");
-    println!(
-        "dashboard: http://{display_ip}:{}/?k={}",
-        local.port(),
-        cfg.dashboard_key
-    );
+    if ip.is_loopback() {
+        println!("dashboard: http://localhost:{}/w/{}", local.port(), capability);
+        println!("(loopback-only: the capability path is the gate; LAN cannot reach this hub)");
+    } else {
+        println!(
+            "dashboard: http://{display_ip}:{}/?k={}",
+            local.port(),
+            cfg.dashboard_key
+        );
+        println!("(LAN-visible: legacy dashboard-key gate; `wtf dashboard-url` prints the local capability link)");
+    }
     println!("press Ctrl-C to stop");
     {
         use std::io::Write as _;
@@ -702,6 +738,186 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
     0
 }
 
+/// Federation: link/unlink peer hubs. `add` runs the PSK handshake against
+/// the peer (the peer's SITE secret is the one secret you copy; this hub's
+/// device credential on the peer arrives ML-KEM-768-sealed and the peer
+/// simultaneously learns nothing else), records the peer in federation.json
+/// (0600), and verifies the link with a signed round-trip. Both hubs
+/// replicate after this single command on ONE side.
+fn cmd_federate(args: &[String]) -> i32 {
+    let usage = "usage:\n  wtf federate add <name> --url URL --psk SECRET [--as DEV]\n  wtf federate list\n  wtf federate remove <name>";
+    let Some(op) = args.first().map(|s| s.as_str()) else {
+        eprintln!("{usage}");
+        return 2;
+    };
+    let rest = &args[1..];
+    match op {
+        "list" => {
+            let fed = wtf::federation::FedConfig::load();
+            if fed.name.is_empty() && fed.peers.is_empty() {
+                println!("no federation configured (this hub has no name yet)");
+                return 0;
+            }
+            println!("this hub: {}", if fed.name.is_empty() { "(unnamed)" } else { &fed.name });
+            if fed.peers.is_empty() {
+                println!("no peers linked");
+            }
+            for p in &fed.peers {
+                println!("  {} — {} (device {})", p.name, p.url, p.device);
+            }
+            0
+        }
+        "remove" => {
+            let Some(name) = rest.first() else {
+                eprintln!("{usage}");
+                return 2;
+            };
+            let mut fed = wtf::federation::FedConfig::load();
+            let before = fed.peers.len();
+            fed.peers.retain(|p| &p.name != name);
+            if fed.peers.len() == before {
+                eprintln!("error: no peer named '{name}'");
+                return 1;
+            }
+            if let Err(e) = fed.save() {
+                eprintln!("error: {e}");
+                return 1;
+            }
+            println!("peer '{name}' unlinked; restart the hub to stop replication to it.");
+            0
+        }
+        "add" => {
+            let Some(name) = rest.iter().find(|a| !a.starts_with('-')).cloned() else {
+                eprintln!("{usage}");
+                return 2;
+            };
+            if !config::valid_name(&name) || name.len() > 32 {
+                eprintln!("error: peer name must match [A-Za-z0-9._-]{{1,32}}");
+                return 2;
+            }
+            let Some(url) = flag_value(rest, "--url") else {
+                eprintln!("error: --url is required (the peer hub's address)");
+                return 2;
+            };
+            let Some(psk) = flag_value(rest, "--psk") else {
+                eprintln!("error: --psk is required (the peer's site secret from `wtf enroll-secret` there)");
+                return 2;
+            };
+            let url = url.trim_end_matches('/').to_string();
+            let mut fed = wtf::federation::FedConfig::load();
+            let hub_name = fed.ensure_name().unwrap_or_default();
+            let device = match flag_value(rest, "--as") {
+                Some(d) => d,
+                None => format!("{}{hub_name}", wtf::federation::FED_NAME_PREFIX),
+            };
+            if !config::valid_name(&device) {
+                eprintln!("error: --as must match [A-Za-z0-9._-]{{1,64}}");
+                return 2;
+            }
+            if fed.find_peer(&name).is_some() {
+                eprintln!("error: peer '{name}' already linked (remove it first)");
+                return 1;
+            }
+            // PSK handshake against the peer, as a device named <device>.
+            let key = match redeem_psk(&url, &device, &psk) {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("error: handshake with peer failed: {e}");
+                    return 1;
+                }
+            };
+            fed.peers.push(wtf::federation::Peer {
+                name: name.clone(),
+                url: url.clone(),
+                device: device.clone(),
+                device_key: key,
+                added_at: util::now_secs(),
+            });
+            if let Err(e) = fed.save() {
+                eprintln!("error: cannot persist federation.json: {e}");
+                return 1;
+            }
+            // Adopt the peer's REAL federation identity: ask it (signed
+            // with the credential it just issued) for its fed name. The
+            // peer's origin-stamped events carry that name, so pull cursors
+            // must address it, not the operator's label.
+            let peer_key = fed.peers.last().unwrap().device_key.clone();
+            let real_name = (|| -> Option<String> {
+                let ts = util::now_secs();
+                let nonce = wtf::rand::hex(16);
+                let sig = hmac::hmac_sha256_hex(
+                    &util::hex_decode(&peer_key)?,
+                    format!("wtf-hmac-v1\nGET\n/api/v1/fed/peers\n{ts}\n{nonce}\n{}",
+                        wtf::sha256::hexdigest(b"")).as_bytes(),
+                );
+                let headers = vec![
+                    ("X-Wtf-Device".to_string(), device.clone()),
+                    ("X-Wtf-Timestamp".to_string(), ts.to_string()),
+                    ("X-Wtf-Nonce".to_string(), nonce),
+                    ("X-Wtf-Signature".to_string(), sig),
+                ];
+                let resp = client::request(
+                    &format!("{url}/api/v1/fed/peers"), "GET", &headers, b"",
+                ).ok()?;
+                let v = resp.json()?;
+                v.get("name").and_then(|x| x.as_str()).map(|s| s.to_string())
+            })();
+            let peer_name = match real_name {
+                Some(n) if !n.is_empty() && config::valid_name(&n) && n != fed.name => n,
+                _ => name.clone(),
+            };
+            if peer_name != name {
+                println!("peer identity: {} (label {name})", peer_name);
+            }
+            // Rewrite the stored peer with the real name.
+            fed.peers.pop();
+            fed.peers.push(wtf::federation::Peer {
+                name: peer_name.clone(),
+                url: url.clone(),
+                device: device.clone(),
+                device_key: peer_key.clone(),
+                added_at: util::now_secs(),
+            });
+            let _ = fed.save();
+
+            // Verify with a signed round-trip on the new credential.
+            let peer = wtf::federation::Peer {
+                name: peer_name.clone(),
+                url: url.clone(),
+                device: device.clone(),
+                device_key: peer_key.clone(),
+                added_at: 0,
+            };
+            let rep = wtf::replicate::Replicator {
+                store: Arc::new(Store::new(&std::env::temp_dir().join(format!("wtf-fedverify-{}", wtf::rand::hex(4)))).expect("tmp store")),
+                hub_url: String::new(),
+                hub_name,
+                fed: Arc::new(Mutex::new(wtf::federation::FedConfig::default())),
+                nonces: Mutex::new(std::collections::HashMap::new()),
+                last_warn: Mutex::new(std::collections::HashMap::new()),
+                push_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                wake: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            match wtf::replicate::anti_entropy(&rep, &peer, &rep.push_gen) {
+                Ok(_) => {
+                    println!("peer '{peer_name}' linked at {url} (device '{device}').");
+                    println!("restart the hub to begin replication; both hubs now carry the full ledger.");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("warning: link saved but first sync failed: {e}");
+                    eprintln!("replication will retry automatically once the hub restarts.");
+                    0
+                }
+            }
+        }
+        _ => {
+            eprintln!("{usage}");
+            2
+        }
+    }
+}
+
 /// Operator bin courier: read/write the hub's three paste-bins with the
 /// dashboard key — no enrolled agent required, so this works pre-setup on
 /// any machine or harness (the hub records "dashboard" as the last writer).
@@ -941,13 +1157,21 @@ fn cmd_dashboard_url() -> i32 {
             return 2;
         }
     };
-    println!(
-        "dashboard: http://localhost:{}/?k={}",
-        cfg.port, cfg.dashboard_key
-    );
-    if bind == Ipv4Addr::UNSPECIFIED {
+    let cap = match wtf::federation::load_or_create_capability() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let loopback = bind.is_loopback();
+    if loopback {
+        println!("dashboard: http://localhost:{}/w/{cap}", cfg.port);
+        println!("(loopback-only hub — this link opens ONLY on this machine)");
+    } else {
+        println!("dashboard: http://localhost:{}/w/{cap}", cfg.port);
         println!(
-            "from other hosts: http://{}:{}/?k={}",
+            "from other hosts: http://{}:{}/?k={} (LAN path uses the dashboard key)",
             util::lan_ip(),
             cfg.port,
             cfg.dashboard_key

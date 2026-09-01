@@ -67,6 +67,23 @@ constant-time compare. CLI: `wtf enroll --psk`, `wtf enroll-secret
 [--rotate] [--json]`. Token mode stays working; in-tree ML-DSA-65 handshake
 signing is the documented future upgrade.
 
+**Latest (v0.11.0, federated ledger + capability dashboard):** a hub on
+EVERY machine with full-mesh ledger replication (reverses the old
+one-hub-per-fleet rule). `wtf federate add <name> --url <peer> --psk
+<peer-site-secret>` enrolls this hub on the peer as device `fed-<hub-name>`
+(ML-KEM-768-sealed credential in `federation.json`, 0600) and adopts the
+peer's real fed identity. Events carry `origin` + `origin_id` + `repo`;
+replication = push-on-append + 10 s anti-entropy sweep over
+`POST /api/v1/fed/push` and `GET /api/v1/fed/pull` (dedupe on
+origin+origin_id); `auth.rs` untouched. The dashboard is served ONLY at
+`/w/<64-hex capability token>` (`dashboard_capability`, 0600); loopback
+hubs gate on the token + localhost, LAN hubs keep `?k=`; wrong token ==
+uniform 404. `wtf dashboard-url` prints the localhost capability link;
+MCP `hub_info` points there (tokens never travel over MCP). Bridges stamp
+a `repo` label (cwd basename, `WTF_REPO` overrides) so one machine can run
+agents across many repos; the dashboard groups by origin hub. 100 unit +
+12 e2e green.
+
 **Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
 three paste-bins into the operator's copy/paste channel between machines and
 agents, gated by the dashboard key (`?k=`) — content moves *before* any

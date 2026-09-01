@@ -222,7 +222,13 @@ fn hub_bridge_end_to_end() {
     assert_eq!(anon.status, 401);
 
     let dash_denied = wtf::client::request(&format!("{url}/"), "GET", &[], b"").unwrap();
-    assert_eq!(dash_denied.status, 401);
+    assert_eq!(dash_denied.status, 404, "no capability path = uniform 404");
+    let cap = std::fs::read_to_string(home.join("dashboard_capability")).unwrap();
+    let cap = cap.trim();
+    let dash_cap = wtf::client::request(&format!("{url}/w/{cap}"), "GET", &[], b"").unwrap();
+    assert_eq!(dash_cap.status, 200, "capability path serves the dashboard");
+    let dash_wrong = wtf::client::request(&format!("{url}/w/{}", "0".repeat(64)), "GET", &[], b"").unwrap();
+    assert_eq!(dash_wrong.status, 404, "wrong capability = uniform 404 (no oracle)");
 
     let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
     let dkey = wtf::json::parse(&cfg_text)
@@ -232,8 +238,8 @@ fn hub_bridge_end_to_end() {
         .as_str()
         .unwrap()
         .to_string();
-    let dash = wtf::client::request(&format!("{url}/?k={dkey}"), "GET", &[], b"").unwrap();
-    assert_eq!(dash.status, 200);
+    let dash = wtf::client::request(&format!("{url}/w/{cap}"), "GET", &[], b"").unwrap();
+    assert_eq!(dash.status, 200, "capability path serves the dashboard on loopback hubs");
     assert!(dash.text().contains("WTF IS GOING ON"));
 
     // Forged signature is rejected.
@@ -1753,6 +1759,209 @@ fn psk_handshake_end_to_end() {
 /// bootstrap and general cross-machine copy/paste. A wrong key is refused
 /// with the uniform 401. Finally, an enrolled agent (device auth, no
 /// dashboard key) sees the same payload through the MCP read_bin tool.
+
+#[test]
+fn federation_two_hub_end_to_end() {
+    // Two hubs, two homes. Hub A is linked to hub B via `wtf federate add`
+    // (one site-secret copy). Events checked in on either hub must appear
+    // on both: push-on-append + anti-entropy over the HMAC device lane.
+    let (home_a, home_b) = (temp_home("fedhuba"), temp_home("fedhubb"));
+    // Pin ports: federation.json records the peer URL at `federate add`
+    // time, so hub restarts must keep the same address (true in production
+    // where hubs live on stable LAN addresses).
+    let free_port = || -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let bind_a = format!("127.0.0.1:{}", free_port());
+    let bind_b = format!("127.0.0.1:{}", free_port());
+    let spawn_hub = |home: &std::path::PathBuf, bind: &str| -> (Child, BufReader<std::process::ChildStdout>, String) {
+        let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["serve", "--bind", bind, "--no-open"])
+            .env("WTF_HOME", home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn hub");
+        let mut lines = BufReader::new(hub.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = lines.read_line(&mut line).expect("hub stdout");
+            assert!(n > 0, "hub exited before listening");
+            if line.contains("listening") {
+                break;
+            }
+        }
+        let url = line
+            .split_whitespace()
+            .rev()
+            .find(|t| t.starts_with("http://"))
+            .expect("hub url")
+            .to_string();
+        (hub, lines, url)
+    };
+    let (mut hub_a, _rd_a, url_a) = spawn_hub(&home_a, bind_a.as_str());
+    let (mut hub_b, _rd_b, url_b) = spawn_hub(&home_b, bind_b.as_str());
+
+    // Peer B's site secret.
+    let cfg_b = wtf::json::parse(
+        std::fs::read_to_string(home_b.join("config.json")).unwrap().trim(),
+    )
+    .unwrap();
+    let psk_b = cfg_b.get("enroll_secret").unwrap().as_str().unwrap().to_string();
+
+    // Link A -> B. One command on one side; replication must be bidirectional.
+    let add = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["federate", "add", "hub-b", "--url", &url_b, "--psk", &psk_b])
+        .env("WTF_HOME", &home_a)
+        .output()
+        .expect("wtf federate add");
+    assert!(
+        add.status.success(),
+        "federate add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    // federation.json (0600) now holds B's issued credential.
+    let fed_text = std::fs::read_to_string(home_a.join("federation.json")).unwrap();
+    let fed_v = wtf::json::parse(fed_text.trim()).unwrap();
+    let fed_name_a = fed_v.get("name").unwrap().as_str().unwrap().to_string();
+    assert!(fed_name_a.starts_with("hub-"), "hub name minted: {fed_name_a}");
+    let peer = &fed_v.get("peers").unwrap().as_arr().unwrap()[0];
+    let peer_name = peer.get("name").unwrap().as_str().unwrap().to_string();
+    assert!(
+        peer_name.starts_with("hub-") && peer_name != fed_name_a,
+        "peer's real fed identity adopted: {peer_name}"
+    );
+    let fed_dev = peer.get("device").unwrap().as_str().unwrap().to_string();
+    assert_eq!(fed_dev, format!("fed-{fed_name_a}"));
+    let peer_key = peer.get("device_key").unwrap().as_str().unwrap().to_string();
+    assert_eq!(peer_key.len(), 64, "peer issued a device key");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(home_a.join("federation.json")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "federation.json is 0600");
+    }
+
+    // Restart BOTH hubs so each spawns its replicator (A has a peer; B got a
+    // new device in its keystore — its own fed table is empty but its store
+    // ingests pushes).
+    hub_a.kill().unwrap();
+    hub_b.kill().unwrap();
+    hub_a.wait().unwrap();
+    hub_b.wait().unwrap();
+    let (mut hub_a2, _rd_a2, url_a2) = spawn_hub(&home_a, bind_a.as_str());
+    let (mut hub_b2, _rd_b2, url_b2) = spawn_hub(&home_b, bind_b.as_str());
+
+    // Enroll an agent on each hub via the keystore (device creds for the API).
+    let issue_a = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "--json", "agent-a"])
+        .env("WTF_HOME", &home_a)
+        .output()
+        .unwrap();
+    assert!(issue_a.status.success());
+    let ja = wtf::json::parse(
+        String::from_utf8_lossy(&issue_a.stdout)
+            .lines()
+            .find(|l| l.trim_start().starts_with('{'))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    let key_a = ja.get("key").unwrap().as_str().unwrap().to_string();
+
+    let issue_b = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "--json", "agent-b"])
+        .env("WTF_HOME", &home_b)
+        .output()
+        .unwrap();
+    assert!(issue_b.status.success());
+    let jb = wtf::json::parse(
+        String::from_utf8_lossy(&issue_b.stdout)
+            .lines()
+            .find(|l| l.trim_start().starts_with('{'))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    let key_b = jb.get("key").unwrap().as_str().unwrap().to_string();
+
+    // Agent A checks in on hub A with repo label; agent B on hub B.
+    let mut ag_a = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url_a2)
+        .env("WTF_DEVICE_NAME", "agent-a")
+        .env("WTF_DEVICE_KEY", &key_a)
+        .env("WTF_REPO", "repo-alpha")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut rd_a = BufReader::new(ag_a.stdout.take().unwrap());
+    rpc_write(&mut ag_a, r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"working","task":"repo alpha work","repo":"repo-alpha"}}}"#);
+    let r = rpc_read(&mut rd_a);
+    assert_ne!(r.get("result").unwrap().get("isError").and_then(|v| v.as_bool()), Some(true), "agent-a check-in");
+
+    let mut ag_b = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url_b2)
+        .env("WTF_DEVICE_NAME", "agent-b")
+        .env("WTF_DEVICE_KEY", &key_b)
+        .env("WTF_REPO", "repo-beta")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut rd_b = BufReader::new(ag_b.stdout.take().unwrap());
+    rpc_write(&mut ag_b, r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"blocked","task":"repo beta work","repo":"repo-beta","details":"waiting on tests"}}}"#);
+    let r = rpc_read(&mut rd_b);
+    assert_ne!(r.get("result").unwrap().get("isError").and_then(|v| v.as_bool()), Some(true), "agent-b check-in");
+
+    // Wait for replication both ways (2s poll loop; cadence is immediate on
+    // generation bump and the sweep runs every 30s worst-case; first push
+    // happens within ~2s of the event).
+    let status_text = |url: &str, device: &str, key: &str| -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["status"])
+            .env("WTF_HUB_URL", url)
+            .env("WTF_DEVICE_NAME", device)
+            .env("WTF_DEVICE_KEY", key)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let mut saw_b_on_a = false;
+    let mut saw_a_on_b = false;
+    for _ in 0..30 {
+        let sa = status_text(&url_a2, "agent-a", &key_a);
+        if sa.contains("agent-b") && sa.contains("repo-beta") {
+            saw_b_on_a = true;
+        }
+        let sb = status_text(&url_b2, "agent-b", &key_b);
+        if sb.contains("agent-a") && sb.contains("repo-alpha") {
+            saw_a_on_b = true;
+        }
+        if saw_b_on_a && saw_a_on_b {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    assert!(saw_b_on_a, "hub A ledger carries hub B's agent (origin-tagged)");
+    assert!(saw_a_on_b, "hub B ledger carries hub A's agent (origin-tagged)");
+
+    ag_a.kill().unwrap();
+    ag_b.kill().unwrap();
+    hub_a2.kill().unwrap();
+    hub_b2.kill().unwrap();
+}
+
 #[test]
 fn bin_operator_courier_end_to_end() {
     let home = temp_home("bin");

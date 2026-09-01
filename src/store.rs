@@ -3,11 +3,17 @@
 //! Events are the source of truth: the append-only JSONL log is replayed on
 //! startup to rebuild agent state, so a hub restart loses nothing. The log
 //! rotates at 10 MB (renamed to events.jsonl.old) so it cannot grow forever.
+//!
+//! Federation: every event carries `origin` (the originating hub's stable
+//! name) and `origin_id` (monotonic AT the origin). Locally-recorded events
+//! stamp this hub's own name as origin; replicated events keep the remote
+//! origin and are deduped on (origin, origin_id). Pre-federation events
+//! replay with origin "" and remain first-class.
 
 use crate::bins::Bins;
 use crate::json::Value;
 use crate::util::{clamp, now_secs};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,6 +34,8 @@ pub struct AgentEntry {
     pub status: String,
     pub task: String,
     pub details: String,
+    pub repo: String,
+    pub origin: String,
     pub first_seen: u64,
     pub last_seen: u64,
 }
@@ -44,6 +52,12 @@ pub struct Event {
     pub task: String,
     pub details: String,
     pub kind: String, // "checkin" | "event"
+    /// Originating hub's stable name ("" = pre-federation local event).
+    pub origin: String,
+    /// Monotonic sequence AT the origin hub. Dedupe key = (origin, origin_id).
+    pub origin_id: u64,
+    /// Optional repository label (checked-out project dir name).
+    pub repo: String,
 }
 
 impl Event {
@@ -59,6 +73,9 @@ impl Event {
             ("status", Value::from(self.status.as_str())),
             ("task", Value::from(self.task.as_str())),
             ("details", Value::from(self.details.as_str())),
+            ("origin", Value::from(self.origin.as_str())),
+            ("origin_id", Value::from(self.origin_id as i64)),
+            ("repo", Value::from(self.repo.as_str())),
         ])
         .to_json()
     }
@@ -75,6 +92,9 @@ impl Event {
             status: v.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             task: v.get("task").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             details: v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            origin: v.get("origin").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            origin_id: v.get("origin_id").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
+            repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         })
     }
 }
@@ -84,12 +104,16 @@ struct Inner {
     events: VecDeque<Event>,
     next_id: u64,
     file: Option<std::fs::File>,
+    /// (origin, origin_id) of every event ever seen — dedupe for replication.
+    seen: HashSet<(String, u64)>,
 }
 
 pub struct Store {
     inner: Mutex<Inner>,
     log_path: PathBuf,
     generation: AtomicU64,
+    /// Origin name stamped on locally-recorded events (this hub's fed name).
+    origin_name: Mutex<String>,
 }
 
 /// "3m ago" style relative age.
@@ -117,6 +141,7 @@ impl Store {
         }
         let mut agents = HashMap::new();
         let mut events = VecDeque::new();
+        let mut seen = HashSet::new();
         let mut next_id = 1u64;
         match std::fs::read_to_string(data_file) {
             Ok(text) => {
@@ -128,6 +153,7 @@ impl Store {
                     let Ok(v) = crate::json::parse(line) else { continue };
                     let Some(ev) = Event::from_line(&v) else { continue };
                     next_id = next_id.max(ev.id + 1);
+                    seen.insert((ev.origin.clone(), ev.origin_id));
                     if ev.kind == "checkin" {
                         let key = (ev.device.clone(), ev.agent.clone());
                         agents.insert(
@@ -138,6 +164,8 @@ impl Store {
                                 status: ev.status.clone(),
                                 task: ev.task.clone(),
                                 details: ev.details.clone(),
+                                repo: ev.repo.clone(),
+                                origin: ev.origin.clone(),
                                 first_seen: ev.ts,
                                 last_seen: ev.ts,
                             },
@@ -159,9 +187,10 @@ impl Store {
                 .open(data_file)?,
         );
         Ok(Store {
-            inner: Mutex::new(Inner { agents, events, next_id, file }),
+            inner: Mutex::new(Inner { agents, events, next_id, file, seen }),
             log_path: data_file.to_path_buf(),
             generation: AtomicU64::new(1),
+            origin_name: Mutex::new(String::new()),
         })
     }
 
@@ -186,10 +215,13 @@ impl Store {
         }
     }
 
-    fn record(&self, kind: &str, device: &str, agent: &str, level: &str, message: &str, status: &str, task: &str, details: &str, bump_agent: bool) -> Event {
+    #[allow(clippy::too_many_arguments)]
+    fn record(&self, kind: &str, device: &str, agent: &str, level: &str, message: &str, status: &str, task: &str, details: &str, repo: &str, bump_agent: bool) -> Event {
         let ts = now_secs();
-        let mut ev = Event {
-            id: 0,
+        let mut inner = self.inner.lock().unwrap();
+        let origin = self.origin_name();
+        let ev = Event {
+            id: inner.next_id,
             ts,
             device: clamp(device, 64),
             agent: clamp(agent, 64),
@@ -199,10 +231,12 @@ impl Store {
             task: clamp(task, 500),
             details: clamp(details, 2000),
             kind: kind.to_string(),
+            origin: origin.clone(),
+            origin_id: inner.next_id,
+            repo: clamp(repo, 128),
         };
-        let mut inner = self.inner.lock().unwrap();
-        ev.id = inner.next_id;
         inner.next_id += 1;
+        inner.seen.insert((ev.origin.clone(), ev.origin_id));
         if bump_agent {
             let key = (ev.device.clone(), ev.agent.clone());
             match inner.agents.get_mut(&key) {
@@ -211,6 +245,7 @@ impl Store {
                         a.status = ev.status.clone();
                         a.task = ev.task.clone();
                         a.details = ev.details.clone();
+                        a.repo = ev.repo.clone();
                     }
                     a.last_seen = ev.ts;
                 }
@@ -223,6 +258,8 @@ impl Store {
                             status: if kind == "checkin" { ev.status.clone() } else { "idle".into() },
                             task: if kind == "checkin" { ev.task.clone() } else { String::new() },
                             details: if kind == "checkin" { ev.details.clone() } else { String::new() },
+                            repo: ev.repo.clone(),
+                            origin: ev.origin.clone(),
                             first_seen: ev.ts,
                             last_seen: ev.ts,
                         },
@@ -235,24 +272,35 @@ impl Store {
             inner.events.pop_front();
         }
         Self::append_locked(&mut inner, &self.log_path, &ev);
+        drop(inner);
         self.generation.fetch_add(1, Ordering::SeqCst);
         ev
     }
 
-    pub fn check_in(&self, device: &str, agent: &str, status: &str, task: &str, details: &str) -> Event {
-        self.record("checkin", device, agent, "info", &format!("status: {status} — {task}"), status, task, details, true)
+    pub fn check_in(&self, device: &str, agent: &str, status: &str, task: &str, details: &str, repo: &str) -> Event {
+        self.record("checkin", device, agent, "info", &format!("status: {status} — {task}"), status, task, details, repo, true)
     }
 
-    pub fn log_event(&self, device: &str, agent: &str, level: &str, message: &str) -> Event {
-        self.record("event", device, agent, level, message, "", "", "", true)
+    pub fn log_event(&self, device: &str, agent: &str, level: &str, message: &str, repo: &str) -> Event {
+        self.record("event", device, agent, level, message, "", "", "", repo, true)
     }
 
     pub fn heartbeat(&self, device: &str, agent: &str) {
-        self.record("event", device, agent, "info", "heartbeat", "", "", "", true);
+        self.record("event", device, agent, "info", "heartbeat", "", "", "", "", true);
     }
 
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
+    }
+
+    /// The origin name stamped on locally-recorded events. Wired by the hub
+    /// at startup; empty = pre-federation (events keep origin "").
+    pub fn origin_name(&self) -> String {
+        self.origin_name.lock().unwrap().clone()
+    }
+
+    pub fn set_origin_name(&self, name: &str) {
+        *self.origin_name.lock().unwrap() = name.to_string();
     }
 
     /// (agents sorted by device/agent, events oldest→newest)
@@ -261,6 +309,95 @@ impl Store {
         let mut agents: Vec<AgentEntry> = inner.agents.values().cloned().collect();
         agents.sort_by(|a, b| (&a.device, &a.agent).cmp(&(&b.device, &b.agent)));
         (agents, inner.events.iter().cloned().collect())
+    }
+
+    /// Highest origin_id recorded for a given origin (0 if none) — the pull
+    /// cursor a peer hands us. For origin "" (pre-federation events) the
+    /// cursor is meaningless; peers always also exchange counts via
+    /// `stats_since` for anti-entropy.
+    pub fn max_origin_id(&self, origin: &str) -> u64 {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .events
+            .iter()
+            .filter(|e| e.origin == origin)
+            .map(|e| e.origin_id)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// All events with origin == `origin` and origin_id > `after`, oldest first.
+    pub fn events_since(&self, origin: &str, after: u64) -> Vec<Event> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .events
+            .iter()
+            .filter(|e| e.origin == origin && e.origin_id > after)
+            .cloned()
+            .collect()
+    }
+
+    /// Ingest a replicated event. Dedupes on (origin, origin_id); assigns a
+    /// LOCAL id for ordering (the wire order defines it, monotonic local
+    /// sequence); persists; bumps generation. Agent-card effects apply only
+    /// when the ingest is newer than the card's current state (last-writer
+    /// wins by origin ts, matching the append-only posture).
+    /// Returns true if the event was new.
+    pub fn ingest(&self, ev: &Event) -> bool {
+        let key = (ev.origin.clone(), ev.origin_id);
+        {
+            let inner = self.inner.lock().unwrap();
+            if inner.seen.contains(&key) {
+                return false;
+            }
+        }
+        let mut inner = self.inner.lock().unwrap();
+        // Re-check under the same lock acquisition to close the race window.
+        if inner.seen.contains(&key) {
+            return false;
+        }
+        let mut ev = ev.clone();
+        ev.id = inner.next_id;
+        inner.next_id += 1;
+        inner.seen.insert(key);
+        if ev.kind == "checkin" {
+            let akey = (ev.device.clone(), ev.agent.clone());
+            match inner.agents.get_mut(&akey) {
+                Some(a) if a.last_seen <= ev.ts => {
+                    a.status = ev.status.clone();
+                    a.task = ev.task.clone();
+                    a.details = ev.details.clone();
+                    a.repo = ev.repo.clone();
+                    a.origin = ev.origin.clone();
+                    a.last_seen = ev.ts;
+                }
+                Some(_) => {}
+                None => {
+                    inner.agents.insert(
+                        akey,
+                        AgentEntry {
+                            device: ev.device.clone(),
+                            agent: ev.agent.clone(),
+                            status: ev.status.clone(),
+                            task: ev.task.clone(),
+                            details: ev.details.clone(),
+                            repo: ev.repo.clone(),
+                            origin: ev.origin.clone(),
+                            first_seen: ev.ts,
+                            last_seen: ev.ts,
+                        },
+                    );
+                }
+            }
+        }
+        inner.events.push_back(ev.clone());
+        while inner.events.len() > MAX_EVENTS_IN_MEMORY {
+            inner.events.pop_front();
+        }
+        Self::append_locked(&mut inner, &self.log_path, &ev);
+        drop(inner);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        true
     }
 
     pub fn to_state_json(&self, started_at: u64, bins: &Bins) -> Value {
@@ -275,6 +412,8 @@ impl Store {
                     ("status", Value::from(a.status.as_str())),
                     ("task", Value::from(a.task.as_str())),
                     ("details", Value::from(a.details.as_str())),
+                    ("repo", Value::from(a.repo.as_str())),
+                    ("origin", Value::from(a.origin.as_str())),
                     ("first_seen", Value::from(a.first_seen as i64)),
                     ("last_seen", Value::from(a.last_seen as i64)),
                     ("stale", Value::from(is_stale(now, a.last_seen))),
@@ -291,6 +430,8 @@ impl Store {
                     ("agent", Value::from(e.agent.as_str())),
                     ("level", Value::from(e.level.as_str())),
                     ("message", Value::from(e.message.as_str())),
+                    ("origin", Value::from(e.origin.as_str())),
+                    ("repo", Value::from(e.repo.as_str())),
                 ])
             })
             .collect();
@@ -327,13 +468,14 @@ mod tests {
     #[test]
     fn checkin_event_flow() {
         let (s, d) = temp_store("flow");
-        s.check_in("box1", "oz", "working", "build hub", "compiling");
-        s.log_event("box1", "oz", "warn", "clippy unhappy");
+        s.check_in("box1", "oz", "working", "build hub", "compiling", "wtf");
+        s.log_event("box1", "oz", "warn", "clippy unhappy", "wtf");
         s.heartbeat("box1", "oz");
         let (agents, events) = s.snapshot();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].status, "working"); // heartbeat touches last_seen only
         assert_eq!(agents[0].task, "build hub");
+        assert_eq!(agents[0].repo, "wtf");
         assert_eq!(events.len(), 3);
         assert_eq!(events[2].message, "heartbeat");
         assert!(s.generation() >= 4);
@@ -343,15 +485,16 @@ mod tests {
     #[test]
     fn persistence_replay() {
         let (s, d) = temp_store("replay");
-        s.check_in("box1", "oz", "working", "task A", "");
-        s.check_in("box2", "claude", "blocked", "task B", "waiting on tests");
-        s.log_event("box1", "oz", "error", "boom");
+        s.check_in("box1", "oz", "working", "task A", "", "repo-a");
+        s.check_in("box2", "claude", "blocked", "task B", "waiting on tests", "");
+        s.log_event("box1", "oz", "error", "boom", "");
         let path = d.join("events.jsonl");
         let s2 = Store::new(&path).unwrap();
         let (agents, events) = s2.snapshot();
         assert_eq!(agents.len(), 2);
         let oz = agents.iter().find(|a| a.agent == "oz").unwrap();
         assert_eq!(oz.status, "working");
+        assert_eq!(oz.repo, "repo-a");
         assert_eq!(events.len(), 3);
         assert_eq!(events[2].level, "error");
         assert_eq!(events[2].id, 3);
@@ -362,7 +505,7 @@ mod tests {
     fn clamping_and_ids() {
         let (s, d) = temp_store("clamp");
         let big = "x".repeat(5000);
-        let ev = s.log_event("d", "a", "info", &big);
+        let ev = s.log_event("d", "a", "info", &big, "");
         assert_eq!(ev.message.len(), 2000);
         assert_eq!(ev.id, 1);
         std::fs::remove_dir_all(&d).ok();
@@ -376,5 +519,69 @@ mod tests {
         assert_eq!(rel_age(now, now - 120), "2m");
         assert_eq!(rel_age(now, now - 7200), "2h");
         assert_eq!(rel_age(now, now - 172800), "2d");
+    }
+
+    #[test]
+    fn ingest_dedupes_and_cursors() {
+        let (s, d) = temp_store("ingest");
+        let mk = |oid: u64, ts: u64, msg: &str| Event {
+            id: 0,
+            ts,
+            device: "box2".into(),
+            agent: "remote-agent".into(),
+            level: "info".into(),
+            message: msg.into(),
+            status: "working".into(),
+            task: "remote task".into(),
+            details: String::new(),
+            kind: "checkin".into(),
+            origin: "hub-peer".into(),
+            origin_id: oid,
+            repo: "other-repo".into(),
+        };
+        assert!(s.ingest(&mk(1, 100, "first")));
+        assert!(!s.ingest(&mk(1, 100, "first"))); // duplicate dropped
+        assert!(s.ingest(&mk(2, 200, "second")));
+        let (_, events) = s.snapshot();
+        assert_eq!(events.len(), 2);
+        assert_eq!(s.max_origin_id("hub-peer"), 2);
+        assert_eq!(s.max_origin_id("nobody"), 0);
+        assert_eq!(s.events_since("hub-peer", 1).len(), 1);
+        assert_eq!(s.events_since("hub-peer", 2).len(), 0);
+        // agent card reflects the newer ingest
+        let (agents, _) = s.snapshot();
+        let ra = agents.iter().find(|a| a.agent == "remote-agent").unwrap();
+        assert_eq!(ra.task, "remote task");
+        assert_eq!(ra.origin, "hub-peer");
+        assert_eq!(ra.repo, "other-repo");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn stale_agent_card_not_regressed_by_old_ingest() {
+        let (s, d) = temp_store("noregress");
+        s.check_in("box3", "ag", "done", "new work", "", "");
+        let (_, events) = s.snapshot();
+        let local_ts = events.last().unwrap().ts;
+        let old = Event {
+            id: 0,
+            ts: local_ts.saturating_sub(500),
+            device: "box3".into(),
+            agent: "ag".into(),
+            level: "info".into(),
+            message: "old".into(),
+            status: "working".into(),
+            task: "old work".into(),
+            details: String::new(),
+            kind: "checkin".into(),
+            origin: "hub-peer".into(),
+            origin_id: 9,
+            repo: String::new(),
+        };
+        assert!(s.ingest(&old));
+        let (agents, _) = s.snapshot();
+        let ag = agents.iter().find(|a| a.agent == "ag").unwrap();
+        assert_eq!(ag.status, "done"); // newer local card kept
+        std::fs::remove_dir_all(&d).ok();
     }
 }
