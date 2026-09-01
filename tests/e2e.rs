@@ -324,9 +324,11 @@ fn hub_bridge_end_to_end() {
     .unwrap();
     assert_eq!(anon_put.status, 401);
 
-    // Unknown bin id is an unknown path: 404, never a panic.
+    // Unknown bin id is an unknown path: 404, never a panic. v0.15.0:
+    // ids 4..=255 are dynamic bins (per-connection bins materialize on
+    // write), so the negative case moved to 0/256.
     let bad_bin = wtf::client::request(
-        &format!("{url}/api/v1/bins/4?k={dkey}"),
+        &format!("{url}/api/v1/bins/256?k={dkey}"),
         "PUT",
         &[],
         br#"{"content":"x"}"#,

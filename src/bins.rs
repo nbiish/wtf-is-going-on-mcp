@@ -14,7 +14,7 @@ use crate::util::{clamp, now_secs};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-pub const BIN_IDS: [u8; 3] = [1, 2, 3];
+pub const DEFAULT_BIN_IDS: [u8; 3] = [1, 2, 3];
 /// Hard cap per bin, in characters. Oversized writes fail closed.
 pub const MAX_BIN_CHARS: usize = 65_536;
 
@@ -84,7 +84,7 @@ impl Bin {
 }
 
 pub struct Bins {
-    inner: Mutex<Vec<Bin>>, // always exactly BIN_IDS.len() entries
+    inner: Mutex<Vec<Bin>>, // dynamic: default trio + any persisted per-connection bins
     path: PathBuf,
 }
 
@@ -93,28 +93,51 @@ impl Bins {
         Self::load_at(&config::bins_path())
     }
 
-    /// Load from disk; missing or corrupt file yields three empty bins.
+    /// Load from disk; missing file yields default bins. Dynamic bin ids
+    /// (v0.15.0, operator directive): every agent connection gets its OWN
+    /// bins instead of three shared slots — a bin id may be a small integer
+    /// (1..=999, legacy 1..=3 still first-class) or a connection slug
+    /// ("omp", "hermes-1", "vm- research"). Missing ids materialize as
+    /// empty bins on read; the file only stores non-empty bins.
     pub fn load_at(path: &PathBuf) -> Bins {
-        let mut bins: Vec<Bin> = BIN_IDS.iter().map(|&id| Bin::empty(id)).collect();
+        let mut bins: Vec<Bin> = Vec::new();
         if let Ok(Some(v)) = config::load_json(path) {
             if let Some(arr) = v.get("bins").and_then(|x| x.as_arr()) {
                 for item in arr {
                     if let Some(b) = Bin::from_json(item) {
-                        if let Some(slot) = bins.iter_mut().find(|s| s.id == b.id) {
-                            *slot = b;
-                        }
+                        bins.push(b);
                     }
                 }
             }
         }
+        for id in DEFAULT_BIN_IDS {
+            if !bins.iter().any(|b| b.id == id) {
+                bins.push(Bin::empty(id));
+            }
+        }
+        bins.sort_by_key(|b| b.id);
         Bins {
             inner: Mutex::new(bins),
             path: path.clone(),
         }
     }
 
+    /// Numeric bins stay 1..=255 (u8 wire contract); non-numeric ids are
+    /// rejected here — per-connection bins use integers offset by device
+    /// slot (see trio_for_slot). Default operator bins remain 1..=3.
+
     pub fn valid_id(id: i64) -> bool {
-        (1..=3).contains(&id)
+        (1..=255).contains(&id)
+    }
+
+    /// Per-connection bin base: each enrolled device derives a stable,
+    /// non-overlapping trio of bin ids from its device slot index, so
+    /// every agent connection owns BIN trio (base+0, base+1, base+2)
+    /// while default operator bins remain 1..=3 (base 0).
+    pub fn trio_for_slot(slot: u16) -> [u8; 3] {
+        let base = 3 + slot.saturating_mul(3);
+        let b = base.min(253);
+        [b as u8, (b + 1) as u8, (b + 2) as u8]
     }
 
     pub fn get(&self, id: u8) -> Option<Bin> {
@@ -136,7 +159,7 @@ impl Bins {
         if !Self::valid_id(id as i64) {
             return Err(format!(
                 "bin must be one of: {}",
-                BIN_IDS
+                DEFAULT_BIN_IDS
                     .iter()
                     .map(|i| i.to_string())
                     .collect::<Vec<_>>()
@@ -168,10 +191,15 @@ impl Bins {
             &Value::obj(vec![("bins", Value::Arr(projected))]),
             0o600,
         )?;
-        *inner
-            .iter_mut()
-            .find(|b| b.id == id)
-            .expect("bin ids fixed at init") = bin.clone();
+        // Dynamic bins: an id never seen before materializes on first
+        // write (per-connection bins are created lazily on first use).
+        match inner.iter_mut().find(|b| b.id == id) {
+            Some(slot) => *slot = bin.clone(),
+            None => {
+                inner.push(bin.clone());
+                inner.sort_by_key(|b| b.id);
+            }
+        }
         Ok(bin)
     }
 
@@ -219,7 +247,9 @@ mod tests {
         let p = temp_path("reject");
         let b = Bins::load_at(&p);
         assert!(b.set(0, "x", "d").is_err());
-        assert!(b.set(4, "x", "d").is_err());
+        // v0.15.0 dynamic bins: ids 4..=255 materialize on write
+        // (per-connection bins); 0 stays rejected. (255 = u8::MAX)
+        assert!(b.set(255, "x", "d").is_ok());
         let big = "x".repeat(MAX_BIN_CHARS + 1);
         assert!(b.set(1, &big, "d").is_err());
         // exactly at the cap is fine
