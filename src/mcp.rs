@@ -286,7 +286,7 @@ impl Bridge {
                     (
                         "instructions",
                         Value::from(
-                            "All status reporting MUST use chain-of-draft style: terse fragments of <=5 words each, no prose paragraphs, no secrets (e.g. \"fixing auth replay bug; hub restarted; blocked on sshd\"). The user reads these updates on the dashboard to see what the fuck is going on — keep them scannable and frequent.",
+                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) EXECUTION — use the agent-CLI fallback chain (OhMyPy -> Hermes -> FreeClaudeCode, non-interactive) for headless task execution; record which CLI ran the task. (5) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
                         ),
                     ),
                     (
@@ -580,14 +580,20 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "List the encrypted session channels on the hub — id, name, paired repo, member and message counts. Use this to pick which chat to join or return to (cross-machine, cross-repo).",
+                        "List the encrypted session channels on the hub. Pass `repo` for an explicit discovery verdict on the current repository: MATCH = join that chat and coordinate there; NO MATCH = work locally, do not create one unless the user asks. When the user asks to start a federated chat: session_create {name, repo}, then hand the user the pairing key + connection steps for the other machine (LAN: enroll over local HTTP; internet: overlay/TLS proxy only).",
                     ),
                 ),
                 (
                     "inputSchema",
                     Value::obj(vec![
                         ("type", Value::from("object")),
-                        ("properties", Value::obj(vec![])),
+                        (
+                            "properties",
+                            Value::obj(vec![(
+                                "repo",
+                                Self::prop("filter by repo label for a discovery verdict on that repository"),
+                            )]),
+                        ),
                         ("additionalProperties", Value::from(false)),
                     ]),
                 ),
@@ -823,7 +829,7 @@ impl Bridge {
             "ping" => self.tool_ping(),
             "hub_info" => self.tool_hub_info(),
             "session_create" => self.tool_session_create(args),
-            "session_list" => self.tool_session_list(),
+            "session_list" => self.tool_session_list(args),
             "session_join" => self.tool_session_join(args),
             "session_seal" => self.tool_session_seal(args),
             "session_send" => self.tool_session_send(args),
@@ -1057,7 +1063,7 @@ impl Bridge {
                     ));
                 }
                 out.push_str(
-                    "dashboard link: operator runs `wtf dashboard-url` on the hub machine — prints the localhost capability URL (http://localhost:PORT/w/<token>); the token and dashboard key never travel over MCP\n",
+                    "dashboard link: operator runs `wtf dashboard-url` on the hub machine — prints the localhost capability URL (http://localhost:PORT/w/<token>); the token and dashboard key never travel over MCP\nfederation: call session_list to discover repo chats for the current repository; no matching chat = work locally unless the user asks for a federated chat\n",
                 );
                 (out, false)
             }
@@ -1256,10 +1262,53 @@ impl Bridge {
         )
     }
 
-    fn tool_session_list(&self) -> (String, bool) {
+    /// session_list { repo? }: list chats. With `repo`, deliver an
+    /// explicit discovery verdict for that repository — the core of the
+    /// no-chat rule (no match = work locally, don't create one).
+    fn tool_session_list(&self, args: &Value) -> (String, bool) {
         match self.api_get_session("/api/v1/sessions") {
             Ok(v) => {
                 let sessions = v.get("sessions").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                // Discovery verdict path: repo filter given.
+                if let Some(repo) = arg_str(args, "repo") {
+                    let matches: Vec<&Value> = sessions
+                        .iter()
+                        .filter(|s| s.get("repo").and_then(|x| x.as_str()) == Some(repo))
+                        .collect();
+                    if matches.is_empty() {
+                        return (
+                            format!(
+                                "NO federated chat for repo '{repo}'. Per protocol: work locally; do not create one unless the user asks. To start one on request: session_create {{name, repo:\"{repo}\"}}, then give the user the pairing key + connection steps."
+                            ),
+                            false,
+                        );
+                    }
+                    let mut out = format!(
+                        "MATCH: {} federated chat(s) for repo '{repo}':\n",
+                        matches.len()
+                    );
+                    for s in matches {
+                        let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                        let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                        let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
+                        let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
+                        let member_names: Vec<String> = s
+                            .get("members")
+                            .and_then(|x| x.as_arr())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|m| m.get("device").and_then(|v| v.as_str()).map(|d| d.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "  {id} · '{name}' · {members} member(s) [{}] · {msgs} msg(s)\n  -> join with session_join {{session:\"{id}\"}} (+ pairing key if you have it); coordinate + execute tasks there\n",
+                            member_names.join(", ")
+                        ));
+                    }
+                    return (out, false);
+                }
+                // Full listing (operator/agent overview).
                 let mut out = String::from("sessions (id · name · repo · members · msgs):\n");
                 for s in sessions {
                     let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");

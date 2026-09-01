@@ -142,8 +142,15 @@ cross-version seam).
   progress reported back into the chat. No per-task permission checks;
   verify by output. **CLI fallback chain (priority order):** OhMyPy CLI
   → Hermes CLI → FreeClaudeCode (free Claude Code server + Claude,
-  auto-started when the first two are absent). Record which CLI ran the
-  task in the report.
+  auto-started when the first two are absent, ALWAYS inside a named
+  tmux session `freeclaude-<repo-or-task-slug>` so the process is
+  identifiable and reattachable). Record which CLI ran the task — and
+  for FreeClaudeCode, the tmux session name + PID — in the report.
+  Install surface for a fresh machine: OhMyPy via Bun global
+  (`bun install -g oh-my-pi` → `omp`); Hermes rides the user's ACP
+  harness config; FreeClaudeCode is started per-task in tmux. Full
+  environment (AGENTS.md + COMMS protocol + all skill packs) deploys
+  with `ainish-coder --rules <repo>`.
 - **Zero-config join** (operator directive, 2026-09-01): a user hands
   any agent on any machine two artifacts — the skill file (ships in the
   binary, `wtf skill install`) and one highly secure federated key — and
