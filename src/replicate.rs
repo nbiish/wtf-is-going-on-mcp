@@ -171,13 +171,31 @@ pub fn anti_entropy(rep: &Replicator, peer: &Peer, pushed_cursor: &AtomicU64) ->
             .and_then(|x| x.as_i64())
             .unwrap_or(after as i64) as u64;
         if ingested > 0 {
-            let _ = rep.store.log_event(
-                "federation",
-                &format!("fed-{}", peer.name),
-                "info",
-                &format!("federation: +{ingested} event(s) from {}", peer.name),
-                "",
-            );
+            // Flood guard (defect found by windows-1, 2026-09-01): these
+            // ingest logs themselves replicate, so peers re-ingest + re-log
+            // them — a feedback loop that drowned the event ring (~20
+            // events/min). Never log ingests that are themselves
+            // federation-internal (device "federation"); throttle the rest
+            // to one per WARN_THROTTLE_SECS per peer.
+            let only_fed_internal = events.iter().all(|e| {
+                e.get("device").and_then(|x| x.as_str()) == Some("federation")
+            });
+            if !only_fed_internal {
+                let mut lw = rep.last_warn.lock().unwrap();
+                let last = *lw.get(&format!("pull-{}", peer.name)).unwrap_or(&0);
+                let now2 = now_secs();
+                if now2.saturating_sub(last) > WARN_THROTTLE_SECS {
+                    lw.insert(format!("pull-{}", peer.name), now2);
+                    drop(lw);
+                    let _ = rep.store.log_event(
+                        "federation",
+                        &format!("fed-{}", peer.name),
+                        "info",
+                        &format!("federation: +{ingested} event(s) from {}", peer.name),
+                        "",
+                    );
+                }
+            }
         }
         if events.is_empty() || cursor == after {
             break;
