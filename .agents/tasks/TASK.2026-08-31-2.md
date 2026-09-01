@@ -291,3 +291,40 @@ action, never auto-scanned.
 - Configuration porting (keys to claude compute etc.) remains an
   explicit, operator-driven action through the PQC envelope path, not
   an env-probe feature.
+
+---
+
+# TASK — MAC-TO-WINDOWS.COMMS.md three-agent verification + FCC live check (2026-09-01)
+
+Operator final-test goal: a durable `MAC-TO-WINDOWS.COMMS.md` proving all
+three agent CLIs (OhMyPy, Hermes, FreeClaudeCode) append to a shared
+cross-machine text file, commanded from this machine (or any repo chat
+handshake — the repo 'smart-contract' of federated work).
+
+## FCC live check (this machine, first leg)
+
+- `fcc-server` started in NAMED tmux session `freeclaude-wtf-mcp`
+  (PID 30349) — `/health` → `{"status":"healthy"}`.
+- `fcc-claude -p "..."` reaches the server; upstream returned 401 (the
+  claude-code CLI behind it has no valid auth on this box right now).
+  CHAIN MECHANICS VERIFIED (server-in-tmux healthy, client reaches
+  server); upstream auth is operator-configured per the keys posture
+  (user watches keys/limits; keys port only via PQC envelope on explicit
+  operator action).
+- Rule now in SKILL.md/AGENTS.md/llms.txt: FreeClaudeCode ALWAYS runs in
+  a named tmux session `freeclaude-<slug>`.
+
+## Three-agent append plan (next chat / windows-1 joint task)
+
+1. Ensure `omp`, `hermes` on the executing machine (env_probe first;
+   install paths in SKILL.md §3). FCC: tmux-named server + `fcc-claude`.
+2. Create `MAC-TO-WINDOWS.COMMS.md` in the repo root (or the federated
+   chat defines its path), with a header explaining the three-agent
+   append contract.
+3. Each CLI appends one identified line:
+   - `omp -p "append '<line>' to MAC-TO-WINDOWS.COMMS.md"` (headless)
+   - hermes equivalent via its ACP CLI
+   - `fcc-claude -p ...` through the tmux-named server
+4. mac-agent (this machine) commands; windows-1 executes on its machine;
+   both verify via `git diff`/`session_read` + the COMMS chat.
+5. Durable record: the file itself + this task + COMMS ledger entries.
