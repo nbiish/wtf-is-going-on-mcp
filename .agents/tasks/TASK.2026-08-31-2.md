@@ -259,3 +259,35 @@ side:
    enrolls via the PSK handshake, writes bridge.json, wires the MCP
    client entry if the harness config is discoverable, verifies with a
    signed round-trip) — everything in-tree per the hard-code directive.
+
+
+---
+
+# TASK — env_report / env_probe cross-machine capability discovery (2026-09-01, v0.13.1)
+
+Operator directive: verify through MCP calls that remote machines have
+the agent CLIs set up; report models/tooling cross-machine so the user
+can have one agent configure the federated system on another (e.g.
+claude compute) — securely, with keys ported only by explicit user
+action, never auto-scanned.
+
+## Shipped
+
+- `api.rs`: `POST /api/v1/env` (device-auth bridge self-report: CLI
+  presence/versions/os/arch; 8 KiB cap; ring of 64; credentials
+  explicitly out of scope) + `GET /api/v1/env` (device-auth: all
+  devices' reports).
+- `mcp.rs`: `env_report` (probe own machine: omp/hermes versions +
+  paths, freeclaude tmux sessions, os/arch; never touches key material)
+  + `env_probe` (all devices' reports) — tools 16 -> 18.
+- SKILL.md §3: cross-machine capability discovery note.
+- Gates: 100 unit + 13 e2e green (tools count assertion 16 -> 18).
+
+## Security posture
+
+- The report contains PRESENCE + VERSIONS ONLY. API keys, model
+  credentials, and config files are never read, never transmitted,
+  never stored — they live in the user's env / PQC bundle.
+- Configuration porting (keys to claude compute etc.) remains an
+  explicit, operator-driven action through the PQC envelope path, not
+  an env-probe feature.

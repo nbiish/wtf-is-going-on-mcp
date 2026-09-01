@@ -514,6 +514,40 @@ impl Bridge {
                 ),
             ]),
             Value::obj(vec![
+                ("name", Value::from("env_report")),
+                (
+                    "description",
+                    Value::from(
+                        "Probe THIS machine's agent-CLI surface (omp / hermes / freeclaude tmux sessions, versions, os/arch) and register it on the hub so other machines can discover capabilities. Presence + versions only — never API keys or credentials.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("env_probe")),
+                (
+                    "description",
+                    Value::from(
+                        "Discover agent-CLI capabilities across ALL connected machines: who has omp, hermes, and which FreeClaudeCode tmux sessions are running. Use to pick the right executor for a task or to check a remote machine's setup before configuring it.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
                 ("name", Value::from("ping")),
                 (
                     "description",
@@ -828,6 +862,8 @@ impl Bridge {
             "list_bins" => self.tool_list_bins(),
             "ping" => self.tool_ping(),
             "hub_info" => self.tool_hub_info(),
+            "env_report" => self.tool_env_report(),
+            "env_probe" => self.tool_env_probe(),
             "session_create" => self.tool_session_create(args),
             "session_list" => self.tool_session_list(args),
             "session_join" => self.tool_session_join(args),
@@ -1045,6 +1081,139 @@ impl Bridge {
 
     /// Where is the hub? Answers the operator's "what's the address"
     /// question without ever exposing the dashboard key: agents get the
+    /// Probe THIS machine's agent-CLI surface. Presence + versions only —
+    /// NEVER API keys or credentials (those live in the user's env /
+    /// PQC bundle and are not this system's business).
+    fn collect_env_report(&self) -> Value {
+        let probe = |cmd: &str, args: &[&str]| -> Value {
+            match std::process::Command::new(cmd).args(args).output() {
+                Ok(out) if out.status.success() => {
+                    let ver = String::from_utf8_lossy(&out.stdout);
+                    let ver = ver.lines().next().unwrap_or("").trim().to_string();
+                    let path = std::process::Command::new("which")
+                        .arg(cmd)
+                        .output()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    Value::obj(vec![
+                        ("version", Value::from(ver.as_str())),
+                        ("path", Value::from(path.as_str())),
+                    ])
+                }
+                _ => Value::from(false),
+            }
+        };
+        let clis = Value::obj(vec![
+            ("omp", probe("omp", &["--version"])),
+            ("hermes", probe("hermes", &["--version"])),
+            (
+                "freeclaude",
+                match std::process::Command::new("tmux").args(["ls"]).output() {
+                    Ok(out) if out.status.success() => {
+                        let s = String::from_utf8_lossy(&out.stdout);
+                        let sessions: Vec<&str> = s
+                            .lines()
+                            .filter(|l| l.contains("freeclaude-"))
+                            .map(|l| l.split(':').next().unwrap_or("").trim())
+                            .collect();
+                        if sessions.is_empty() {
+                            Value::from(false)
+                        } else {
+                            Value::obj(vec![(
+                                "tmux_sessions",
+                                Value::Arr(sessions.iter().map(|s| Value::from(*s)).collect()),
+                            )])
+                        }
+                    }
+                    _ => Value::from(false),
+                },
+            ),
+        ]);
+        Value::obj(vec![
+            ("clis", clis),
+            ("os", Value::from(std::env::consts::OS)),
+            ("arch", Value::from(std::env::consts::ARCH)),
+            ("wtf_version", Value::from(crate::VERSION)),
+        ])
+    }
+
+    /// env_report {} — probe this machine and POST to the hub (device-auth).
+    fn tool_env_report(&self) -> (String, bool) {
+        let report = self.collect_env_report();
+        match self.api_post("/api/v1/env", &report) {
+            Ok(_) => (
+                format!(
+                    "env reported: {} (os {} / arch {})",
+                    self.cfg.device_name,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ),
+                false,
+            ),
+            Err(e) => (format!("env report failed: {e}"), true),
+        }
+    }
+
+    /// env_probe {} — fetch all devices' env reports from the hub.
+    fn tool_env_probe(&self) -> (String, bool) {
+        match self.api_get("/api/v1/env") {
+            Ok(v) => {
+                let devices = v.get("devices").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                if devices.is_empty() {
+                    return (
+                        "no env reports yet — each machine's agent runs env_report once".into(),
+                        false,
+                    );
+                }
+                let mut out = String::from(
+                    "env reports (device · omp · hermes · freeclaude · os/arch):\n",
+                );
+                for d in devices {
+                    let dev = d.get("device").and_then(|x| x.as_str()).unwrap_or("?");
+                    let rep = d.get("report").unwrap_or(&Value::Null);
+                    let clis = rep.get("clis");
+                    let cli_state = |name: &str| -> String {
+                        clis.and_then(|c| c.get(name))
+                            .map(|x| {
+                                if x.as_bool() == Some(false) {
+                                    "-".to_string()
+                                } else {
+                                    x.get("version")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("present")
+                                        .to_string()
+                                }
+                            })
+                            .unwrap_or_else(|| "-".to_string())
+                    };
+                    let os = rep.get("os").and_then(|x| x.as_str()).unwrap_or("?");
+                    let arch = rep.get("arch").and_then(|x| x.as_str()).unwrap_or("?");
+                    let tmux_sessions = clis
+                        .and_then(|c| c.get("freeclaude"))
+                        .filter(|x| x.as_bool() != Some(false))
+                        .and_then(|x| x.get("tmux_sessions"))
+                        .and_then(|x| x.as_arr())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "  {dev} · omp:{} hermes:{} freeclaude:{} · {os}/{arch}\n",
+                        cli_state("omp"),
+                        cli_state("hermes"),
+                        if tmux_sessions.is_empty() { "-".into() } else { tmux_sessions }
+                    ));
+                }
+                (out, false)
+            }
+            Err(e) => (format!("env probe failed: {e}"), true),
+        }
+    }
+
     /// hub URL and version; the clickable `?k=` link is printed only by
     /// `wtf dashboard-url` on the hub machine itself.
     fn tool_hub_info(&self) -> (String, bool) {
