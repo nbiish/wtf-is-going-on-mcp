@@ -156,7 +156,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 18);
 
     rpc_write(
         &mut agent,

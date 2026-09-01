@@ -201,6 +201,7 @@ fn cmd_serve(args: &[String]) -> i32 {
         enroll_nonces: Mutex::new(Vec::new()),
         fed_name: fed.name.clone(),
         fed: fed_arc,
+        env_reports: Mutex::new(Vec::new()),
         capability: capability.clone(),
         loopback_only: ip.is_loopback(),
     });

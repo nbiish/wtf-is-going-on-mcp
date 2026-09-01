@@ -55,6 +55,9 @@ pub struct Hub {
     /// Peer table with device creds issued by each peer (0600-backed).
     /// Arc so the replicator thread shares it without polling the file.
     pub fed: Arc<Mutex<crate::federation::FedConfig>>,
+    /// Device environment reports (agent-CLI presence): (device, json, ts).
+    /// Ring of 64; populated by POST /api/v1/env.
+    pub env_reports: Mutex<Vec<(String, Value, u64)>>,
     /// 64-hex capability token gating the dashboard page path (/w/<token>).
     pub capability: String,
     /// True when the HTTP listener is loopback-only (dashboard may then be
@@ -78,6 +81,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/enroll"
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
+            | "/api/v1/env"
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
@@ -102,6 +106,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/enroll") => HandlerResult::Respond(enroll(hub, req)),
         ("POST", "/api/v1/fed/push") => HandlerResult::Respond(fed_push(hub, req)),
         ("GET", "/api/v1/fed/peers") => HandlerResult::Respond(fed_peers(hub, req)),
+        ("POST", "/api/v1/env") => HandlerResult::Respond(env_report(hub, req)),
+        ("GET", "/api/v1/env") => HandlerResult::Respond(env_list(hub, req)),
         (_, p) if p.starts_with("/api/v1/fed/pull") => HandlerResult::Respond(fed_pull(hub, req)),
         ("GET", "/api/v1/sessions") => HandlerResult::Respond(sessions_list(hub, req)),
         ("POST", "/api/v1/sessions") => HandlerResult::Respond(session_create(hub, req)),
@@ -1075,6 +1081,61 @@ fn fed_peers(hub: &Arc<Hub>, req: &Request) -> Response {
             ("peers", Value::from(fed.peers.len() as i64)),
         ]),
     )
+}
+
+// ---------- environment reports (agent-CLI presence) ----------
+
+/// POST /api/v1/env — a bridge posts ITS machine's environment report
+/// (device-auth; the report is about the reporting device only). Body:
+/// { clis: {omp: {version, path} | null, hermes: {...}|null,
+///          freeclaude: {tmux_session, pid} | null}, models: [...],
+///          os, arch, wtf_version }. Keys/credentials are NEVER included —
+/// the report records presence + versions only. Size-capped.
+fn env_report(hub: &Arc<Hub>, req: &Request) -> Response {
+    let device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let text = body.to_json();
+    if text.len() > 8192 {
+        return Response::error(413, "env report too large (max 8 KiB)");
+    }
+    let mut reports = hub.env_reports.lock().unwrap();
+    reports.retain(|(d, _, _)| d != &device);
+    let now = now_secs();
+    reports.push((device.clone(), body, now));
+    // ring: keep the freshest 64
+    if reports.len() > 64 {
+        reports.remove(0);
+    }
+    Response::json(
+        200,
+        &Value::obj(vec![("ok", Value::from(true)), ("devices", Value::from(reports.len() as i64))]),
+    )
+}
+
+/// GET /api/v1/env — device auth: all devices' latest reports (cross-machine
+/// capability discovery). No ?k= path: env data is operational, not operator.
+fn env_list(hub: &Arc<Hub>, req: &Request) -> Response {
+    if device_auth(hub, req).is_err() {
+        return Response::error(401, "device auth required");
+    }
+    let reports = hub.env_reports.lock().unwrap();
+    let arr: Vec<Value> = reports
+        .iter()
+        .map(|(d, v, at)| {
+            Value::obj(vec![
+                ("device", Value::from(d.as_str())),
+                ("reported_at", Value::from(*at as i64)),
+                ("report", v.clone()),
+            ])
+        })
+        .collect();
+    Response::json(200, &Value::obj(vec![("devices", Value::Arr(arr))]))
 }
 
 #[cfg(test)]
