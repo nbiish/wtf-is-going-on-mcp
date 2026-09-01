@@ -153,6 +153,10 @@ cross-version seam).
 - `SKILL.md` is embedded in the binary at build time (`include_str!`) — keep it
   byte-identical with `.agents/skills/wtf-agent-hub/SKILL.md` and the
   ainish-coder mirror; sync via a worktree in that repo, merge, push, verify.
+- **Curated skill set (operator, 2026-09-01):** `.agents/skills/` carries
+  ONLY the seven skills this repo needs (wtf-agent-hub, wtf-observability,
+  pqc-secrets, pqc-signatures-security, production-security, code-security,
+  llm-security). Do not re-deploy other packs into this tree.
 - API/CLI/storage changes update BOTH `llms.txt` files (root + `src/`) and the
   README in the same task; append the release record to the current
   `.agents/tasks/TASK.*.md`.

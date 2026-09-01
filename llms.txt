@@ -99,4 +99,5 @@ Parent-owned here: repo workflow gates, task records (`.agents/tasks/`), PQC pol
 
 - `.agents/skills/wtf-agent-hub/SKILL.md` — the agent-facing connect + protocol skill (embedded in the binary; `wtf skill install` distributes it). Mirrored to ainish-coder.
 - `.agents/skills/wtf-observability/SKILL.md` — operator/CLI + signed-curl fallback reference (legacy; agents use wtf-agent-hub).
+- **Curated skill set (operator slim-down, 2026-09-01):** this repo carries ONLY the seven skills needed for its work — `wtf-agent-hub`, `wtf-observability`, `pqc-secrets`, `pqc-signatures-security`, `production-security`, `code-security`, `llm-security`. The other packs that once lived here (8thfire-scrolls, advisory-council, etc.) belong to their own repos/deployments; do not re-deploy them into this tree.
 - PQC skills (`pqc-secrets`, `pqc-signatures-security`) are sourced from the ainish-coder repo and deployed by `ainish-coder --rules`.
