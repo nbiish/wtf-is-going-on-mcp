@@ -51,6 +51,28 @@ and agent (MCP stdio bridge). The hub never sees plaintext session keys
 (`auth.rs`); enrollment is the only unauthenticated surface and is rate-limited
 (20/5min global) with uniform failures.
 
+**MISSION (operator):** federated agent communication + coordination that any
+agent harness can drive — non-technical and technical users alike — with a
+PQC-secured hub accessible from every machine the user works on.
+
+**MANDATORY ORCHESTRATION (every agent on every task):**
+1. **Discover** — `session_list {repo: <current repo>}`: MATCH = that chat is
+   the coordination channel (join, receive/execute tasks, report back);
+   NO MATCH = work locally, never auto-create a chat.
+2. **On user request** — create the chat (`session_create {name, repo}`) and
+   hand the user the pairing key + other-machine connection steps (LAN HTTP
+   enroll; internet = overlay/TLS proxy only, never raw port-forward).
+3. **Execute headlessly** — fallback chain (1) OhMyPy `omp` → (2) Hermes →
+   (3) FreeClaudeCode `fcc-claude` (ALWAYS inside tmux session
+   `freeclaude-<slug>`; report session name + PID). `ainish-coder --rules
+   <repo>` bootstraps a fresh machine's whole environment.
+4. **Verify capabilities cross-machine** — `env_report` (own machine) +
+   `env_probe` (all machines) before configuring anything remote. Presence +
+   versions only; keys port ONLY via explicit operator action (PQC envelope).
+5. **Report** — chain-of-draft to the public feed; full detail in the repo
+   chat. The MCP `initialize` instructions carry this contract to every
+   harness; SKILL.md §5 details it.
+
 **Shipped (v0.8.0 → v0.9.0, main @ `e859f63`):** one-time enrollment tokens —
 `wtf enroll-token` (stored SHA-256-hashed, single-use, TTL, burn-on-success),
 `wtf enroll --token` — then signed-handshake enrollment: the hub holds one
@@ -118,12 +140,11 @@ prints content raw (no added newline; pipe/copy safe), `put` takes a
 positional TEXT, `--file F`, or `-` (stdin); 64 KiB bin cap enforced
 client-side. 91 unit + 11 e2e green.
 
-**Fleet intent:** ONE hub per fleet. The canonical hub runs on machine-1 (Mac).
-Every other machine — including this Windows/WSL box — runs only its `wtf agent`
-bridge. Migration path: both ends on 0.9.0 → operator copies the Mac hub URL +
-its `enroll-secret` once → `wtf enroll --psk` on each joiner → local hubs shut
-down. Keep the hub at or above the joiners' version (enrollment is the
-cross-version seam).
+**Fleet reality (live 2026-09-01):** a hub on EVERY machine, fully
+federated (mac `hub-799c0c4c` ⇄ windows `hub-2538554f` replicate both
+ways). New machines join with: build wtf → `ainish-coder --rules <repo>`
+→ enroll (`wtf enroll --psk` or `wtf federate add`) → wire the bridge
+into the harness → `check_in` + `env_report`.
 
 **Repo invariants:**
 - `auth.rs` is security-critical (request HMAC lane) — no changes without
@@ -245,9 +266,10 @@ holds its credentials — go straight to reporting.
 3. Register the bridge with the MCP harness:
    `{ "command": "<abs>/wtf", "args": ["agent"] }`.
 
-**Topology:** one hub per fleet (canonical: machine-1). Machines run the
-bridge only — never spawn a second hub on a joiner; enroll against the
-canonical hub instead.
+**Topology (live):** a federated hub on every machine, full-mesh
+replication. A new machine: build wtf → `ainish-coder --rules <repo>` →
+enroll (PSK handshake) → `wtf federate add` on either side → wire the
+bridge into the harness. Bridging + hub coexist on the same box.
 
 **Reporting contract (mirrors COMMS, cross-machine):**
 - `check_in` working/blocked/done at task boundaries; `log_event` for
@@ -489,5 +511,5 @@ Run before any code touching crypto, secrets storage, or networking:
 ---
 
 <REINFORCEMENT>
-PQC for every secret the hub touches; enrollment keys travel sealed, never plaintext. Rust, zero external dependencies — `[dependencies]` stays empty. One task = one worktree from `main`, gates green, merged back after the user confirms, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`; cross-machine truth flows through the wtf hub — one hub per fleet, bridges everywhere else. Never paste hub serve logs (dashboard key). Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code.
+PQC for every secret the hub touches; enrollment keys travel sealed, never plaintext. Rust, zero external dependencies — `[dependencies]` stays empty. One task = one worktree from `main`, gates green, merged back after the user confirms, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`; cross-machine truth flows through the federated hub mesh — a hub on every machine. Never paste hub serve logs (dashboard key). Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code.
 </REINFORCEMENT>
