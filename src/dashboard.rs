@@ -198,16 +198,28 @@ async function openSession(id){
       +'<h2 style="font-size:13px;margin:14px 0 4px">terminal — '+esc(termName)+' (this machine)</h2>'
       +'<div class="row"><input id="cmd" placeholder="type a command for the agent terminal, Enter sends"/><button id="send">send</button><span id="tstat" class="dim"></span></div>'
       +'<div id="term">loading pane…</div>'
-      +'<script>'
+      +'<script id="viewer-init">'
       +'const TERM='+JSON.stringify(termName)+';const AUTH='+JSON.stringify(AUTH)+';'
       +'async function poll(){try{const r=await fetch("/api/v1/term/"+TERM+"?lines=400&"+AUTH);if(r.ok){const j=await r.json();document.getElementById("term").textContent=j.pane||"(empty pane)";document.getElementById("tstat").textContent="live";}else{const e=await r.json().catch(()=>({}));document.getElementById("tstat").textContent=e.error||("HTTP "+r.status);if(String(e.error||"").includes("not found")){await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spawn:true})});}}}catch(e){document.getElementById("tstat").textContent=String(e);}setTimeout(poll,2000);}'
       +'async function sendCmd(){const c=document.getElementById("cmd");const v=c.value.trim();if(!v)return;try{await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys:v})});c.value="";setTimeout(poll,400);}catch(e){document.getElementById("tstat").textContent=String(e);}}'
       +'document.getElementById("send").addEventListener("click",sendCmd);'
       +'document.getElementById("cmd").addEventListener("keydown",e=>{if(e.key==="Enter")sendCmd();});'
       +'document.getElementById("scopesave").addEventListener("click",async()=>{const v=document.getElementById("scope").value;const r=await fetch("/api/v1/sessions/'+id+'/scope?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo:v})});const j=await r.json().catch(()=>({}));document.getElementById("scopestat").textContent=r.ok?"saved":(j.error||("HTTP "+r.status));});'
+      +'poll();'
       +'<\/script></body></html>';
     w.document.write(doc);
     w.document.close();
+    // Some browsers don't execute document.write-injected inline scripts into an
+    // about:blank window reliably (observed: script in DOM, never ran). Re-arm the
+    // script by cloning its body into a fresh node — this always executes.
+    try{
+      const written = w.document.getElementById("viewer-init");
+      if (written && typeof w.TERM === "undefined") {
+        const s = w.document.createElement("script");
+        s.textContent = written.textContent;
+        w.document.body.appendChild(s);
+      }
+    }catch(_){}
   }catch(e){
     try{w.document.write('<body style="background:#0b0e14;color:#d7dde8;font:14px ui-monospace">chat open failed: '+esc(String(e.message||e))+' <a style="color:#4aa3ff" href="javascript:location.reload()">retry</a></body>');w.document.close();}catch(_){}
   }
