@@ -130,13 +130,28 @@ function render(s){
 function renderSessions(sessions, now){
   const host = document.getElementById("sessions");
   if(!sessions.length){host.innerHTML = '<span class="dim">no chats yet — an agent creates one via session_create, or `wtf sessions` on the hub machine</span>';return;}
-  const rows = sessions.map(x=>
-    '<div class="sess" data-id="'+esc(x.id)+'" title="chat '+esc(x.name)+' · repo '+esc(x.repo||'-')+'">'
-    +'<div class="top"><span class="who">'+esc(x.name)+'</span>'
-    +(x.repo?'<span class="repo">'+esc(x.repo)+'</span>':"")
-    +'<span class="age">'+esc(x.msg_count)+' msg(s) · '+esc(x.members)+' member(s)</span></div>'
-    +'<div class="sid dim">'+esc(x.id)+'</div></div>'
-  ).join("");
+  // Multi-machine canvas (operator directive): group chats by hub origin
+  // (x.origin when replicated; "this hub" otherwise) so the operator sees
+  // which machine hosts which project chat at a glance. Scope labels
+  // (repo-a+repo-b@mac+win) render as chips.
+  const groups = {};
+  for(const x of sessions){
+    const o = x.origin || "this hub";
+    ((groups[o] = groups[o] || []).push(x));
+  }
+  let rows = "";
+  for(const [origin, list] of Object.entries(groups)){
+    rows += '<div class="origin"><span class="ochip">'+esc(origin)+'</span><span class="dim"> · '+list.length+' chat(s)</span></div>';
+    for(const x of list){
+      const scopes = (x.repo||"").split(/[+@]/).filter(Boolean);
+      const chips = scopes.map(sc=>'<span class="repo">'+esc(sc)+'</span>').join(" ");
+      rows += '<div class="sess" data-id="'+esc(x.id)+'" title="chat '+esc(x.name)+' · scope '+esc(x.repo||'-')+'">'
+        +'<div class="top"><span class="who">'+esc(x.name)+'</span>'
+        +(chips?'<span>'+chips+'</span>':"")
+        +'<span class="age">'+esc(x.msg_count)+' msg(s) · '+esc(x.members)+' member(s)</span></div>'
+        +'<div class="sid dim">'+esc(x.id)+'</div></div>';
+    }
+  }
   host.innerHTML = rows;
   for(const el of host.querySelectorAll(".sess")){
     el.addEventListener("click", ()=>openSession(el.dataset.id));
