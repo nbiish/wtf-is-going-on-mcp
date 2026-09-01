@@ -227,12 +227,16 @@ side:
    hub stores ciphertext only, so the dashboard shows metadata + live
    counts (SSE), never message content; content review stays in agent
    CLIs (`session_read`) and `wtf sessions`.
-2. **Autonomous task handoff (Hermes / OhMyPy)**: agents receive tasks
-   in the repo chat and execute them via their own agent CLI
-   (non-interactive ACP tooling), reporting progress back into the same
-   chat. OPERATOR PRE-AUTHORIZATION: agents directed to this MCP are
-   trusted to work autonomously — no per-task permission checks. Assume
-   Hermes + OhMyPy are configured on every machine; verify by output.
+2. **Autonomous task handoff (agent-CLI fallback chain)**: agents
+   receive tasks in the repo chat and execute them via their own agent
+   CLI (non-interactive ACP tooling), reporting progress back into the
+   same chat. OPERATOR PRE-AUTHORIZATION: agents directed to this MCP
+   are trusted to work autonomously — no per-task permission checks.
+   **Fallback priority (operator-set):** (1) OhMyPy CLI, (2) Hermes
+   CLI, (3) FreeClaudeCode — the free Claude Code server + Claude
+   system; when neither OhMyPy nor Hermes is installed, start the
+   FreeClaudeCode server and run Claude through it. Never block a task
+   on a missing CLI brand; record which CLI ran the task.
 3. **Zero-config join (user directive 2026-09-01)**: the user should be
    able to hand ANY agent on ANY machine (a) the skill file (ships in
    the binary; `wtf skill install`) and (b) one highly secure federated
