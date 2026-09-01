@@ -127,6 +127,36 @@ coordination is OPERATIONAL. Both agents work from the same remote
 that chat: `comms_post`/`session_send` there, not the older
 `mac-win-pipeline` channel.
 
+**Machine-2 status (windows, updated 2026-09-01):** both hubs + bridges on
+0.13.1; same-remote parity holds (`origin/main` matching heads). Headless
+chain verified END-TO-END by the MAC-TO-WINDOWS append test
+(`test/mac-to-windows-comms` @ `c937f97`, 6/6 legs: omp + hermes +
+fcc-claude on BOTH machines; `fcc-server` runs locally on 8082; fcc-claude
+headless writes REQUIRE `--permission-mode acceptEdits`). Hermes on this
+machine was repaired 2026-09-01: stale zenmux env vars pointed `OPENAI_*`/
+`ANTHROPIC_*` at a dead local router port 11434 and the openrouter default
+was unkeyed (401s, zero tool execution). Working lane:
+`hermes --provider modal-glm -m zai-org/GLM-5.3-Flash` with
+`providers.modal-glm` in `~/.hermes/config.yaml` (`base_url` + `key_env`,
+no key material in config) and the token in `~/.hermes/.env` (0600,
+sourced from the PQC bundle `MODAL_PROXY_TOKEN`). Known defect, reported
+in the repo chat: federation log echo — every anti-entropy pull logs
+`federation: +N event(s)` (`src/replicate.rs:173-181`), those logs
+replicate, peers re-log them (~20 events/min flooding the 1000-event
+ring). Fix proposal: suppress when only federation-kind events ingested +
+per-peer throttle.
+
+**NEXT FOCUS (operator, 2026-09-01):** the wtf federated comms layer is
+functionally complete — this repo shifts to MAINTENANCE (the federation
+log-echo fix above is the known code debt). The next build priority is the
+separate LOCAL ROUTER project (`/mnt/d/Code/local-router`): one localhost
+port (Ollama-compatible 11434 surface) routing every model, targeting
+cross-architecture binaries and a troubleshooting lane. This repo's ties:
+agents coordinate router work through the federated chats; machine env
+facts (router ports, binaries) surface via `env_report`/`env_probe`; the
+dead-port incident above is the first router-adjacent troubleshooting
+entry. Router work happens in ITS repo with its own worktree gates.
+
 **Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
 three paste-bins into the operator's copy/paste channel between machines and
 agents, gated by the dashboard key (`?k=`) — content moves *before* any

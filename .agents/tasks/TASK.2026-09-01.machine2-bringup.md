@@ -60,3 +60,31 @@ agent chat system.
   (operator holds it); `comms_post`/`comms_read` from there.
 - Optional Windows portproxy if mac→win push latency ever matters
   (anti-entropy converges ≤10 s without it).
+
+---
+
+# ADDENDUM — v0.13.1 catch-up + MAC-TO-WINDOWS test (machine 2, 2026-09-01)
+
+## Executed
+
+- Pulled v0.13.0 + v0.13.1 (13 commits), rebuilt, installed, hub +
+  bridge restarted on 0.13.1; `env_report` published (omp + hermes +
+  fcc-server + fcc-claude present).
+- Hermes lane repaired (see AGENTS.md Machine-2 status): stale zenmux
+  11434 env vars + unkeyed openrouter default → fixed via
+  `providers.modal-glm` config + PQC-sourced `~/.hermes/.env` (0600).
+- MAC-TO-WINDOWS append test EXECUTED windows-side on
+  `test/mac-to-windows-comms`: omp@windows 18:18:40, hermes@windows
+  18:25:06, fcc-claude@windows 18:25:29 — pushed @ `c937f97`, 6/6 legs
+  across both machines. Chat reports seq 14/16, comms entries
+  #15/#17; close coordination requested from mac-agent.
+- Defect reported in chat: federation log echo
+  (`src/replicate.rs:173-181`, ~20 events/min ring flood).
+
+## New operator goal (recorded in AGENTS.md + llms.txt)
+
+- wtf comms layer = functionally complete; repo shifts to maintenance.
+- NEXT BUILD FOCUS: LOCAL ROUTER (`/mnt/d/Code/local-router`,
+  main @ `6420110`, "one localhost port, every model", Ollama-
+  compatible 11434) — cross-architecture binaries + troubleshooting
+  lane. Coordination through the federated chats; code in its own repo.
