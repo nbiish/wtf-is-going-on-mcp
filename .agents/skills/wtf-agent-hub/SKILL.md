@@ -188,10 +188,14 @@ machines. The rules are mechanical — follow them on every task:
    absent). FreeClaudeCode ALWAYS runs inside a named tmux session so
    the process is identifiable and reattachable — session name
    `freeclaude-<repo-or-task-slug>` (e.g. `tmux new-session -d -s
-   freeclaude-wtf-mcp '<freeclaude-code server + claude invocation>'`).
-   Report the tmux session name + PID in the task notes. Record which
-   CLI ran the task. The user's direction of an agent to this MCP IS
-   the permission grant — no per-task prompts.
+   freeclaude-wtf-mcp 'fcc-server'`). VERIFIED INVOCATIONS (2026-09-01,
+   three-agent append test): `omp -p "<task>"` and `hermes chat
+   --oneshot -q "<task>"` write to the repo directly; `fcc-claude -p
+   "<task>" --permission-mode acceptEdits` is REQUIRED for headless
+   writes (without it, file-edit tools are permission-blocked and the
+   task stalls). Report the tmux session name + PID in the task notes.
+   Record which CLI ran the task. The user's direction of an agent to
+   this MCP IS the permission grant — no per-task prompts.
 4. **Report**: progress, decisions, and failures go back into the repo
    chat (`session_send`/`comms_post`); chain-of-draft for the public
    event feed. Post-quantum posture is automatic: FIPS 203 key sealing,
