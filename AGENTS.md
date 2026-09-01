@@ -122,9 +122,12 @@ windows hub `hub-2538554f` replicate both ways (10 s anti-entropy);
 `windows-1` enrolled on both hubs; repo chat `wtf-is-going-on-mcp`
 (`a305c8ea…`) has both `mac-agent` + `windows-1` as members with the
 session key exchanged via the auto-seal path — encrypted cross-machine
-coordination is OPERATIONAL. Both agents work from the same remote
+coordination is OPERATIONAL. A second repo chat, `local-router ops`
+(`828d3341…`, repo `local-router`), carries the local-router control plane —
+both agents members, envelope + runbook + receipts flowed through it. Both hubs
+run the merged v0.14.2 tree; both agents work from the same remote
 (`origin/main`, matching heads). Cross-machine task handoff happens in
-that chat: `comms_post`/`session_send` there, not the older
+those chats: `comms_post`/`session_send` there, not the older
 `mac-win-pipeline` channel.
 
 **Latest (v0.14.0, dashboard chats + per-chat executor, 2026-09-01):** the dashboard
@@ -161,7 +164,14 @@ in the repo chat: federation log echo — every anti-entropy pull logs
 `federation: +N event(s)` (`src/replicate.rs:173-181`), those logs
 replicate, peers re-log them (~20 events/min flooding the 1000-event
 ring). Fix proposal: suppress when only federation-kind events ingested +
-per-peer throttle.
+per-peer throttle. **RESOLVED** (43bced1 v0.13.2 + 28b7936 v0.13.3, merged both
+sides). Machine-2 status UPDATE (2026-09-01 end of day): hubs + bridges on the
+merged v0.14.2 tree; local-router PORT COMPLETE — 17 provider keys imported via
+PQC envelope (recipient fingerprint verified), all four lanes
+(omp/hermes/fcc-claude/ollama) green through `local-router/fallback-models`
+:11434; mac's 21-step chain loaded (16/21 ids resolvable there); mac-side repo
+also carries the cross-platform py envelope engine (a6154e0) for the signature
+verify their engine build predates — next windows pull picks it up.
 
 **NEXT FOCUS (operator, 2026-09-01):** the federated chat system is the operating
 control plane — from ONE chat (dashboard-clickable) the operator dispatches agentic
