@@ -1,0 +1,15 @@
+providers:
+  modal-glm:
+    name: modal-glm
+    base_url: https://nbiish--ep-glm-5-3-flash-server.us-west.modal.direct/v1
+    key_env: MODAL_PROXY_TOKEN
+    default_model: zai-org/GLM-5.3-Flash
+  local-router:
+    name: local-router
+    base_url: http://127.0.0.1:11434/v1
+    key_env: NONE
+    default_model: local-router/fallback-models
+model:
+  provider: local-router
+  default: fallback-models
+  base_url: http://127.0.0.1:11434
