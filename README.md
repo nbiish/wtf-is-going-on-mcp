@@ -418,6 +418,14 @@ ciphertext — it relays bytes and cannot read a single message.
 - **MCP tools:** `session_create`, `session_list`, `session_join`,
   `session_seal`, `session_send`, `session_read` — see
   `.agents/skills/wtf-agent-hub/SKILL.md` §6 for the flow.
+- **Pairing keys (v0.12.0):** every new chat mints a 256-bit pairing key
+  (shown once at create; the hub stores only its SHA-256). A joiner
+  presents it to `session_join` and is admitted with the session key
+  sealed to them automatically — no manual `session_seal` round-trip.
+  The creator machine keeps the key in `session_keys.json` (0600);
+  `wtf sessions` re-prints it for the operator. Chats carry a `repo`
+  label so agents (and you) can see which chat belongs to which project
+  at a glance.
 - **COMMS ledger channels:** `comms_post` / `comms_read` add structure on
   top of the same encryption: small JSON envelopes (a ledger event type —
   `checkin`, `update`, `intent-merge`, `checkout`, `blocked`, `announce`,
@@ -443,9 +451,9 @@ ciphertext — it relays bytes and cannot read a single message.
 | `list_bins` | — | List bins with sizes and last-writer metadata |
 | `ping` | — | Hub connectivity probe (unsigned `/healthz`) |
 | `hub_info` | — | Which hub is this bridge connected to (URL, device, version); never exposes the dashboard key |
-| `session_create` | `name` | Create an encrypted agent-to-agent channel (ML-KEM-768 sealed keys; hub stores ciphertext only) |
-| `session_list` | — | List encrypted channels with member/message counts |
-| `session_join` | `session` | Join with your ML-KEM-768 identity; decapsulates the sealed session key |
+| `session_create` | `name`, `repo?` | Create an encrypted agent-to-agent channel (ML-KEM-768 sealed keys; hub stores ciphertext only). Returns the **pairing key once** — copy it to joiners on other machines |
+| `session_list` | — | List encrypted channels: id · name · paired repo · members · msgs |
+| `session_join` | `session`, `pairing?` | Join with your ML-KEM-768 identity; with the pairing key you're admitted immediately and the session key is auto-sealed to you |
 | `session_seal` | `session`, `member` | Creator: seal the session key to a member's identity |
 | `session_send` | `session`, `message` | Send an encrypted message (AAD binds session/sender/seq) |
 | `session_read` | `session`, `after?` | Read + decrypt new messages |

@@ -559,10 +559,16 @@ impl Bridge {
                         ("type", Value::from("object")),
                         (
                             "properties",
-                            Value::obj(vec![(
-                                "name",
-                                Self::prop("channel name, e.g. 'auth-refactor chat'"),
-                            )]),
+                            Value::obj(vec![
+                                (
+                                    "name",
+                                    Self::prop("channel name, e.g. 'auth-refactor chat'"),
+                                ),
+                                (
+                                    "repo",
+                                    Self::prop("repo/project this chat is paired with (helps agents pick the right chat)"),
+                                ),
+                            ]),
                         ),
                         ("required", Value::arr(vec![Value::from("name")])),
                         ("additionalProperties", Value::from(false)),
@@ -574,7 +580,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "List the encrypted session channels on the hub with member counts and message counts.",
+                        "List the encrypted session channels on the hub — id, name, paired repo, member and message counts. Use this to pick which chat to join or return to (cross-machine, cross-repo).",
                     ),
                 ),
                 (
@@ -591,7 +597,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Join an encrypted session channel with your ML-KEM-768 identity and decapsulate the shared session key from any sealed package addressed to you. Run this after the creator seals the key for you (they do that with session_seal).",
+                        "Join an encrypted session channel with your ML-KEM-768 identity. Pass the session's pairing key (from the creator or the operator) to be admitted and have the session key sealed to you; without it you join and wait for a manual session_seal from the creator.",
                     ),
                 ),
                 (
@@ -600,10 +606,16 @@ impl Bridge {
                         ("type", Value::from("object")),
                         (
                             "properties",
-                            Value::obj(vec![(
-                                "session",
-                                Self::prop("session id from session_create or session_list"),
-                            )]),
+                            Value::obj(vec![
+                                (
+                                    "session",
+                                    Self::prop("session id from session_create or session_list"),
+                                ),
+                                (
+                                    "pairing",
+                                    Self::prop("the session's pairing key (64-hex) — copied from the creator; admits you and triggers key sealing"),
+                                ),
+                            ]),
                         ),
                         ("required", Value::arr(vec![Value::from("session")])),
                         ("additionalProperties", Value::from(false)),
@@ -1177,16 +1189,29 @@ impl Bridge {
         ) {
             return (format!("identity registration failed: {e}"), true);
         }
-        let created = self.api_post_session(
-            "/api/v1/sessions",
-            &Value::obj(vec![("name", Value::from(name))]),
-        );
+        let repo = arg_str(args, "repo").unwrap_or("");
+        let body = if repo.is_empty() {
+            Value::obj(vec![("name", Value::from(name))])
+        } else {
+            Value::obj(vec![
+                ("name", Value::from(name)),
+                ("repo", Value::from(repo)),
+            ])
+        };
+        let created = self.api_post_session("/api/v1/sessions", &body);
         let Ok(session) = created else {
             return (format!("session create failed: {}", created.unwrap_err()), true);
         };
         let Some(sid) = session.get("id").and_then(|v| v.as_str()) else {
             return ("hub returned no session id".into(), true);
         };
+        // The pairing key crosses the wire exactly ONCE (create response).
+        // Surface it so the operator/agent can copy it to joiners.
+        let pairing_key = session
+            .get("pairing_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         // Generate + seal the session key to ourselves (creator-member).
         let session_key: [u8; 32] = crate::rand::bytes(32).try_into().unwrap();
         let pkg = match crate::session_crypto::seal_session_key(&ek_hex, &session_key, sid) {
@@ -1210,10 +1235,23 @@ impl Bridge {
         if let Err(e) = store_session_key(sid, &session_key) {
             return (format!("session key persist failed: {e}"), true);
         }
+        // Persist the pairing key locally too — the operator can print it
+        // later with `wtf sessions` without asking the creating agent.
+        if !pairing_key.is_empty() {
+            let _ = store_pairing_key(sid, &pairing_key);
+        }
+        let pairing_note = if pairing_key.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nPAIRING KEY (copy once to joiners; hub stores only its hash): {pairing_key}\njoiners run: session_join {{session: \"{sid}\", pairing: \"<key>\"}}"
+            )
+        };
         (
             format!(
-                "session created: {sid} '{name}' — you are the creator; peers join with session_join {sid}"
-            ),
+                "session created: {sid} '{name}'{} — you are the creator; peers join with session_join {sid} + the pairing key",
+                if repo.is_empty() { String::new() } else { format!(" [repo: {repo}]") }
+            ) + &pairing_note,
             false,
         )
     }
@@ -1222,13 +1260,18 @@ impl Bridge {
         match self.api_get_session("/api/v1/sessions") {
             Ok(v) => {
                 let sessions = v.get("sessions").and_then(|x| x.as_arr()).unwrap_or(&[]);
-                let mut out = String::from("sessions:\n");
+                let mut out = String::from("sessions (id · name · repo · members · msgs):\n");
                 for s in sessions {
                     let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
                     let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                    let repo = s.get("repo").and_then(|x| x.as_str()).unwrap_or("");
                     let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
                     let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
-                    out.push_str(&format!("  {id} '{name}' — {members} member(s), {msgs} message(s)\n"));
+                    let pairing = if s.get("pairing").and_then(|x| x.as_bool()).unwrap_or(false) { "key" } else { "-" };
+                    out.push_str(&format!(
+                        "  {id} · '{name}' · {} · {members} member(s) · {msgs} msg(s) · pairing:{pairing}\n",
+                        if repo.is_empty() { "-" } else { repo }
+                    ));
                 }
                 (out, false)
             }
@@ -1246,9 +1289,13 @@ impl Bridge {
             return ("identity load failed".into(), true);
         };
         let ek_hex = crate::util::hex_encode(&identity.ek);
+        let mut join_pairs: Vec<(String, Value)> = vec![("ek".into(), Value::from(ek_hex.as_str()))];
+        if let Some(p) = arg_str(args, "pairing") {
+            join_pairs.push(("pairing".into(), Value::from(p)));
+        }
         let joined = self.api_post_session(
             &format!("/api/v1/sessions/{sid}/join"),
-            &Value::obj(vec![("ek", Value::from(ek_hex.as_str()))]),
+            &Value::Obj(join_pairs),
         );
         // Re-join to pick up a sealed package is fine: the hub rejects
         // duplicate membership, but the seal fetch below still runs.
@@ -1294,6 +1341,62 @@ impl Bridge {
 
     /// session_seal { session, member }: creator seals the session key to
     /// the member's registered ek and posts the package.
+    /// Auto-seal: if we hold the session key, seal it to every member
+    /// that has no sealed package addressed to their ek fingerprint yet.
+    /// Runs opportunistically before send/read so a pairing-joined member
+    /// gets the key without a manual session_seal round-trip. Best-effort:
+    /// failures never block the caller's operation.
+    fn auto_seal_members(&self, sid: &str) {
+        let Some(key) = load_session_key(sid) else {
+            return; // we don't hold the key; nothing to do
+        };
+        let Ok(identity) = self.identity() else { return };
+        let Ok(sv) = self.api_get_session(&format!("/api/v1/sessions/{sid}/seals")) else {
+            return;
+        };
+        let sealed_fps: Vec<String> = sv
+            .get("sealed")
+            .and_then(|x| x.as_arr())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.get("ek_fp").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Ok(members) = self.api_get_session(&format!("/api/v1/sessions/{sid}")) else {
+            return;
+        };
+        let Some(mlist) = members.get("members").and_then(|x| x.as_arr()) else {
+            return;
+        };
+        for m in mlist {
+            let (Some(ek), Some(dev)) = (
+                m.get("ek").and_then(|v| v.as_str()),
+                m.get("device").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            let fp = crate::session_crypto::ek_fp(ek);
+            if sealed_fps.iter().any(|f| f == &fp) {
+                continue; // already has a package
+            }
+            if let Ok(pkg) = crate::session_crypto::seal_session_key(ek, &key, sid) {
+                let _ = self.api_post_session(
+                    &format!("/api/v1/sessions/{sid}/seal"),
+                    &Value::obj(vec![(
+                        "pkgs",
+                        Value::arr(vec![Value::obj(vec![
+                            ("ct", Value::from(pkg.as_str())),
+                            ("ek_fp", Value::from(fp.as_str())),
+                        ])]),
+                    )]),
+                );
+                let _ = dev; // member name available for logging if needed
+            }
+        }
+        let _ = &identity;
+    }
+
     fn tool_session_seal(&self, args: &Value) -> (String, bool) {
         let Some(sid) = arg_str(args, "session") else {
             return ("missing required argument: session".into(), true);
@@ -1371,6 +1474,7 @@ impl Bridge {
         let Some(message) = arg_str(args, "message") else {
             return ("missing required argument: message".into(), true);
         };
+        self.auto_seal_members(sid);
         let Some(key) = load_session_key(sid) else {
             return (format!("no local session key for {sid} — join the session first"), true);
         };
@@ -1411,6 +1515,24 @@ impl Bridge {
         let Some(sid) = arg_str(args, "session") else {
             return ("missing required argument: session".into(), true);
         };
+        self.auto_seal_members(sid);
+        // Key-recovery path: if we hold no session key yet (pairing join
+        // raced the creator's auto-seal), fetch + open sealed packages now.
+        if load_session_key(sid).is_none() {
+            if let Ok(identity) = self.identity() {
+                if let Ok(sv) = self.api_get_session(&format!("/api/v1/sessions/{sid}/seals")) {
+                    if let Some(pkgs) = sv.get("sealed").and_then(|x| x.as_arr()) {
+                        for p in pkgs {
+                            let Some(pkg_hex) = p.get("ct").and_then(|v| v.as_str()) else { continue };
+                            if let Ok(key) = crate::session_crypto::open_sealed_package(pkg_hex, &identity.dk, sid) {
+                                let _ = store_session_key(sid, &key);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let after = args
             .get("after")
             .and_then(|v| v.as_i64())
@@ -1609,6 +1731,29 @@ fn store_session_key(session_id: &str, key: &[u8; 32]) -> Result<(), String> {
         crate::util::hex_encode(key),
     );
     save_session_keys(&path, &map)
+}
+
+/// Creator-side pairing-key cache (`session_keys.json`, same 0600 file,
+/// `pairings` map): lets the operator re-print a session's pairing key via
+/// `wtf sessions` after the creating agent is gone.
+fn store_pairing_key(session_id: &str, key: &str) -> Result<(), String> {
+    let path = session_keys_path();
+    let mut root = match crate::config::load_json(&path) {
+        Ok(Some(v)) => v,
+        _ => Value::obj(vec![("keys", Value::Obj(vec![])), ("pairings", Value::Obj(vec![]))]),
+    };
+    let mut pairings = root
+        .get("pairings")
+        .and_then(|x| x.as_obj())
+        .map(|o| o.to_vec())
+        .unwrap_or_default();
+    pairings.retain(|(k, _)| k != session_id);
+    pairings.push((session_id.to_string(), Value::from(key)));
+    if let Value::Obj(o) = &mut root {
+        o.retain(|(k, _)| k != "pairings");
+        o.push(("pairings".into(), Value::Obj(pairings)));
+    }
+    crate::config::save_json(&path, &root, 0o600)
 }
 
 pub fn load_session_key(session_id: &str) -> Option<[u8; 32]> {

@@ -1760,6 +1760,138 @@ fn psk_handshake_end_to_end() {
 /// with the uniform 401. Finally, an enrolled agent (device auth, no
 /// dashboard key) sees the same payload through the MCP read_bin tool.
 
+
+#[test]
+fn session_pairing_key_end_to_end() {
+    // Pairing-key flow: A creates a repo-tagged chat and gets a pairing key
+    // (shown once, stored hashed on the hub). B joins with the pairing key —
+    // no manual session_seal needed; A's next interaction auto-seals the
+    // session key to B and B reads A's message. Wrong pairing key is
+    // rejected uniformly.
+    let home = temp_home("pairing");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let mut hub_lines = BufReader::new(hub.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    let mut secrets = std::collections::HashMap::new();
+    for dev in ["box-a", "box-b"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["key", "issue", dev])
+            .env("WTF_HOME", &home)
+            .output()
+            .expect("key issue");
+        assert!(out.status.success());
+        let keys = wtf::json::parse(&std::fs::read_to_string(home.join("keys.json")).unwrap()).unwrap();
+        let secret = keys
+            .get("devices").unwrap().as_arr().unwrap().iter()
+            .find(|d| d.get("name").and_then(|v| v.as_str()) == Some(dev))
+            .unwrap().get("secret").unwrap().as_str().unwrap().to_string();
+        secrets.insert(dev.to_string(), secret);
+    }
+
+    let spawn_bridge = |dev: &str| -> (std::process::Child, BufReader<std::process::ChildStdout>) {
+        let dev_home = temp_home(&format!("pairing-{dev}"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["agent"])
+            .env("WTF_HUB_URL", &url)
+            .env("WTF_DEVICE_NAME", dev)
+            .env("WTF_DEVICE_KEY", secrets[dev].clone())
+            .env("WTF_HOME", &dev_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn bridge");
+        let reader = BufReader::new(child.stdout.take().unwrap());
+        (child, reader)
+    };
+    let (mut a, mut rd_a) = spawn_bridge("box-a");
+    let (mut b, mut rd_b) = spawn_bridge("box-b");
+
+    let mut id = 500u64;
+    macro_rules! call {
+        ($child:expr, $reader:expr, $tool:expr, $args:expr) => {{
+            id += 1;
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
+                id, $tool, $args
+            );
+            rpc_write(&mut $child, &req);
+            let resp = rpc_read(&mut $reader);
+            let res = resp.get("result").unwrap().clone();
+            let is_err = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let text = res.get("content").and_then(|c| c.as_arr()).and_then(|a| a.first())
+                .and_then(|t| t.get("text")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (is_err, text)
+        }};
+    }
+
+    // A creates a repo-tagged chat; pairing key comes back once.
+    let (err, text) = call!(a, rd_a, "session_create",
+        r#"{"name":"cross-machine design","repo":"wtf-is-going-on-mcp"}"#);
+    assert!(!err, "session_create failed: {text}");
+    let sid = text.split_whitespace()
+        .find(|t| t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| panic!("session id in create output: {text}"))
+        .to_string();
+    let pairing = text
+        .lines()
+        .find(|l| l.contains("PAIRING KEY"))
+        .and_then(|l| l.split_whitespace().last())
+        .expect("pairing key in create output")
+        .to_string();
+    assert_eq!(pairing.len(), 64, "pairing key is 256-bit hex: {text}");
+
+    // Wrong pairing key is rejected with a uniform error.
+    let (err, text) = call!(b, rd_b, "session_join",
+        &format!(r#"{{"session":"{sid}","pairing":"{}"}}"#, "f".repeat(64)));
+    assert!(err, "wrong pairing must fail: {text}");
+
+    // B joins with the right pairing key.
+    let (err, text) = call!(b, rd_b, "session_join",
+        &format!(r#"{{"session":"{sid}","pairing":"{pairing}"}}"#));
+    assert!(!err, "pairing join failed: {text}");
+
+    // A sends (auto-seal runs first) → B reads without any manual seal.
+    let (err, text) = call!(a, rd_a, "session_send",
+        &format!(r#"{{"session":"{sid}","message":"hello from the creator"}}"#));
+    assert!(!err, "send failed: {text}");
+    let (err, text) = call!(b, rd_b, "session_read",
+        &format!(r#"{{"session":"{sid}"}}"#));
+    assert!(!err, "read failed: {text}");
+    assert!(text.contains("hello from the creator"), "B reads A's message: {text}");
+
+    // session_list shows the repo pairing.
+    let (err, text) = call!(a, rd_a, "session_list", r#"{}"#);
+    assert!(!err, "list failed: {text}");
+    assert!(text.contains("wtf-is-going-on-mcp"), "repo shows in list: {text}");
+
+    a.kill().unwrap();
+    b.kill().unwrap();
+    hub.kill().unwrap();
+}
+
 #[test]
 fn federation_two_hub_end_to_end() {
     // Two hubs, two homes. Hub A is linked to hub B via `wtf federate add`

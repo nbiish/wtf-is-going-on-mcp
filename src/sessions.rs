@@ -24,6 +24,7 @@ pub const MAX_SESSIONS: usize = 64;
 pub const MAX_MEMBERS: usize = 16;
 pub const MAX_SEALED_PKGS: usize = 16;
 pub const MAX_SESSION_NAME_CHARS: usize = 128;
+pub const MAX_REPO_CHARS: usize = 128;
 pub const MAX_CIPHERTEXT_CHARS: usize = 16_384;
 pub const MAX_MSGS_IN_MEMORY: usize = 200; // per session ring buffer
 pub const MAX_MSG_TOTAL: usize = 20_000; // across all sessions
@@ -63,6 +64,12 @@ pub struct Session {
     pub members: Vec<Member>,
     pub sealed: Vec<SealedPkg>,
     pub msgs: Vec<SessionMsg>,
+    /// SHA-256 of the pairing key (hex). The key itself NEVER lives on the
+    /// hub — joiners present it, the hub constant-time-compares its hash.
+    /// Empty = legacy session (join via sealed packages only).
+    pub pairing_hash: String,
+    /// Repository/project label this chat is paired with (operator-set).
+    pub repo: String,
 }
 
 impl Session {
@@ -107,6 +114,8 @@ impl Session {
             ("created_by", Value::from(self.created_by.as_str())),
             ("created_at", Value::from(self.created_at as i64)),
             ("next_seq", Value::from(self.next_seq as i64)),
+            ("pairing_hash", Value::from(self.pairing_hash.as_str())),
+            ("repo", Value::from(self.repo.as_str())),
             ("members", Value::Arr(members)),
             ("sealed", Value::Arr(sealed)),
             ("msgs", Value::Arr(msgs)),
@@ -151,6 +160,8 @@ impl Session {
             created_by: v.get("created_by")?.as_str()?.to_string(),
             created_at: v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
             next_seq: v.get("next_seq").and_then(|x| x.as_i64()).unwrap_or(1) as u64,
+            pairing_hash: v.get("pairing_hash").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             members,
             sealed,
             msgs,
@@ -179,6 +190,8 @@ impl Session {
             ("created_by", Value::from(self.created_by.as_str())),
             ("created_at", Value::from(self.created_at as i64)),
             ("next_seq", Value::from(self.next_seq as i64)),
+            ("repo", Value::from(self.repo.as_str())),
+            ("pairing", Value::from(!self.pairing_hash.is_empty())),
             ("members", Value::Arr(members)),
             ("msg_count", Value::from(self.msgs.len() as i64)),
         ];
@@ -245,16 +258,31 @@ impl Sessions {
             .cloned()
     }
 
-    /// Create a session. Fails closed when the registry is full or the
-    /// name is empty/oversized.
-    pub fn create(&self, name: &str, created_by: &str, ek: &str) -> Result<Session, String> {
+    /// Create a session with a repo label. Generates a 256-bit pairing
+    /// key, stores ONLY its SHA-256 on the hub, and returns the key once
+    /// (the operator/creator copies it to joiners out-of-band — same trust
+    /// model as the site enroll secret). The creator still self-seals the
+    /// session key; joiners redeem the pairing key and get the session key
+    /// sealed to their own ek automatically.
+    pub fn create(
+        &self,
+        name: &str,
+        created_by: &str,
+        ek: &str,
+        repo: &str,
+    ) -> Result<(Session, String), String> {
         if name.trim().is_empty() || name.chars().count() > MAX_SESSION_NAME_CHARS {
             return Err(format!("session name must be 1..{MAX_SESSION_NAME_CHARS} chars"));
+        }
+        if repo.chars().count() > MAX_REPO_CHARS {
+            return Err(format!("repo label must be 1..{MAX_REPO_CHARS} chars"));
         }
         let mut sessions = self.inner.lock().unwrap();
         if sessions.len() >= MAX_SESSIONS {
             return Err(format!("session registry full (max {MAX_SESSIONS})"));
         }
+        let pairing_key = crate::rand::key_hex();
+        let pairing_hash = crate::sha256::hexdigest(pairing_key.as_bytes());
         let session = Session {
             id: crate::rand::hex(16),
             name: clamp(name.trim(), MAX_SESSION_NAME_CHARS),
@@ -268,10 +296,39 @@ impl Sessions {
             }],
             sealed: Vec::new(),
             msgs: Vec::new(),
+            pairing_hash,
+            repo: clamp(repo.trim(), MAX_REPO_CHARS),
         };
         sessions.push(session.clone());
         self.persist(&sessions)?;
-        Ok(session)
+        Ok((session, pairing_key))
+    }
+
+    /// Constant-time pairing-key check against the stored hash. Empty
+    /// stored hash = session predates pairing keys; fail closed.
+    pub fn check_pairing(&self, id: &str, key: &str) -> bool {
+        let sessions = self.inner.lock().unwrap();
+        let Some(s) = sessions.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        if s.pairing_hash.is_empty() || key.is_empty() || key.len() > 256 {
+            return false;
+        }
+        crate::util::ct_eq_str(&s.pairing_hash, &crate::sha256::hexdigest(key.as_bytes()))
+    }
+
+    /// Set the repo label on an existing session (creator or dashboard
+    /// key holder may re-tag).
+    pub fn set_repo(&self, id: &str, repo: &str) -> Result<(), String> {
+        if repo.chars().count() > MAX_REPO_CHARS {
+            return Err(format!("repo label must be 1..{MAX_REPO_CHARS} chars"));
+        }
+        let mut sessions = self.inner.lock().unwrap();
+        let Some(s) = sessions.iter_mut().find(|s| s.id == id) else {
+            return Err("session not found".into());
+        };
+        s.repo = clamp(repo.trim(), MAX_REPO_CHARS);
+        self.persist(&sessions)
     }
 
     /// Join a session as a new member with a fresh encapsulation key.
@@ -298,6 +355,43 @@ impl Sessions {
         let sealed: Vec<SealedPkg> = session.sealed.clone();
         self.persist(&sessions)?;
         Ok((session, sealed))
+    }
+
+    /// Pairing-validated join: admit the member, refreshing an existing
+    /// membership's ek in place (identity rotation) instead of failing.
+    /// Returns (session, sealed packages for this member, refreshed?).
+    pub fn join_or_refresh(
+        &self,
+        id: &str,
+        device: &str,
+        ek: &str,
+    ) -> Result<(Session, Vec<SealedPkg>, bool), String> {
+        let mut sessions = self.inner.lock().unwrap();
+        {
+            let Some(session) = sessions.iter_mut().find(|s| s.id == id) else {
+                return Err("session not found".into());
+            };
+            if session.members.len() >= MAX_MEMBERS
+                && !session.members.iter().any(|m| m.device == device)
+            {
+                return Err(format!("session full (max {MAX_MEMBERS} members)"));
+            }
+            match session.members.iter_mut().find(|m| m.device == device) {
+                Some(m) => {
+                    m.ek = ek.to_string();
+                    m.joined_at = now_secs();
+                }
+                None => session.members.push(Member {
+                    device: clamp(device, 64),
+                    ek: ek.to_string(),
+                    joined_at: now_secs(),
+                }),
+            }
+        }
+        let session = sessions.iter().find(|s| s.id == id).expect("just updated").clone();
+        let sealed: Vec<SealedPkg> = session.sealed.clone();
+        self.persist(&sessions)?;
+        Ok((session, sealed, true))
     }
 
     /// A member posts ML-KEM ciphertexts sealing the session key for
@@ -412,9 +506,13 @@ mod tests {
     #[test]
     fn create_join_persist() {
         let (ss, d) = temp_sessions("persist");
-        let s = ss.create("design chat", "mac-agent", "aakey").unwrap();
+        let (s, pairing) = ss.create("design chat", "mac-agent", "aakey", "wtf-mcp").unwrap();
         assert_eq!(s.members.len(), 1);
         assert_eq!(s.next_seq, 1);
+        assert_eq!(s.repo, "wtf-mcp");
+        assert_eq!(pairing.len(), 64);
+        assert!(ss.check_pairing(&s.id, &pairing));
+        assert!(!ss.check_pairing(&s.id, "wrong"));
 
         let (joined, sealed) = ss.join(&s.id, "windows-agent", "wbkey").unwrap();
         assert_eq!(joined.members.len(), 2);
@@ -438,7 +536,7 @@ mod tests {
     #[test]
     fn message_seq_and_membership() {
         let (ss, d) = temp_sessions("msgs");
-        let s = ss.create("ops", "box-a", "k").unwrap();
+        let (s, _pk) = ss.create("ops", "box-a", "k", "").unwrap();
         let r1 = ss.post_message(&s.id, "box-a", &"a".repeat(24), "ct1").unwrap();
         assert_eq!(r1.seq, 1);
         let r2 = ss.post_message(&s.id, "box-a", &"b".repeat(24), "ct2").unwrap();
@@ -460,14 +558,14 @@ mod tests {
     fn caps_fail_closed() {
         let (ss, d) = temp_sessions("caps");
         // bad nonce lengths rejected
-        assert!(ss.post_message(&ss.create("x", "a", "k").unwrap().id, "a", "short", "c").is_err());
+        assert!(ss.post_message(&ss.create("x", "a", "k", "").unwrap().0.id, "a", "short", "c").is_err());
         // oversize name
-        assert!(ss.create(&"n".repeat(200), "a", "k").is_err());
+        assert!(ss.create(&"n".repeat(200), "a", "k", "").is_err());
         // registry cap: "x" from the nonce test already occupies one slot
         for i in 0..MAX_SESSIONS - 1 {
-            ss.create(&format!("s{i}"), "a", "k").unwrap();
+            ss.create(&format!("s{i}"), "a", "k", "").unwrap();
         }
-        assert!(ss.create("overflow", "a", "k").is_err());
+        assert!(ss.create("overflow", "a", "k", "").is_err());
         std::fs::remove_dir_all(&d).ok();
     }
 }
