@@ -82,10 +82,12 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
             | "/api/v1/env"
+            | "/api/v1/term"
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
-        || req.path.starts_with("/api/v1/sessions/");
+        || req.path.starts_with("/api/v1/sessions/")
+        || req.path.starts_with("/api/v1/term/");
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => HandlerResult::Respond(healthz(hub)),
         ("GET", "/") => HandlerResult::Respond(dashboard(hub, req)),
@@ -108,6 +110,9 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("GET", "/api/v1/fed/peers") => HandlerResult::Respond(fed_peers(hub, req)),
         ("POST", "/api/v1/env") => HandlerResult::Respond(env_report(hub, req)),
         ("GET", "/api/v1/env") => HandlerResult::Respond(env_list(hub, req)),
+        (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
+            HandlerResult::Respond(term(hub, req))
+        }
         (_, p) if p.starts_with("/api/v1/fed/pull") => HandlerResult::Respond(fed_pull(hub, req)),
         ("GET", "/api/v1/sessions") => HandlerResult::Respond(sessions_list(hub, req)),
         ("POST", "/api/v1/sessions") => HandlerResult::Respond(session_create(hub, req)),
@@ -754,7 +759,7 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
 
     match (req.method.as_str(), action) {
         ("GET", "") => {
-            let is_dash = dash_ok(hub, req);
+            let is_dash = dash_ok(hub, req) || term_allowed(hub, req);
             let member = device_auth(hub, req).ok();
             if !is_dash && member.is_none() {
                 return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
@@ -979,6 +984,56 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                     Response::json(200, &Value::obj(vec![("msgs", Value::Arr(arr))]))
                 }
                 Err(e) => Response::error(400, &e),
+            }
+        }
+        ("GET", "view") => {
+            // Operator chat viewer (v0.15.0, operator directive): the
+            // dashboard-key holder may read decrypted chat bodies. The
+            // operator already holds every credential on the machine
+            // (dashboard key, bridge keys, session keys on disk) — this
+            // endpoint only surfaces what the local operator can already
+            // decrypt with `$WTF_HOME/session_keys.json`. Remote callers
+            // on a loopback hub get nothing (loopback_only gates ?cap=
+            // elsewhere; here the dashboard key IS the gate, and the key
+            // never leaves the machine it guards).
+            if !term_allowed(hub, req) {
+                return Response::error(401, "operator auth required (?k= or ?cap= on loopback)");
+            }
+            let after = req
+                .q("after")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            match crate::mcp::load_session_key(id) {
+                None => Response::error(
+                    404,
+                    "no local session key for this chat — operator machine has not joined it",
+                ),
+                Some(key) => match hub.sessions.read_messages(id, after) {
+                    Ok(msgs) => {
+                        let arr: Vec<Value> = msgs
+                            .iter()
+                            .map(|m| {
+                                let pt = crate::session_crypto::open_message(
+                                    &key,
+                                    id,
+                                    &m.sender,
+                                    m.seq,
+                                    &m.nonce,
+                                    &m.ct,
+                                )
+                                .unwrap_or_else(|e| format!("<decrypt failed: {e}>"));
+                                Value::obj(vec![
+                                    ("seq", Value::from(m.seq as i64)),
+                                    ("sender", Value::from(m.sender.as_str())),
+                                    ("ts", Value::from(m.ts as i64)),
+                                    ("text", Value::from(pt.as_str())),
+                                ])
+                            })
+                            .collect();
+                        Response::json(200, &Value::obj(vec![("msgs", Value::Arr(arr))]))
+                    }
+                    Err(e) => Response::error(400, &e),
+                },
             }
         }
         _ => Response::error(404, "not found"),
@@ -1228,6 +1283,123 @@ fn env_list(hub: &Arc<Hub>, req: &Request) -> Response {
         })
         .collect();
     Response::json(200, &Value::obj(vec![("devices", Value::Arr(arr))]))
+}
+
+// ---------- operator terminal (v0.15.0) ----------
+
+/// Operator terminal for chat executor sessions. Dashboard-key gated;
+/// restricted to `wtf-chat-*` tmux sessions (the executor's namespace —
+/// arbitrary shell sessions on the machine are NOT exposed).
+///
+///   GET  /api/v1/term/<session>?lines=N        → pane capture (text)
+///   POST /api/v1/term/<session> {keys: "…"}    → send keys + Enter
+///   POST /api/v1/term/<session> {spawn: "…"}   → create session (workdir $PWD)
+///
+/// This is the operator driving the SAME tmux sessions the chat executor
+/// uses (`wtf-chat-<slug>`), from the dashboard. The dashboard key is the
+/// operator credential; on a loopback hub the capability path plays that
+/// role for the page, and the page forwards ?cap= — accepted here too on
+/// loopback-only hubs.
+fn term_session_name(input: &str) -> Option<String> {
+    let name = percent_decode(input);
+    if name.starts_with("wtf-chat-") && name.len() <= 48 && name.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+    }) {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn term_allowed(hub: &Hub, req: &Request) -> bool {
+    dash_ok(hub, req) || (hub.loopback_only && req.q("cap").map(|v| crate::util::ct_eq_str(&hub.capability, &v)).unwrap_or(false))
+}
+
+fn term(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?k= or ?cap= on loopback)");
+    }
+    let Some(name) = term_session_name(req.path.strip_prefix("/api/v1/term/").unwrap_or("")) else {
+        return Response::error(404, "unknown or disallowed tmux session (wtf-chat-* only)");
+    };
+    match req.method.as_str() {
+        "GET" => {
+            let lines = req.q("lines").and_then(|s| s.parse::<usize>().ok()).unwrap_or(200).min(5000);
+            let out = std::process::Command::new("tmux")
+                .args(["capture-pane", "-t", &name, "-p", "-S", &format!("-{lines}")])
+                .output();
+            match out {
+                Ok(o) if o.status.success() => Response::json(200, &Value::obj(vec![
+                    ("session", Value::from(name.as_str())),
+                    ("pane", Value::from(String::from_utf8_lossy(&o.stdout).into_owned().as_str())),
+                ])),
+                Ok(_) => Response::error(404, "tmux session not found"),
+                Err(e) => Response::error(500, &format!("tmux failed: {e}")),
+            }
+        }
+        "POST" => {
+            let body = match parse_body(req) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
+            if let Some(spawn) = body.get("spawn").and_then(|x| x.as_str()) {
+                // Create the session if absent (mirrors executor reuse rule).
+                let exists = std::process::Command::new("tmux")
+                    .args(["has-session", "-t", &name])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !exists {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let created = std::process::Command::new("tmux")
+                        .args(["new-session", "-d", "-s", &name, "-c"])
+                        .arg(cwd)
+                        .status();
+                    if !created.map(|s| s.success()).unwrap_or(false) {
+                        return Response::error(500, "cannot create tmux session");
+                    }
+                }
+                let _ = spawn; // reserved: initial command (unused today)
+                return Response::json(200, &Value::obj(vec![("ok", Value::from(true)), ("session", Value::from(name.as_str()))]));
+            }
+            let Some(keys) = body.get("keys").and_then(|x| x.as_str()) else {
+                return Response::error(400, "body must be {keys: \"...\"} or {spawn: true}");
+            };
+            if keys.len() > 8192 {
+                return Response::error(413, "keys payload too large");
+            }
+            let sent = std::process::Command::new("tmux")
+                .args(["send-keys", "-t", &name, "--", keys, "Enter"])
+                .output();
+            match sent {
+                Ok(o) if o.status.success() => Response::json(200, &Value::obj(vec![
+                    ("ok", Value::from(true)),
+                    ("session", Value::from(name.as_str())),
+                ])),
+                Ok(_) => Response::error(404, "tmux session not found"),
+                Err(e) => Response::error(500, &format!("tmux failed: {e}")),
+            }
+        }
+        _ => Response::error(405, "method not allowed"),
+    }
 }
 
 #[cfg(test)]

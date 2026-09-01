@@ -143,22 +143,52 @@ function renderSessions(sessions, now){
   }
 }
 async function openSession(id){
-  // chat viewer in a new tab of THIS page (capability/key rides along)
+  // Operator chat viewer (v0.15.0): decrypted bodies via the ?k=/?cap=
+  // gated /view endpoint + a live terminal pane on the executor tmux
+  // session. Falls back to metadata-only when this machine holds no
+  // session key for the chat.
   let w = window.open("", "_blank");
   try{
-    const r = await fetch("/api/v1/sessions/"+encodeURIComponent(id)+"?"+AUTH);
-    const j = await r.json();
-    if(!r.ok || !j.ok===undefined && j.error){throw new Error(j.error||("HTTP "+r.status));}
-    const s = j.session || j;
-    const msgs = s.msgs || [];
-    const lines = msgs.map(m=>'<div class="m"><span class="dim">#'+esc(m.seq)+' '+esc(m.sender)+'</span><pre>'+esc(atob(m.ct)||"(encrypted — opens for members only)")+'</pre></div>').join("")
-      || '<div class="dim">no messages visible from the dashboard (member-encrypted)</div>';
-    w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(s.name||id)+'</title>'
+    const meta = await fetch("/api/v1/sessions/"+encodeURIComponent(id)+"?"+AUTH);
+    const mj = await meta.json();
+    if(!meta.ok){throw new Error(mj.error||("HTTP "+meta.status));}
+    const s = mj.session || mj;
+    const slug = (s.name||id).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,24)||"task";
+    const termName = "wtf-chat-"+slug;
+    let viewRows = "";
+    let viewNote = "";
+    const vr = await fetch("/api/v1/sessions/"+encodeURIComponent(id)+"/view?"+AUTH);
+    if(vr.ok){
+      const vj = await vr.json();
+      viewRows = (vj.msgs||[]).map(m=>'<div class="m"><span class="dim">#'+esc(m.seq)+' '+esc(m.sender)+' · '+new Date(m.ts*1000).toISOString().slice(11,19)+'Z</span><pre>'+esc(m.text)+'</pre></div>').join("");
+      if(!viewRows) viewRows = '<div class="dim">no messages yet</div>';
+    } else {
+      const ej = await vr.json().catch(()=>({}));
+      viewNote = ej.error || ("HTTP "+vr.status);
+      viewRows = '<div class="dim">message bodies unavailable on this machine: '+esc(viewNote)+'</div>';
+    }
+    const doc = '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(s.name||id)+'</title>'
       +'<style>body{background:#0b0e14;color:#d7dde8;font:14px/1.5 ui-monospace,monospace;margin:0;padding:16px}'
       +'h1{font-size:15px;letter-spacing:1px}.dim{color:#8a93a6}.m{border-bottom:1px dashed #232b3d;padding:6px 0}.m pre{white-space:pre-wrap;word-break:break-word;margin:4px 0 0}'
-      +'.repo{color:#4aa3ff;font-size:12px;border:1px solid #234; border-radius:10px;padding:1px 8px}</style></head><body>'
-      +'<h1>💬 '+esc(s.name||id)+'</h1><div class="dim">repo '+(s.repo?esc(s.repo):'-')+' · '+msgs.length+' message(s) shown · members: '+esc((s.members||[]).map(m=>m.device).join(", ")||"-")+'</div>'
-      +lines+'</body></html>');
+      +'.repo{color:#4aa3ff;font-size:12px;border:1px solid #234;border-radius:10px;padding:1px 8px}'
+      +'#term{background:#05070c;border:1px solid #1d2637;border-radius:8px;height:320px;overflow:auto;padding:8px;white-space:pre-wrap;font:12px/1.45 ui-monospace,monospace;color:#9fd08a;margin:10px 0 6px}'
+      +'input#cmd{width:70%;background:#0d1320;color:#d7dde8;border:1px solid #233152;border-radius:6px;padding:6px 8px;font:13px ui-monospace,monospace}'
+      +'button{background:#16345c;color:#d7dde8;border:0;border-radius:6px;padding:6px 14px;cursor:pointer}'
+      +'.row{display:flex;gap:8px;align-items:center}</style></head><body>'
+      +'<h1>💬 '+esc(s.name||id)+'</h1><div class="dim">repo '+(s.repo?esc(s.repo):'-')+' · members: '+esc((s.members||[]).map(m=>m.device).join(", ")||"-")+'</div>'
+      +'<div id="feed">'+viewRows+'</div>'
+      +'<h2 style="font-size:13px;margin:14px 0 4px">terminal — '+esc(termName)+' (this machine)</h2>'
+      +'<div class="row"><input id="cmd" placeholder="type a command for the agent terminal, Enter sends"/><button id="send">send</button><span id="tstat" class="dim"></span></div>'
+      +'<div id="term">loading pane…</div>'
+      +'<script>'
+      +'const TERM='+JSON.stringify(termName)+';const AUTH='+JSON.stringify(AUTH)+';'
+      +'async function poll(){try{const r=await fetch("/api/v1/term/"+TERM+"?lines=400&"+AUTH);if(r.ok){const j=await r.json();document.getElementById("term").textContent=j.pane||"(empty pane)";document.getElementById("tstat").textContent="live";}else{const e=await r.json().catch(()=>({}));document.getElementById("tstat").textContent=e.error||("HTTP "+r.status);}}catch(e){document.getElementById("tstat").textContent=String(e);}setTimeout(poll,2000);}'
+      +'poll();'
+      +'async function sendCmd(){const c=document.getElementById("cmd").value;if(!c)return;await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys:c})});document.getElementById("cmd").value="";setTimeout(poll,400);}'
+      +'document.getElementById("send").addEventListener("click",sendCmd);'
+      +'document.getElementById("cmd").addEventListener("keydown",e=>{if(e.key==="Enter")sendCmd();});'
+      +'<\/script></body></html>';
+    w.document.write(doc);
     w.document.close();
   }catch(e){
     try{w.document.write('<body style="background:#0b0e14;color:#d7dde8;font:14px ui-monospace">chat open failed: '+esc(String(e.message||e))+' <a style="color:#4aa3ff" href="javascript:location.reload()">retry</a></body>');w.document.close();}catch(_){}
