@@ -1,0 +1,44 @@
+# DOX — docs/ — Operator & Fleet Documentation
+
+## Purpose
+
+Per-audience documentation split. The root `llms.txt` stays the DOX rail
+(agents read it top-down); this folder carries the human/operational
+layers that were previously interleaved:
+
+- `FLEET.md` — fleet state, machine inventory, hub addresses, per-machine
+  setup receipts (windows host portproxy, mac shim state, router lanes).
+- `OPERATIONS.md` — runbooks: bring-up, federation repair, envelope
+  transfer, shim hardening, log hygiene, chat-integration contract.
+- `ROADMAP.md` — refinement items (R1 identity persistence, R2 ledger,
+  R3 operator-directed) and open defects with file/line anchors.
+
+## Ownership
+
+- Operator-facing summaries live here, NOT in the root `llms.txt`
+  (which stays a lean contract for agents).
+- AGENTS.md keeps the mission/security/worktree contract and points here
+  for state; it does not duplicate fleet status.
+
+## Local Contracts
+
+- Fleet facts (versions, IPs, hub ids) must carry the date they were
+  verified. Stale entries get updated or deleted on the next verified pass.
+- Every doc file here ends with a `Verified:` line bearing the last check.
+
+## Work Guidance
+
+- When fleet state changes (hub version, router state, new machine), update
+  `FLEET.md` in the same task and bump its `Verified:` line.
+- New runbooks go in `OPERATIONS.md` only if they will recur; one-off
+  procedures stay in `.agents/tasks/` records.
+
+## Verification
+
+- `grep -c 'Verified:' docs/*.md` — every doc carries one.
+- Cross-check versions against `curl healthz` on both hubs during any
+  fleet-touching task.
+
+## Child DOX Index
+
+(none — flat folder)
