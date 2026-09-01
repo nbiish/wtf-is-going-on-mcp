@@ -1028,15 +1028,10 @@ fn fed_push(hub: &Arc<Hub>, req: &Request) -> Response {
             duplicates += 1;
         }
     }
-    if accepted > 0 {
-        let _ = hub.store.log_event(
-            &device,
-            &device,
-            "info",
-            &format!("federation: +{accepted} event(s) from {origin} ({duplicates} duplicates)"),
-            "",
-        );
-    }
+    // Receipts are an echo engine, not signal: they replicate, peers
+    // re-ingest and push back new events, each hub logs again — the 10 s
+    // loop found by windows-1 (2026-09-01). Batch results stay on the
+    // HTTP response; the store stays clean.
     Response::json(
         200,
         &Value::obj(vec![
