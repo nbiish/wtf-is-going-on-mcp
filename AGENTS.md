@@ -95,6 +95,16 @@ id · name · repo · members · msgs; `wtf sessions` (CLI, dashboard-key
 gated) lists chats for the operator and re-prints local pairing keys on
 the creator machine (`session_keys.json` pairings map, 0600).
 
+**Federation LIVE (verified 2026-09-01):** mac hub `hub-799c0c4c` ⇄
+windows hub `hub-2538554f` replicate both ways (10 s anti-entropy);
+`windows-1` enrolled on both hubs; repo chat `wtf-is-going-on-mcp`
+(`a305c8ea…`) has both `mac-agent` + `windows-1` as members with the
+session key exchanged via the auto-seal path — encrypted cross-machine
+coordination is OPERATIONAL. Both agents work from the same remote
+(`origin/main`, matching heads). Cross-machine task handoff happens in
+that chat: `comms_post`/`session_send` there, not the older
+`mac-win-pipeline` channel.
+
 **Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
 three paste-bins into the operator's copy/paste channel between machines and
 agents, gated by the dashboard key (`?k=`) — content moves *before* any
@@ -120,6 +130,24 @@ cross-version seam).
   operator sign-off; note any `api.rs` convergence-contract overrides in the
   handoff sheets every time.
 - `[dependencies]` stays **empty** — std-only by design; no new crates, ever.
+- **Hard-code everything in Rust; own your dependencies** (operator
+  directive, 2026-09-01): every capability — crypto, JSON, HTTP, MCP,
+  compression, serialization, whatever comes next — is implemented
+  in-tree and unit-tested here, never pulled from crates.io. When a new
+  capability is needed, write it in this repo (with FIPS/official
+  vectors where applicable) instead of reaching for a dependency.
+- **Autonomous operation is pre-authorized** (operator directive,
+  2026-09-01): agents directed to this MCP work autonomously — tasks
+  handed to a repo chat are executed via the agent's own CLI (Hermes /
+  OhMyPy / ACP non-interactive tooling; assumed configured on every
+  machine) with progress reported back into the chat. No per-task
+  permission checks; verify by output.
+- **Zero-config join** (operator directive, 2026-09-01): a user hands
+  any agent on any machine two artifacts — the skill file (ships in the
+  binary, `wtf skill install`) and one highly secure federated key — and
+  the agent connects autonomously. Design goal: simple enough for
+  non-technical users, full control for advanced users; all tooling
+  in-tree.
 - `SKILL.md` is embedded in the binary at build time (`include_str!`) — keep it
   byte-identical with `.agents/skills/wtf-agent-hub/SKILL.md` and the
   ainish-coder mirror; sync via a worktree in that repo, merge, push, verify.

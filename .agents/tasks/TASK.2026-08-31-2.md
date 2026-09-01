@@ -183,3 +183,65 @@ both sides. Any mismatch = stale pull/build — re-run the prerequisite.
 - `/healthz` → 0.12.0; `wtf sessions` lists existing chats with repos;
   `wtf dashboard-url` prints the loopback capability URL (unchanged
   across restarts); 100 unit + 13 e2e green on main.
+
+---
+
+# VERIFIED — cross-machine handshake complete (2026-09-01, machine 1)
+
+The 1-2-3 sequence ran green end to end, driven by windows-1 from its
+side:
+
+1. **Enroll**: windows-1 enrolled on BOTH hubs (`windows-1` device on
+   the Mac hub; `windows-1` on its own local hub).
+2. **Federate**: windows-1 federated its hub `hub-2538554f` with the Mac
+   hub `hub-799c0c4c` from its side — replication confirmed LIVE both
+   directions (federation events every 10 s on both ledgers; my hub had
+   zero local peer config and the mesh still formed — the pull side
+   works via the fed device windows-1 enrolled on my hub).
+3. **Connect**: windows-1 created the repo-tagged chat
+   `a305c8ea… 'wtf-is-going-on-mcp'` and left the pairing key with the
+   operator. mac-agent joined (ek registered). windows-1's handshake
+   send triggered the AUTO-SEAL; mac-agent's first `session_read`
+   recovered the session key and decrypted all three of windows-1's
+   messages. mac-agent replied (seq 4, encrypted) and posted a COMMS
+   checkin (#5).
+
+## Verification battery (all green)
+
+- Encrypted round-trip: send → read-back, sender-bound (seq), no
+  plaintext on the hub.
+- COMMS ledger envelopes over the chat: `handoff` from windows-1,
+  `checkin` from mac-agent.
+- Same-remote: `origin/main` @ `79dd4d5` contains windows-1's `784886c`
+  + bring-up docs (`ee84db1`, `0a192a3`); both heads match.
+- Federation: bidirectional event flow (`+N event(s) from hub-…` on both
+  sides, 0 duplicates).
+- `wtf sessions` + `session_list` parity: chat shows repo
+  `wtf-is-going-on-mcp`, 2 members, pairing:key.
+- Dashboard: both agents visible with repo chips + origin hub tags.
+
+## Next lanes (operator-set priorities)
+
+1. **Dashboard CHATS view**: chat blocks in the AGENTS section — per
+   chat: name, repo chip, member pills, msg counts, pairing state. The
+   hub stores ciphertext only, so the dashboard shows metadata + live
+   counts (SSE), never message content; content review stays in agent
+   CLIs (`session_read`) and `wtf sessions`.
+2. **Autonomous task handoff (Hermes / OhMyPy)**: agents receive tasks
+   in the repo chat and execute them via their own agent CLI
+   (non-interactive ACP tooling), reporting progress back into the same
+   chat. OPERATOR PRE-AUTHORIZATION: agents directed to this MCP are
+   trusted to work autonomously — no per-task permission checks. Assume
+   Hermes + OhMyPy are configured on every machine; verify by output.
+3. **Zero-config join (user directive 2026-09-01)**: the user should be
+   able to hand ANY agent on ANY machine (a) the skill file (ships in
+   the binary; `wtf skill install`) and (b) one highly secure federated
+   key, and that agent connects autonomously — no manual MCP config, no
+   technical steps. Advanced users get full control; non-technical users
+   get a two-artifact setup. Design sketch (converge before code):
+   the skill file carries self-configuration instructions an agent can
+   follow from a single key input; candidate UX = `wtf join-key <key>`
+   (one command: resolves hub URL embedded in the key or prompts once,
+   enrolls via the PSK handshake, writes bridge.json, wires the MCP
+   client entry if the harness config is discoverable, verifies with a
+   signed round-trip) — everything in-tree per the hard-code directive.
