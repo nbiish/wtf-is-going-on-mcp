@@ -223,11 +223,15 @@ pub fn anti_entropy(
             // ingest logs themselves replicate, so peers re-ingest + re-log
             // them — a feedback loop that drowned the event ring (~20
             // events/min). Never log ingests that are themselves
-            // federation-internal (device "federation"); throttle the rest
-            // to one per WARN_THROTTLE_SECS per peer.
-            let only_fed_internal = events
-                .iter()
-                .all(|e| e.get("device").and_then(|x| x.as_str()) == Some("federation"));
+            // federation-internal: receipts from fed_push carry device
+            // "fed-hub-<peer>", so any device named "federation" or with a
+            // "fed-" prefix is hub machinery, not agent signal.
+            let only_fed_internal = events.iter().all(|e| {
+                e.get("device")
+                    .and_then(|x| x.as_str())
+                    .map(|d| d == "federation" || d.starts_with("fed-"))
+                    .unwrap_or(false)
+            });
             if !only_fed_internal {
                 let mut lw = rep.last_warn.lock().unwrap();
                 let last = *lw.get(&format!("pull-{}", peer.name)).unwrap_or(&0);

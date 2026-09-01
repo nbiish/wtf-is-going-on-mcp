@@ -73,7 +73,11 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 "use strict";
 const Q = new URLSearchParams(location.search);
 const K = Q.get("k") || "";
-const CAP = Q.get("cap") || "";
+// Capability self-discovery: on a loopback hub the page is served at
+// /w/<capability> with no query string, so derive the token from the path.
+const CAP = Q.get("cap")
+  || (location.pathname.match(/^\/w\/([0-9a-f]{64})$/) || [])[1]
+  || "";
 const AUTH = K ? ("k="+encodeURIComponent(K)) : (CAP ? ("cap="+encodeURIComponent(CAP)) : "");
 function esc(s){return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function ago(ts, now){const d=Math.max(0,now-ts);if(d<60)return d+"s";if(d<3600)return Math.floor(d/60)+"m";if(d<86400)return Math.floor(d/3600)+"h";return Math.floor(d/86400)+"d";}
