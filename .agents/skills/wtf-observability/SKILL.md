@@ -5,8 +5,11 @@ description: Expert operation of the wtf multi-agent observability hub (this rep
 
 > **Status:** operator/CLI reference. Agents should use
 > `.agents/skills/wtf-agent-hub/SKILL.md` instead — it carries the current
-> 14-tool surface (incl. `write_bin`, `hub_info`, and the encrypted
-> `session_*` channels), the PQC credential lane, and the bin etiquette.
+> 20-tool surface (v0.14.0: incl. `write_bin`, `hub_info`, `env_report`/`env_probe`,
+> the encrypted `session_*` channels, COMMS ledger tools, and the executor
+> `chat_run`/`chat_sessions` — per-chat tmux sessions running the
+> omp-hermes-fcc-claude fallback chain), the PQC credential lane, and the bin
+> etiquette.
 > This document stays as the hub-operator + signed-curl fallback guide.
 
 
@@ -16,8 +19,10 @@ description: Expert operation of the wtf multi-agent observability hub (this rep
 keeps the shared truth of what every agent is doing, and a **bridge**
 (`wtf agent`) that is a normal MCP stdio server. Agents report what they are
 working on; a browser dashboard answers *what the fuck is going on* across all
-machines. Everything is in-tree (SHA-256, HMAC, JSON, HTTP, MCP) — no crates,
-no network installs, no system packages.
+machines. The SESSIONS card lists every federated chat (click to open its
+viewer); dispatched tasks run in attachable `wtf-chat-<slug>` tmux sessions via
+the executor (v0.14.0). Everything is in-tree (SHA-256, HMAC, JSON, HTTP, MCP) —
+no crates, no network installs, no system packages.
 
 Non-negotiables before you touch anything: never log, echo, or commit device
 keys or the dashboard key; never port-forward plain HTTP to the public
