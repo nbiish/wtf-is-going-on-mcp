@@ -17,6 +17,23 @@ use std::time::Duration;
 
 const HEARTBEAT_SECS: u64 = 60;
 
+/// Repository label for reports: $WTF_REPO wins, else the current
+/// directory's basename (best-effort; empty on failure). Bridges are cheap
+/// to run one-per-terminal, so each repo's agents self-attribute naturally.
+fn repo_label() -> String {
+    if let Ok(r) = std::env::var("WTF_REPO") {
+        let r = r.trim().to_string();
+        if !r.is_empty() && r.len() <= 128 {
+            return r;
+        }
+    }
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .filter(|n| !n.is_empty() && n.len() <= 128)
+        .unwrap_or_default()
+}
+
 pub struct Bridge {
     pub cfg: BridgeConfig,
 }
@@ -136,12 +153,19 @@ pub fn format_state(state: &Value, hub_label: &str) -> String {
         let details = a.get("details").and_then(|v| v.as_str()).unwrap_or("");
         let last = a.get("last_seen").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
         let stale = a.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
+        let origin = a.get("origin").and_then(|v| v.as_str()).unwrap_or("");
+        let repo = a.get("repo").and_then(|v| v.as_str()).unwrap_or("");
         let mark = if stale { "○" } else { "●" };
-        out.push_str(&format!(
-            "  {mark} {agent}@{device} [{status}] ({}, utc {})\n",
-            rel_age(now, last),
-            hms(last)
-        ));
+        let mut label = format!("  {mark} {agent}@{device} [{status}]");
+        if !repo.is_empty() {
+            label.push_str(&format!(" <{repo}>"));
+        }
+        if !origin.is_empty() {
+            label.push_str(&format!(" ({origin})"));
+        }
+        label.push_str(&format!(" ({}, utc {})", rel_age(now, last), hms(last)));
+        out.push_str(&label);
+        out.push('\n');
         if !task.is_empty() {
             out.push_str(&format!("      task: {task}\n"));
         }
@@ -160,8 +184,17 @@ pub fn format_state(state: &Value, hub_label: &str) -> String {
         let device = e.get("device").and_then(|v| v.as_str()).unwrap_or("?");
         let level = e.get("level").and_then(|v| v.as_str()).unwrap_or("info");
         let message = e.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        let origin = e.get("origin").and_then(|v| v.as_str()).unwrap_or("");
+        let repo = e.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+        let mut chips = String::new();
+        if !origin.is_empty() {
+            chips.push_str(&format!(" ({origin})"));
+        }
+        if !repo.is_empty() {
+            chips.push_str(&format!(" <{repo}>"));
+        }
         out.push_str(&format!(
-            "  #{id} {} [{level}] {agent}@{device}: {message}\n",
+            "  #{id} {} [{level}]{chips} {agent}@{device}: {message}\n",
             hms(ts)
         ));
     }
@@ -340,6 +373,10 @@ impl Bridge {
                                     "agent",
                                     Self::prop("optional agent name; defaults to this device"),
                                 ),
+                                (
+                                    "repo",
+                                    Self::prop("optional repo/project label; defaults to the bridge's working directory name"),
+                                ),
                             ]),
                         ),
                         (
@@ -370,6 +407,10 @@ impl Bridge {
                                 (
                                     "agent",
                                     Self::prop("optional agent name; defaults to this device"),
+                                ),
+                                (
+                                    "repo",
+                                    Self::prop("optional repo/project label; defaults to the bridge's working directory name"),
                                 ),
                             ]),
                         ),
@@ -809,6 +850,14 @@ impl Bridge {
             ("task", Value::from(task.as_str())),
             ("details", Value::from(details)),
             ("agent", Value::from(agent)),
+            (
+                "repo",
+                Value::from(
+                    arg_str(args, "repo")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(repo_label),
+                ),
+            ),
         ]);
         match self.api_post("/api/v1/checkin", &body) {
             Ok(_) => {
@@ -843,6 +892,14 @@ impl Bridge {
             ("message", Value::from(message.as_str())),
             ("level", Value::from(level.as_str())),
             ("agent", Value::from(agent)),
+            (
+                "repo",
+                Value::from(
+                    arg_str(args, "repo")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(repo_label),
+                ),
+            ),
         ]);
         match self.api_post("/api/v1/event", &body) {
             Ok(v) => {
@@ -988,7 +1045,7 @@ impl Bridge {
                     ));
                 }
                 out.push_str(
-                    "dashboard link: operator runs `wtf dashboard-url` on the hub machine (the dashboard key never travels over MCP)\n",
+                    "dashboard link: operator runs `wtf dashboard-url` on the hub machine — prints the localhost capability URL (http://localhost:PORT/w/<token>); the token and dashboard key never travel over MCP\n",
                 );
                 (out, false)
             }

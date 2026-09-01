@@ -86,16 +86,23 @@ it: `wtf url http://OVERLAY-IP:7800` (or the public `https://` URL).
 
 ## Using the dashboard
 
-Open the printed URL: `http://HUB:7800/?k=<dashboard key>`. `wtf serve`
-reprints it on every start, and on the hub machine you can always get the
-exact clickable link (localhost + LAN) with:
+On the hub machine the dashboard lives behind a **capability URL** — a
+64-hex token in the path — and a loopback-bound hub serves it to localhost
+only:
 
 ```
-wtf dashboard-url
+http://localhost:7800/w/<64-hex capability token>
 ```
 
-The key lives in `$WTF_HOME/config.json` (0600); it is never exposed over
-MCP — agents only see the hub address via the `hub_info` tool.
+`wtf serve` prints the link on every start, and `wtf dashboard-url`
+reprints it any time (the token lives in
+`$WTF_HOME/dashboard_capability`, 0600; rotate by deleting the file and
+restarting). A wrong or missing token returns the **same uniform 404** as
+any unknown path — no oracle. When the hub binds a LAN address (not
+loopback), the remote path still uses the legacy dashboard key
+(`http://HUB:7800/?k=<dashboard key>`); the capability link stays
+localhost-only. The token and key are never exposed over MCP — agents only
+see the hub address via the `hub_info` tool.
 
 - Each reporting agent renders as a card: `● name [status]` with its
 current task, details, and last-seen age (`●` fresh, `○` stale after a
@@ -122,8 +129,12 @@ no external assets, works offline.
   `hex(hmac_sha256(secret, "wtf-hmac-v1\nMETHOD\npath-and-query\nts\nnonce\nsha256hex(body)")))`.
   The body hash binds the payload; the secret never crosses the wire.
 - **Replay protection**: ±300 s timestamp skew plus a per-device nonce cache.
-- **Dashboard auth**: a separate dashboard key gates `/` and `/stream` via
-  `?k=`. `/api/v1/state` accepts either the dashboard key or device auth.
+- **Dashboard auth (v0.11.0)**: the page is served only at
+  `/w/<capability token>`; a loopback-only hub needs nothing else
+  (localhost is the network gate), a LAN hub additionally keeps the
+  dashboard key (`?k=`) for remote viewers. `/stream` and `/api/v1/state`
+  accept the capability token (`?cap=`) on loopback hubs, or the dashboard
+  key, or device auth.
 - **Constant-time** comparison for every secret check. Auth failures are
   uniform 401s that do not reveal which factor failed.
 - **Enrollment tokens**: one-time, hashed at rest, expiring, revocable.
@@ -164,6 +175,35 @@ no external assets, works offline.
 - **Cloud**: run the hub on a VM, front it with a TLS-terminating proxy
   (Caddy/nginx + Let's Encrypt), then `wtf url https://hub.example.com`.
   The bridge accepts `https://`; TLS itself is always the proxy's job.
+
+## Federation — a ledger on every machine (v0.11.0)
+
+Every machine can run its own hub, and the ledgers replicate: check in on
+one machine and the event appears on every linked hub within seconds.
+Each hub is simultaneously a hub and a *device* on its peers — replication
+rides the existing HMAC request lane, no new crypto, `auth.rs` untouched.
+
+```
+# on the Mac (peer B already serves somewhere reachable):
+wtf federate add win --url http://WIN-IP:7800 --psk <win's wtf enroll-secret>
+# restart the hub; both ledgers now carry everything
+```
+
+- **One secret copy per edge**: the peer's *site* secret (`wtf
+  enroll-secret` there) enrolls this hub as device `fed-<hub-name>` on the
+  peer; the credential arrives ML-KEM-768-sealed and lands in
+  `$WTF_HOME/federation.json` (0600).
+- **Convergence**: push-on-append plus an anti-entropy sweep every 10 s;
+  events dedupe on `(origin, origin_id)` so restarts, retries, and mesh
+  loops are harmless. Every event carries its originating hub's name.
+- **Agents per repo**: every report carries a repo label — the bridge
+  stamps its working directory's name (override with `WTF_REPO` or the
+  tool's `repo` argument). Run one bridge per terminal/repo on the same
+  machine; the dashboard groups agents by origin hub and chips each
+  agent's repo.
+- **Ops**: `wtf federate list` shows the peer table; `wtf federate remove
+  <name>` unlinks (restart to stop replication). Peer URLs must be stable
+  across restarts (production hubs live on fixed LAN/overlay addresses).
 
 ## Onboarding a machine
 
@@ -420,9 +460,9 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | Route | Auth | Purpose |
 |-------|------|---------|
 | `GET /healthz` | none | Connectivity probe (version, uptime) |
-| `GET /?k=KEY` | dashboard key | Dashboard page |
-| `GET /stream?k=KEY` | dashboard key (device auth ok) | SSE state stream |
-| `GET /api/v1/state` | dashboard key or device auth | Full state JSON (includes `bins`) |
+| `GET /w/<capability>` | capability token (loopback hub) or dashboard key (LAN hub) | Dashboard page |
+| `GET /stream?k=KEY` | dashboard key / capability (`?cap=`, loopback) / device auth | SSE state stream |
+| `GET /api/v1/state` | dashboard key / capability / device auth | Full state JSON (includes `bins`, per-agent `repo` + `origin`) |
 | `GET /api/v1/bins` | dashboard key or device auth | All three paste-bins |
 | `GET /api/v1/bins/N` | dashboard key or device auth | One paste-bin (N = 1-3) |
 | `PUT /api/v1/bins/N` | dashboard key or device auth | Write a paste-bin: `{"content":"…"}` (max 65,536 chars; oversize is rejected, not truncated) |
@@ -430,6 +470,9 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | `POST /api/v1/event` | device auth | Append event |
 | `POST /api/v1/heartbeat` | device auth | Liveness touch |
 | `POST /api/v1/enroll` | none (token- or proof-gated, rate-limited) | Two modes: `{"name":…,"token":…}` → one-time `{"hub_url":…,"device":…,"key":…}`; or signed handshake `{"name":…,"ek":…,"ts":…,"nonce":…,"proof":…}` → `{"hub_url":…,"device":…,"ek_fp":…,"sealed":…}` with the device key ML-KEM-768-sealed, never plaintext |
+| `POST /api/v1/fed/push` | federated device (`fed-*` credential) | Peer pushes its ledger events; deduped on (origin, origin_id) |
+| `GET /api/v1/fed/pull?origin=NAME&after=N` | federated device (`fed-*`) | Events for `origin` beyond cursor `N` (anti-entropy) |
+| `GET /api/v1/fed/peers` | device auth | The hub's federation identity (used at link time) |
 
 Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
 `Transfer-Encoding` requests are rejected `501` by design.
@@ -493,6 +536,8 @@ wtf bin put N (TEXT | --file F | -) [--url U] [--k K] [--json]  # operator couri
 wtf agent        # MCP stdio server — what your MCP client launches
 wtf status       # plain-text hub state (same formatter as the tool)
 wtf dashboard-url # clickable dashboard URL (hub machine; never over MCP)
+wtf federate add <name> --url URL --psk SECRET [--as DEV]  # link a peer hub (one secret copy per edge)
+wtf federate list | federate remove <name>       # peer table / unlink (restart to stop replication)
 wtf skill install [--dir DIR] [--force] | skill print  # distribute the hub skill anywhere
 wtf version
 ```
@@ -502,7 +547,7 @@ wtf version
 | Symptom | Cause → fix |
 |---------|-------------|
 | HTTP 401 on a signed call | key revoked/wrong, clock off by >300 s, or signature input mismatch (exact path+query, raw 32-byte key as hex). Fresh nonce and retry. |
-| Dashboard 401 | append `?k=<dashboard key>` — or run `wtf dashboard-url` on the hub machine for the exact link. |
+| Dashboard 401/404 | run `wtf dashboard-url` on the hub machine — the loopback capability link is the gate; LAN viewers use `?k=<dashboard key>`. |
 | Connection refused | hub not running or wrong port — `curl http://localhost:7800/healthz`. |
 | "cannot bind" on serve | port taken: `--bind IP:PORT` or free the port. |
 | `wtf join` exit 127 | `wtf` is not on the hub host's PATH — install it there (see Build and install). |

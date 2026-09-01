@@ -50,6 +50,16 @@ pub struct Hub {
     pub enroll_hits: Mutex<Vec<u64>>,
     /// PSK-handshake replay guard: (nonce, first-seen ts), pruned past 600 s.
     pub enroll_nonces: Mutex<Vec<(String, u64)>>,
+    /// This hub's federation identity ("" until `wtf federate` first use).
+    pub fed_name: String,
+    /// Peer table with device creds issued by each peer (0600-backed).
+    /// Arc so the replicator thread shares it without polling the file.
+    pub fed: Arc<Mutex<crate::federation::FedConfig>>,
+    /// 64-hex capability token gating the dashboard page path (/w/<token>).
+    pub capability: String,
+    /// True when the HTTP listener is loopback-only (dashboard may then be
+    /// served without the dashboard key; the capability path is the gate).
+    pub loopback_only: bool,
 }
 
 pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
@@ -66,11 +76,18 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/devices"
             | "/api/v1/sessions"
             | "/api/v1/enroll"
-    ) || bin_id_of(&req.path).is_some()
+            | "/api/v1/fed/push"
+            | "/api/v1/fed/peers"
+    ) || req.path == "/w"
+        || req.path.starts_with("/w/")
+        || bin_id_of(&req.path).is_some()
         || req.path.starts_with("/api/v1/sessions/");
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => HandlerResult::Respond(healthz(hub)),
         ("GET", "/") => HandlerResult::Respond(dashboard(hub, req)),
+        (_, p) if p == "/" || p == "/w" || p.starts_with("/w/") => {
+            HandlerResult::Respond(dashboard(hub, req))
+        }
         ("GET", "/stream") => stream(hub, req),
         ("GET", "/api/v1/state") => HandlerResult::Respond(state(hub, req)),
         ("POST", "/api/v1/checkin") => HandlerResult::Respond(checkin(hub, req)),
@@ -83,6 +100,9 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/identity") => HandlerResult::Respond(identity_register(hub, req)),
         ("GET", "/api/v1/devices") => HandlerResult::Respond(devices_list(hub, req)),
         ("POST", "/api/v1/enroll") => HandlerResult::Respond(enroll(hub, req)),
+        ("POST", "/api/v1/fed/push") => HandlerResult::Respond(fed_push(hub, req)),
+        ("GET", "/api/v1/fed/peers") => HandlerResult::Respond(fed_peers(hub, req)),
+        (_, p) if p.starts_with("/api/v1/fed/pull") => HandlerResult::Respond(fed_pull(hub, req)),
         ("GET", "/api/v1/sessions") => HandlerResult::Respond(sessions_list(hub, req)),
         ("POST", "/api/v1/sessions") => HandlerResult::Respond(session_create(hub, req)),
         (_, p) if p == "/api/v1/sessions" || p.starts_with("/api/v1/sessions/") => {
@@ -124,6 +144,17 @@ fn device_auth(hub: &Hub, req: &Request) -> Result<String, Response> {
     verify(&keys, &mut nonces).map_err(|e| Response::error(401, &e.to_string()))
 }
 
+/// Capability token accepted where a dashboard key is: `?cap=<token>`.
+/// Only honored when the hub is loopback-only (the token is minted for the
+/// localhost capability URL; a remote caller must use the dashboard key).
+fn cap_ok(hub: &Hub, req: &Request) -> bool {
+    hub.loopback_only
+        && req
+            .q("cap")
+            .map(|v| crate::util::ct_eq_str(&hub.capability, &v))
+            .unwrap_or(false)
+}
+
 fn dash_ok(hub: &Hub, req: &Request) -> bool {
     match req.q("k") {
         Some(k) => ct_eq_str(&hub.dashboard_key, &k),
@@ -150,14 +181,14 @@ fn healthz(hub: &Hub) -> Response {
 }
 
 fn state(hub: &Hub, req: &Request) -> Response {
-    if !dash_ok(hub, req) && device_auth(hub, req).is_err() {
+    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
         return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
     }
     Response::json(200, &hub.store.to_state_json(hub.started_at, &hub.bins))
 }
 
 fn bins_list(hub: &Hub, req: &Request) -> Response {
-    if !dash_ok(hub, req) && device_auth(hub, req).is_err() {
+    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
         return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
     }
     Response::json(200, &Value::obj(vec![("bins", hub.bins.to_state_json())]))
@@ -170,7 +201,8 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
     let Some(id) = bin_id_of(&req.path) else {
         return Response::error(404, "not found");
     };
-    let actor = if dash_ok(hub, req) {
+    let read_only = req.method == "GET";
+    let actor = if dash_ok(hub, req) || (read_only && cap_ok(hub, req)) {
         "dashboard".to_string()
     } else {
         match device_auth(hub, req) {
@@ -202,6 +234,7 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
                 &actor,
                 "info",
                 &format!("bin {id} updated; {} chars", bin.content.chars().count()),
+                "",
             );
             Response::json(
                 200,
@@ -216,18 +249,34 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
     }
 }
 
+/// Capability-gated dashboard. The page lives at /w/<64-hex token>; any
+/// other path shape gets the same uniform 404 as every unknown route (no
+/// oracle distinguishing "wrong token" from "no token"). When the hub is
+/// loopback-only the page is served without ?k= (the capability path IS the
+/// secret and localhost is the network gate). Otherwise the legacy ?k=
+/// dashboard key still works, so remote dashboards keep functioning.
 fn dashboard(hub: &Hub, req: &Request) -> Response {
-    if !dash_ok(hub, req) {
+    let on_cap = req.path == format!("/w/{}", hub.capability);
+    let authorized = if hub.loopback_only {
+        on_cap
+    } else {
+        on_cap || dash_ok(hub, req)
+    };
+    if authorized {
+        return Response::html(200, crate::dashboard::PAGE);
+    }
+    // Legacy remote path (non-loopback hub): keep the old 401 hint.
+    if !hub.loopback_only && req.path == "/" {
         return Response::html(
             401,
             r#"<!doctype html><html><head><meta charset="utf-8"><title>401</title></head>
 <body style="background:#0b0e14;color:#d7dde8;font-family:monospace;padding:40px">
 <h1>401 — dashboard key required</h1>
-<p>append <code>?k=&lt;dashboard_key&gt;</code> (printed by <code>wtf serve</code>).</p>
+<p>on the hub machine run <code>wtf dashboard-url</code> for the capability link.</p>
 </body></html>"#,
         );
     }
-    Response::html(200, crate::dashboard::PAGE)
+    Response::error(404, "not found")
 }
 
 fn stream(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
@@ -283,8 +332,9 @@ fn checkin(hub: &Arc<Hub>, req: &Request) -> Response {
         _ => return Response::error(400, "missing 'task'"),
     };
     let details = body.get("details").and_then(|v| v.as_str()).unwrap_or("");
+    let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
     let agent = body.get("agent").and_then(|v| v.as_str()).unwrap_or(device.as_str());
-    let ev = hub.store.check_in(&device, agent, status, task, details);
+    let ev = hub.store.check_in(&device, agent, status, task, details, repo);
     Response::json(
         200,
         &Value::obj(vec![("ok", Value::from(true)), ("id", Value::from(ev.id as i64))]),
@@ -312,7 +362,8 @@ fn event(hub: &Arc<Hub>, req: &Request) -> Response {
         None => "info",
     };
     let agent = body.get("agent").and_then(|v| v.as_str()).unwrap_or(device.as_str());
-    let ev = hub.store.log_event(&device, agent, level, message);
+    let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+    let ev = hub.store.log_event(&device, agent, level, message, repo);
     Response::json(
         200,
         &Value::obj(vec![("ok", Value::from(true)), ("id", Value::from(ev.id as i64))]),
@@ -477,6 +528,7 @@ fn issue_and_respond(hub: &Arc<Hub>, name: &str, via: &str) -> Response {
         name,
         "info",
         &format!("device '{name}' enrolled via {via}"),
+        "",
     );
     Response::json(
         200,
@@ -514,6 +566,7 @@ fn issue_and_respond_sealed(hub: &Arc<Hub>, name: &str, ek: &str, cfg: &HubConfi
         name,
         "info",
         &format!("device '{name}' enrolled via signed handshake (psk)"),
+        "",
     );
     Response::json(
         200,
@@ -553,7 +606,7 @@ fn identity_register(hub: &Arc<Hub>, req: &Request) -> Response {
             None => reg.push((device.clone(), ek.to_string())),
         }
     }
-    let _ = hub.store.log_event(&device, &device, "info", "identity registered");
+    let _ = hub.store.log_event(&device, &device, "info", "identity registered", "");
     Response::json(
         200,
         &Value::obj(vec![("ok", Value::from(true))]),
@@ -617,7 +670,7 @@ fn session_create(hub: &Arc<Hub>, req: &Request) -> Response {
     };
     match hub.sessions.create(name, &device, &ek) {
         Ok(s) => {
-            let _ = hub.store.log_event(&device, &device, "info", &format!("session '{}' created", s.id));
+            let _ = hub.store.log_event(&device, &device, "info", &format!("session '{}' created", s.id), "");
             Response::json(200, &s.to_wire_json(false))
         }
         Err(e) => Response::error(400, &e),
@@ -681,7 +734,7 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             }
             match hub.sessions.join(id, &device, ek) {
                 Ok((s, sealed)) => {
-                    let _ = hub.store.log_event(&device, &device, "info", &format!("joined session {}", id));
+                    let _ = hub.store.log_event(&device, &device, "info", &format!("joined session {}", id), "");
                     Response::json(
                         200,
                         &Value::obj(vec![
@@ -777,7 +830,7 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             }
             match hub.sessions.post_message(id, &device, nonce, ct) {
                 Ok(msg) => {
-                    let _ = hub.store.log_event(&device, &device, "info", &format!("session msg seq {}", msg.seq));
+                    let _ = hub.store.log_event(&device, &device, "info", &format!("session msg seq {}", msg.seq), "");
                     Response::json(
                         200,
                         &Value::obj(vec![
@@ -825,6 +878,175 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
         }
         _ => Response::error(404, "not found"),
     }
+}
+
+// ---------- federation ----------
+
+/// POST /api/v1/fed/push — device-authenticated ingest from a peer hub.
+/// Body: { origin, events: [Event...] }. Dedupe on (origin, origin_id) makes
+/// pushes idempotent; unknown origin device names are rejected (a peer's
+/// device credential is issued by THIS hub's keystore via `wtf federate`
+/// enrollment on the peer side). AuthZ: device only.
+fn fed_push(hub: &Arc<Hub>, req: &Request) -> Response {
+    let device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let (origin, events) = match crate::federation::parse_push(&body) {
+        Ok(x) => x,
+        Err(e) => return Response::error(400, &e),
+    };
+    // Only federation devices (names minted by `wtf federate`, prefix
+    // "fed-") may push: agent keys have no business on this route. The
+    // credential itself is the trust anchor — the hub issued it to exactly
+    // one peer via the PSK handshake.
+    if !device.starts_with("fed-") {
+        return Response::error(403, "federation push requires a federated device credential");
+    }
+    let mut accepted = 0usize;
+    let mut duplicates = 0usize;
+    for ev_v in &events {
+        let Some(mut ev) = event_from_value(ev_v) else {
+            return Response::error(400, "malformed event in push");
+        };
+        ev.origin = origin.clone();
+        if hub.store.ingest(&ev) {
+            accepted += 1;
+        } else {
+            duplicates += 1;
+        }
+    }
+    if accepted > 0 {
+        let _ = hub.store.log_event(
+            &device,
+            &device,
+            "info",
+            &format!("federation: +{accepted} event(s) from {origin} ({duplicates} duplicates)"),
+            "",
+        );
+    }
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("accepted", Value::from(accepted as i64)),
+            ("duplicates", Value::from(duplicates as i64)),
+        ]),
+    )
+}
+
+/// Rebuild an Event from wire JSON (strict; fails closed on missing core
+/// fields). origin/origin_id/repo optional on the wire for robustness but
+/// origin_id is required for dedupe; pre-federation origins are not
+/// accepted over federation (origin "" would collide with local history).
+fn event_from_value(v: &Value) -> Option<crate::store::Event> {
+    let kind = v.get("kind").and_then(|x| x.as_str())?;
+    if kind != "checkin" && kind != "event" {
+        return None;
+    }
+    let origin_id = v.get("origin_id").and_then(|x| x.as_i64())?;
+    if origin_id <= 0 {
+        return None;
+    }
+    let ts = v.get("ts").and_then(|x| x.as_i64())?;
+    let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("");
+    let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("");
+    if kind == "checkin" && !crate::store::STATUSES.contains(&status) {
+        return None;
+    }
+    let level = v.get("level").and_then(|x| x.as_str()).unwrap_or("info");
+    if !crate::store::LEVELS.contains(&level) {
+        return None;
+    }
+    Some(crate::store::Event {
+        id: 0, // assigned locally at ingest
+        ts: ts as u64,
+        device: v.get("device").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        agent: v.get("agent").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        level: level.to_string(),
+        message: v.get("message").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        status: status.to_string(),
+        task: task.to_string(),
+        details: v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        kind: kind.to_string(),
+        origin: String::new(), // overwritten by caller
+        origin_id: origin_id as u64,
+        repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+    })
+}
+
+/// GET /api/v1/fed/pull?origin=<me>&after=<cursor> — a peer asks what it
+/// missed from `origin` (usually the requesting hub's own name, i.e. the
+/// anti-entropy sweep of this hub's copy of the requester's events; the
+/// common path is `origin == requester` with the requester's cursor).
+/// Device-authenticated; the device must be the federation endpoint for the
+/// requested origin.
+fn fed_pull(hub: &Arc<Hub>, req: &Request) -> Response {
+    let device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if !device.starts_with("fed-") {
+        return Response::error(403, "federation pull requires a federated device credential");
+    }
+    let origin = req.q("origin").unwrap_or_default();
+    let after: u64 = req.q("after").and_then(|v| v.parse().ok()).unwrap_or(0);
+    if origin.is_empty() {
+        return Response::error(400, "missing 'origin'");
+    }
+    let events = hub.store.events_since(&origin, after);
+    let events_v: Vec<Value> = events
+        .iter()
+        .map(|e| event_to_value(e))
+        .collect();
+    let cursor = events.last().map(|e| e.origin_id).unwrap_or(after);
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("origin", Value::from(origin.as_str())),
+            ("cursor", Value::from(cursor as i64)),
+            ("events", Value::Arr(events_v)),
+        ]),
+    )
+}
+
+fn event_to_value(e: &crate::store::Event) -> Value {
+    Value::obj(vec![
+        ("kind", Value::from(e.kind.as_str())),
+        ("ts", Value::from(e.ts as i64)),
+        ("device", Value::from(e.device.as_str())),
+        ("agent", Value::from(e.agent.as_str())),
+        ("level", Value::from(e.level.as_str())),
+        ("message", Value::from(e.message.as_str())),
+        ("status", Value::from(e.status.as_str())),
+        ("task", Value::from(e.task.as_str())),
+        ("details", Value::from(e.details.as_str())),
+        ("origin", Value::from(e.origin.as_str())),
+        ("origin_id", Value::from(e.origin_id as i64)),
+        ("repo", Value::from(e.repo.as_str())),
+    ])
+}
+
+/// GET /api/v1/fed/peers — device-authenticated; returns this hub's fed
+/// identity and per-origin cursors so a newly linked peer can discover what
+/// to pull (used by `wtf federate add` and the anti-entropy loop).
+fn fed_peers(hub: &Arc<Hub>, req: &Request) -> Response {
+    let _device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let fed = hub.fed.lock().unwrap();
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("name", Value::from(fed.name.as_str())),
+            ("peers", Value::from(fed.peers.len() as i64)),
+        ]),
+    )
 }
 
 #[cfg(test)]
