@@ -860,6 +860,59 @@ impl Bridge {
                     ]),
                 ),
             ]),
+            Value::obj(vec![
+                (
+                    "name",
+                    Value::from("chat_run"),
+                ),
+                (
+                    "description",
+                    Value::from(
+                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (omp → hermes → fcc-claude, first installed + exit-0 wins). All CLIs route through local-router/fallback-models per operator config. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("prompt", Self::prop("the task prompt to execute headlessly")),
+                                ("repo", Self::prop("optional repo label for the session slug (default: device name)")),
+                                ("label", Self::prop("optional task label refining the tmux session name")),
+                                ("workdir", Self::prop("optional working directory (default: bridge cwd)")),
+                                (
+                                    "timeout_secs",
+                                    int_prop("max seconds to wait for the CLI to finish (default 600, clamp 10..3600)"),
+                                ),
+                            ]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("prompt")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                (
+                    "name",
+                    Value::from("chat_sessions"),
+                ),
+                (
+                    "description",
+                    Value::from(
+                        "List this machine's wtf-chat-* tmux sessions (the executor sessions behind federated chats) so a peer can see what is running and attach.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -896,6 +949,8 @@ impl Bridge {
             "session_read" => self.tool_session_read(args),
             "comms_post" => self.tool_comms_post(args),
             "comms_read" => self.tool_comms_read(args),
+            "chat_run" => self.tool_chat_run(args),
+            "chat_sessions" => self.tool_chat_sessions(),
             other => (format!("unknown tool: {other}"), true),
         }
     }
@@ -1999,6 +2054,71 @@ impl Bridge {
                 format!("no matching comms entries in {sid} after seq {after}"),
                 false,
             );
+        }
+        (out, false)
+    }
+
+    /// chat_run { prompt, repo?, timeout_secs? }: execute a task handed to
+    /// this repo's federated chat on THIS machine, in tmux session
+    /// `wtf-chat-<slug>`, through the omp → hermes → fcc-claude fallback
+    /// chain. The tmux session persists for attach; the report names the
+    /// lane that ran. All CLIs are model-agnostic here: operator config on
+    /// each machine points them at local-router/fallback-models.
+    fn tool_chat_run(&self, args: &Value) -> (String, bool) {
+        let Some(prompt) = arg_str(args, "prompt") else {
+            return ("missing required argument: prompt".into(), true);
+        };
+        if prompt.trim().is_empty() {
+            return ("prompt is empty".into(), true);
+        }
+        let repo = arg_str(args, "repo").unwrap_or(&self.cfg.device_name);
+        let timeout = args
+            .get("timeout_secs")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(600)
+            .clamp(10, 3600) as u64;
+        let workdir = match arg_str(args, "workdir") {
+            Some(d) if !d.trim().is_empty() => d.to_string(),
+            _ => std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "/tmp".into()),
+        };
+        let name = crate::executor::session_name(&format!(
+            "{repo}-{}",
+            crate::executor::slugify(arg_str(args, "label").unwrap_or("task"))
+        ));
+        let outcome = crate::executor::run_in_tmux(&name, &workdir, prompt, timeout);
+        let mut out = format!(
+            "lane: {} — {}\nsession: {} (tmux attach -t {})\ntrace: {}\n---\n{}",
+            outcome.cli,
+            if outcome.ok { "OK" } else { "FAILED" },
+            name,
+            name,
+            outcome.trace.join(" | "),
+            outcome.output.trim()
+        );
+        if out.len() > 8000 {
+            out.truncate(8000);
+            out.push_str("\n…[truncated — full log in the tmux session]");
+        }
+        (out, !outcome.ok)
+    }
+
+    /// chat_sessions: list this machine's wtf-chat-* tmux sessions.
+    fn tool_chat_sessions(&self) -> (String, bool) {
+        let list = crate::executor::list_sessions();
+        if list.is_empty() {
+            return ("no wtf-chat-* tmux sessions on this machine".into(), false);
+        }
+        let mut out = String::new();
+        for s in list {
+            let name = s.get("session").and_then(|v| v.as_str()).unwrap_or("?");
+            let attached = s.get("attached").and_then(|v| v.as_bool()).unwrap_or(false);
+            out.push_str(&format!(
+                "{}{}\n",
+                name,
+                if attached { " [attached]" } else { "" }
+            ));
         }
         (out, false)
     }
