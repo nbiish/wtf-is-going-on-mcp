@@ -125,7 +125,9 @@ session key exchanged via the auto-seal path — encrypted cross-machine
 coordination is OPERATIONAL. A second repo chat, `local-router ops`
 (`828d3341…`, repo `local-router`), carries the local-router control plane —
 both agents members, envelope + runbook + receipts flowed through it. Both hubs
-run the merged v0.14.2 tree; both agents work from the same remote
+run the merged v0.14.2 tree (mac's peer table was re-seeded after a restart
+cleared it — repaired via windows-1's site secret + a host portproxy;
+canary-verified bidirectional); both agents work from the same remote
 (`origin/main`, matching heads). Cross-machine task handoff happens in
 those chats: `comms_post`/`session_send` there, not the older
 `mac-win-pipeline` channel.
@@ -173,16 +175,12 @@ PQC envelope (recipient fingerprint verified), all four lanes
 also carries the cross-platform py envelope engine (a6154e0) for the signature
 verify their engine build predates — next windows pull picks it up.
 
-**NEXT FOCUS (operator, 2026-09-01):** the federated chat system is the operating
-control plane — from ONE chat (dashboard-clickable) the operator dispatches agentic
-tasks to any connected machine, each machine’s executor runs them in its tmux
-harness session (fallback chain), and work is visible live (dashboard + `tmux attach`).
-Ongoing goals: keep the singular model system (local-router fallback chain) healthy on
-all machines — interruptions are router troubleshooting items, not harness changes;
-onboard new machines/repos through the chat (session_create + pairing key + enroll);
-keep windows-1’s pqc-secrets current (pull local-router main for the py envelope
-signature-verify engine). Maintenance debt in THIS repo: none open; router work stays in
-its repo.
+**NEXT FOCUS (operator, 2026-09-01):** REFINEMENT PHASE — the bring-up → cross-machine port → docs arc is COMPLETE (see `.agents/tasks/TASK.2026-09-01.session-wrapup.md` for the full record).
+Open items, in priority order:
+- **R1 — identity-registry persistence:** the ML-KEM identity registry is in-memory; every hub restart clears it and members must re-join before auto-seals flow. Persist (0600 file under `$WTF_HOME`) or rehydrate from session members on load.
+- **R2 — windows-1 durable COMMS ledger append** for its side of today (v0.14.1/0.14.2 fixes, portproxy, docs pulls) — pending its next bridge run; request posted in `local-router ops` seq 18.
+- **R3 — general wtf-MCP refinement** per operator direction.
+Standing operating rules are unchanged: the federated chats are the control plane; the singular model system (local-router fallback chain) must stay healthy on all machines; onboard new machines/repos through the chat.
 
 **Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
 three paste-bins into the operator's copy/paste channel between machines and
