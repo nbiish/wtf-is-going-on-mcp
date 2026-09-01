@@ -55,6 +55,11 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 .repo{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--warn);color:var(--warn);margin:0 6px}
 .origin{padding:10px 0 2px;font-size:13px}
 .origin:first-child{padding-top:0}
+.sess{padding:8px 0;border-bottom:1px dashed var(--edge);cursor:pointer}
+.sess:hover{background:rgba(74,163,255,.06)}
+.sess:last-child{border-bottom:0}
+.sess .top{display:flex;gap:8px;align-items:baseline}
+.sess .sid{font-size:11px;word-break:break-all}
 </style>
 </head>
 <body>
@@ -62,7 +67,7 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px}
 <main>
 <section><h2>AGENTS</h2><div id="agents" class="card"><span class="dim">no agents have checked in yet</span></div></section>
 <section><h2>EVENT LOG</h2><div class="card"><ul id="feed"></ul></div></section>
-</main>
+<section><h2>SESSIONS · federated agent chats — click to open</h2><div id="sessions" class="card"><span class="dim">no chats yet</span></div></section>
 <section id="bins-sec"><h2>SHARED BINS · paste here and tell any agent “work from bin N” · agents publish back with write_bin</h2><div id="bins"></div></section>
 <script>
 "use strict";
@@ -115,7 +120,45 @@ function render(s){
     +esc(e.message)+'</li>'
   ).join("");
   feed.innerHTML = rows || '<li class="dim">no events yet</li>';
+  renderSessions(s.sessions || [], now);
   renderBins(s.bins, now);
+}
+function renderSessions(sessions, now){
+  const host = document.getElementById("sessions");
+  if(!sessions.length){host.innerHTML = '<span class="dim">no chats yet — an agent creates one via session_create, or `wtf sessions` on the hub machine</span>';return;}
+  const rows = sessions.map(x=>
+    '<div class="sess" data-id="'+esc(x.id)+'" title="chat '+esc(x.name)+' · repo '+esc(x.repo||'-')+'">'
+    +'<div class="top"><span class="who">'+esc(x.name)+'</span>'
+    +(x.repo?'<span class="repo">'+esc(x.repo)+'</span>':"")
+    +'<span class="age">'+esc(x.msg_count)+' msg(s) · '+esc(x.members)+' member(s)</span></div>'
+    +'<div class="sid dim">'+esc(x.id)+'</div></div>'
+  ).join("");
+  host.innerHTML = rows;
+  for(const el of host.querySelectorAll(".sess")){
+    el.addEventListener("click", ()=>openSession(el.dataset.id));
+  }
+}
+async function openSession(id){
+  // chat viewer in a new tab of THIS page (capability/key rides along)
+  let w = window.open("", "_blank");
+  try{
+    const r = await fetch("/api/v1/sessions/"+encodeURIComponent(id)+"?"+AUTH);
+    const j = await r.json();
+    if(!r.ok || !j.ok===undefined && j.error){throw new Error(j.error||("HTTP "+r.status));}
+    const s = j.session || j;
+    const msgs = s.msgs || [];
+    const lines = msgs.map(m=>'<div class="m"><span class="dim">#'+esc(m.seq)+' '+esc(m.sender)+'</span><pre>'+esc(atob(m.ct)||"(encrypted — opens for members only)")+'</pre></div>').join("")
+      || '<div class="dim">no messages visible from the dashboard (member-encrypted)</div>';
+    w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(s.name||id)+'</title>'
+      +'<style>body{background:#0b0e14;color:#d7dde8;font:14px/1.5 ui-monospace,monospace;margin:0;padding:16px}'
+      +'h1{font-size:15px;letter-spacing:1px}.dim{color:#8a93a6}.m{border-bottom:1px dashed #232b3d;padding:6px 0}.m pre{white-space:pre-wrap;word-break:break-word;margin:4px 0 0}'
+      +'.repo{color:#4aa3ff;font-size:12px;border:1px solid #234; border-radius:10px;padding:1px 8px}</style></head><body>'
+      +'<h1>💬 '+esc(s.name||id)+'</h1><div class="dim">repo '+(s.repo?esc(s.repo):'-')+' · '+msgs.length+' message(s) shown · members: '+esc((s.members||[]).map(m=>m.device).join(", ")||"-")+'</div>'
+      +lines+'</body></html>');
+    w.document.close();
+  }catch(e){
+    try{w.document.write('<body style="background:#0b0e14;color:#d7dde8;font:14px ui-monospace">chat open failed: '+esc(String(e.message||e))+' <a style="color:#4aa3ff" href="javascript:location.reload()">retry</a></body>');w.document.close();}catch(_){}
+  }
 }
 const binIds=[1,2,3];
 const dirty={};

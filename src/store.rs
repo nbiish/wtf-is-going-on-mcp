@@ -27,6 +27,16 @@ pub const STALE_SECS: u64 = 600;
 pub const STATUSES: [&str; 4] = ["working", "blocked", "done", "idle"];
 pub const LEVELS: [&str; 3] = ["info", "warn", "error"];
 
+/// Dashboard-facing session summary (metadata only — no keys, no ciphertext).
+#[derive(Clone, Debug)]
+pub struct SessionSummary {
+    pub id: String,
+    pub name: String,
+    pub repo: String,
+    pub members: usize,
+    pub msg_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentEntry {
     pub device: String,
@@ -89,12 +99,32 @@ impl Event {
             agent: v.get("agent")?.as_str()?.to_string(),
             level: v.get("level")?.as_str()?.to_string(),
             message: v.get("message")?.as_str()?.to_string(),
-            status: v.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            task: v.get("task").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            details: v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            origin: v.get("origin").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            status: v
+                .get("status")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            task: v
+                .get("task")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            details: v
+                .get("details")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            origin: v
+                .get("origin")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             origin_id: v.get("origin_id").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
-            repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            repo: v
+                .get("repo")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
         })
     }
 }
@@ -114,6 +144,10 @@ pub struct Store {
     generation: AtomicU64,
     /// Origin name stamped on locally-recorded events (this hub's fed name).
     origin_name: Mutex<String>,
+    /// Live session-summary provider, wired by the hub at serve time so the
+    /// dashboard state payload carries SESSIONS metadata without coupling
+    /// Store to the Sessions registry.
+    sessions_provider: Mutex<Option<Box<dyn Fn() -> Vec<SessionSummary> + Send>>>,
 }
 
 /// "3m ago" style relative age.
@@ -150,8 +184,12 @@ impl Store {
                     if line.is_empty() {
                         continue;
                     }
-                    let Ok(v) = crate::json::parse(line) else { continue };
-                    let Some(ev) = Event::from_line(&v) else { continue };
+                    let Ok(v) = crate::json::parse(line) else {
+                        continue;
+                    };
+                    let Some(ev) = Event::from_line(&v) else {
+                        continue;
+                    };
                     next_id = next_id.max(ev.id + 1);
                     seen.insert((ev.origin.clone(), ev.origin_id));
                     if ev.kind == "checkin" {
@@ -187,10 +225,17 @@ impl Store {
                 .open(data_file)?,
         );
         Ok(Store {
-            inner: Mutex::new(Inner { agents, events, next_id, file, seen }),
+            inner: Mutex::new(Inner {
+                agents,
+                events,
+                next_id,
+                file,
+                seen,
+            }),
             log_path: data_file.to_path_buf(),
             generation: AtomicU64::new(1),
             origin_name: Mutex::new(String::new()),
+            sessions_provider: Mutex::new(None),
         })
     }
 
@@ -216,7 +261,19 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record(&self, kind: &str, device: &str, agent: &str, level: &str, message: &str, status: &str, task: &str, details: &str, repo: &str, bump_agent: bool) -> Event {
+    fn record(
+        &self,
+        kind: &str,
+        device: &str,
+        agent: &str,
+        level: &str,
+        message: &str,
+        status: &str,
+        task: &str,
+        details: &str,
+        repo: &str,
+        bump_agent: bool,
+    ) -> Event {
         let ts = now_secs();
         let mut inner = self.inner.lock().unwrap();
         let origin = self.origin_name();
@@ -255,9 +312,21 @@ impl Store {
                         AgentEntry {
                             device: ev.device.clone(),
                             agent: ev.agent.clone(),
-                            status: if kind == "checkin" { ev.status.clone() } else { "idle".into() },
-                            task: if kind == "checkin" { ev.task.clone() } else { String::new() },
-                            details: if kind == "checkin" { ev.details.clone() } else { String::new() },
+                            status: if kind == "checkin" {
+                                ev.status.clone()
+                            } else {
+                                "idle".into()
+                            },
+                            task: if kind == "checkin" {
+                                ev.task.clone()
+                            } else {
+                                String::new()
+                            },
+                            details: if kind == "checkin" {
+                                ev.details.clone()
+                            } else {
+                                String::new()
+                            },
                             repo: ev.repo.clone(),
                             origin: ev.origin.clone(),
                             first_seen: ev.ts,
@@ -277,16 +346,55 @@ impl Store {
         ev
     }
 
-    pub fn check_in(&self, device: &str, agent: &str, status: &str, task: &str, details: &str, repo: &str) -> Event {
-        self.record("checkin", device, agent, "info", &format!("status: {status} — {task}"), status, task, details, repo, true)
+    pub fn check_in(
+        &self,
+        device: &str,
+        agent: &str,
+        status: &str,
+        task: &str,
+        details: &str,
+        repo: &str,
+    ) -> Event {
+        self.record(
+            "checkin",
+            device,
+            agent,
+            "info",
+            &format!("status: {status} — {task}"),
+            status,
+            task,
+            details,
+            repo,
+            true,
+        )
     }
 
-    pub fn log_event(&self, device: &str, agent: &str, level: &str, message: &str, repo: &str) -> Event {
-        self.record("event", device, agent, level, message, "", "", "", repo, true)
+    pub fn log_event(
+        &self,
+        device: &str,
+        agent: &str,
+        level: &str,
+        message: &str,
+        repo: &str,
+    ) -> Event {
+        self.record(
+            "event", device, agent, level, message, "", "", "", repo, true,
+        )
     }
 
     pub fn heartbeat(&self, device: &str, agent: &str) {
-        self.record("event", device, agent, "info", "heartbeat", "", "", "", "", true);
+        self.record(
+            "event",
+            device,
+            agent,
+            "info",
+            "heartbeat",
+            "",
+            "",
+            "",
+            "",
+            true,
+        );
     }
 
     pub fn generation(&self) -> u64 {
@@ -447,7 +555,40 @@ impl Store {
             ("agents", Value::Arr(agents_v)),
             ("events", Value::Arr(events_v)),
             ("bins", bins.to_state_json()),
+            ("sessions", self.sessions_v()),
         ])
+    }
+
+    /// Dashboard session summaries: metadata only (no ciphertext, no
+    /// member keys) — id, name, repo, member count, message count.
+    /// Sourced from the hub's live Sessions registry, wired in at serve
+    /// time (default = empty vec, so pre-wiring callers stay correct).
+    fn sessions_v(&self) -> Value {
+        let snap = self.sessions_snapshot();
+        let arr: Vec<Value> = snap
+            .iter()
+            .map(|s| {
+                Value::obj(vec![
+                    ("id", Value::from(s.id.as_str())),
+                    ("name", Value::from(s.name.as_str())),
+                    ("repo", Value::from(s.repo.as_str())),
+                    ("members", Value::from(s.members as i64)),
+                    ("msg_count", Value::from(s.msg_count as i64)),
+                ])
+            })
+            .collect();
+        Value::Arr(arr)
+    }
+    pub fn set_sessions_provider(&self, provider: Box<dyn Fn() -> Vec<SessionSummary> + Send>) {
+        *self.sessions_provider.lock().unwrap() = Some(provider);
+    }
+
+    fn sessions_snapshot(&self) -> Vec<SessionSummary> {
+        let p = self.sessions_provider.lock().unwrap();
+        match p.as_ref() {
+            Some(f) => f(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -486,7 +627,14 @@ mod tests {
     fn persistence_replay() {
         let (s, d) = temp_store("replay");
         s.check_in("box1", "oz", "working", "task A", "", "repo-a");
-        s.check_in("box2", "claude", "blocked", "task B", "waiting on tests", "");
+        s.check_in(
+            "box2",
+            "claude",
+            "blocked",
+            "task B",
+            "waiting on tests",
+            "",
+        );
         s.log_event("box1", "oz", "error", "boom", "");
         let path = d.join("events.jsonl");
         let s2 = Store::new(&path).unwrap();

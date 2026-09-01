@@ -29,7 +29,12 @@ pub struct Bin {
 
 impl Bin {
     pub fn empty(id: u8) -> Bin {
-        Bin { id, content: String::new(), updated_by: String::new(), updated_at: 0 }
+        Bin {
+            id,
+            content: String::new(),
+            updated_by: String::new(),
+            updated_at: 0,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -63,8 +68,16 @@ impl Bin {
         }
         Some(Bin {
             id: id as u8,
-            content: v.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            updated_by: v.get("updated_by").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            content: v
+                .get("content")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            updated_by: v
+                .get("updated_by")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             updated_at: v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
         })
     }
@@ -94,7 +107,10 @@ impl Bins {
                 }
             }
         }
-        Bins { inner: Mutex::new(bins), path: path.clone() }
+        Bins {
+            inner: Mutex::new(bins),
+            path: path.clone(),
+        }
     }
 
     pub fn valid_id(id: i64) -> bool {
@@ -102,7 +118,12 @@ impl Bins {
     }
 
     pub fn get(&self, id: u8) -> Option<Bin> {
-        self.inner.lock().unwrap().iter().find(|b| b.id == id).cloned()
+        self.inner
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|b| b.id == id)
+            .cloned()
     }
 
     pub fn all(&self) -> Vec<Bin> {
@@ -113,7 +134,14 @@ impl Bins {
     /// leaves memory and disk consistent. Returns the stored bin.
     pub fn set(&self, id: u8, content: &str, by: &str) -> Result<Bin, String> {
         if !Self::valid_id(id as i64) {
-            return Err(format!("bin must be one of: {}", BIN_IDS.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")));
+            return Err(format!(
+                "bin must be one of: {}",
+                BIN_IDS
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         if content.chars().count() > MAX_BIN_CHARS {
             return Err(format!("bin content too large (max {MAX_BIN_CHARS} chars)"));
@@ -127,10 +155,23 @@ impl Bins {
         let mut inner = self.inner.lock().unwrap();
         let projected: Vec<Value> = inner
             .iter()
-            .map(|b| if b.id == id { bin.to_file_json() } else { b.to_file_json() })
+            .map(|b| {
+                if b.id == id {
+                    bin.to_file_json()
+                } else {
+                    b.to_file_json()
+                }
+            })
             .collect();
-        config::save_json(&self.path, &Value::obj(vec![("bins", Value::Arr(projected))]), 0o600)?;
-        *inner.iter_mut().find(|b| b.id == id).expect("bin ids fixed at init") = bin.clone();
+        config::save_json(
+            &self.path,
+            &Value::obj(vec![("bins", Value::Arr(projected))]),
+            0o600,
+        )?;
+        *inner
+            .iter_mut()
+            .find(|b| b.id == id)
+            .expect("bin ids fixed at init") = bin.clone();
         Ok(bin)
     }
 

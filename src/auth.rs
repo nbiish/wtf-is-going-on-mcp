@@ -45,7 +45,13 @@ impl std::fmt::Display for AuthError {
     }
 }
 
-pub fn string_to_sign(method: &str, path_and_query: &str, ts: u64, nonce: &str, body: &[u8]) -> String {
+pub fn string_to_sign(
+    method: &str,
+    path_and_query: &str,
+    ts: u64,
+    nonce: &str,
+    body: &[u8],
+) -> String {
     format!(
         "{ALGO_TAG}\n{method}\n{path_and_query}\n{ts}\n{nonce}\n{}",
         crate::sha256::hexdigest(body)
@@ -142,7 +148,9 @@ pub fn verify(
     let now = now_secs();
     // Device lookup first: an unknown-device miss must not consume the nonce,
     // so callers can reload the keystore and retry with the same headers.
-    let record = keys.find_active(&h.device).ok_or(AuthError::UnknownDevice)?;
+    let record = keys
+        .find_active(&h.device)
+        .ok_or(AuthError::UnknownDevice)?;
     if h.ts.abs_diff(now) > SKEW_SECS {
         return Err(AuthError::BadTimestamp);
     }
@@ -181,7 +189,13 @@ mod tests {
         d
     }
 
-    fn authz(secret: &str, device: &str, body: &[u8], ts: u64, nonce: &str) -> Vec<(String, String)> {
+    fn authz(
+        secret: &str,
+        device: &str,
+        body: &[u8],
+        ts: u64,
+        nonce: &str,
+    ) -> Vec<(String, String)> {
         let sig = sign(secret, "POST", "/api/v1/checkin", ts, nonce, body).unwrap();
         vec![
             (HDR_DEVICE.into(), device.into()),
@@ -270,7 +284,10 @@ mod tests {
     #[test]
     fn canonical_string_shape() {
         let s = string_to_sign("POST", "/x", 1, "ab", b"hi");
-        let expect = format!("{ALGO_TAG}\nPOST\n/x\n1\nab\n{}", crate::sha256::hexdigest(b"hi"));
+        let expect = format!(
+            "{ALGO_TAG}\nPOST\n/x\n1\nab\n{}",
+            crate::sha256::hexdigest(b"hi")
+        );
         assert_eq!(s, expect);
     }
 }

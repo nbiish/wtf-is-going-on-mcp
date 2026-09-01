@@ -75,13 +75,21 @@ fn print_help() {
     println!("  wtf url [URL | clear]                      show/set the URL handed to joiners");
     println!("  wtf setup --url URL --name N --key K       configure this machine's bridge");
     println!("  wtf join user@host [--name N] [--url U]    enroll this machine via ssh");
-    println!("  wtf enroll-token <name> [--ttl SECS]       mint a one-time enrollment token (hub side)");
+    println!(
+        "  wtf enroll-token <name> [--ttl SECS]       mint a one-time enrollment token (hub side)"
+    );
     println!("  wtf enroll --url URL --name N --token T    redeem a token to enroll this machine");
-    println!("  wtf enroll --url URL --name N --psk S      signed-handshake enroll (key arrives sealed)");
+    println!(
+        "  wtf enroll --url URL --name N --psk S      signed-handshake enroll (key arrives sealed)"
+    );
     println!("  wtf enroll-secret [--rotate] [--json]      print/rotate the site enrollment secret (hub)");
     println!("  wtf bin ls [--url U] [--k K] [--json]      operator bin courier: list bins");
-    println!("  wtf bin get N [-o F] [--url U] [--k K]     read a bin raw to stdout (pre-setup OK)");
-    println!("  wtf bin put N TEXT|--file F|- [--url U] [--k K]   write a bin (dashboard-key gated)");
+    println!(
+        "  wtf bin get N [-o F] [--url U] [--k K]     read a bin raw to stdout (pre-setup OK)"
+    );
+    println!(
+        "  wtf bin put N TEXT|--file F|- [--url U] [--k K]   write a bin (dashboard-key gated)"
+    );
     println!("  wtf federate add <name> --url URL --psk SECRET [--as DEV]  link a peer hub (one secret copy per edge)");
     println!("  wtf federate list                         show the federation peer table");
     println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
@@ -137,6 +145,7 @@ fn cmd_serve(args: &[String]) -> i32 {
             return 1;
         }
     };
+    let store_for_sessions = Arc::clone(&store);
     let bins = Arc::new(wtf::bins::Bins::load());
     let capability = match wtf::federation::load_or_create_capability() {
         Ok(c) => c,
@@ -205,6 +214,26 @@ fn cmd_serve(args: &[String]) -> i32 {
         capability: capability.clone(),
         loopback_only: ip.is_loopback(),
     });
+    // Dashboard SESSIONS card: feed live session summaries (metadata only)
+    // into the store's state payload. The registry lives on the Hub; the
+    // provider closure reads it through the shared Arc.
+    {
+        let hub_for_sessions = Arc::clone(&hub);
+        store_for_sessions.set_sessions_provider(Box::new(move || {
+            hub_for_sessions
+                .sessions
+                .list()
+                .iter()
+                .map(|s| wtf::store::SessionSummary {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    repo: s.repo.clone(),
+                    members: s.members.len(),
+                    msg_count: s.msgs.len(),
+                })
+                .collect()
+        }));
+    }
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
 
@@ -225,7 +254,11 @@ fn cmd_serve(args: &[String]) -> i32 {
     };
     println!("wtf-hub v{VERSION} listening at http://{local}");
     if ip.is_loopback() {
-        println!("dashboard: http://localhost:{}/w/{}", local.port(), capability);
+        println!(
+            "dashboard: http://localhost:{}/w/{}",
+            local.port(),
+            capability
+        );
         println!("(loopback-only: the capability path is the gate; LAN cannot reach this hub)");
     } else {
         println!(
@@ -345,7 +378,9 @@ fn run_setup(cfg: &BridgeConfig) -> Result<(), String> {
     match client::get_text(&format!("{}/healthz", cfg.hub_url)) {
         Ok((200, body)) if body.contains("wtf-hub") => {}
         Ok((status, _)) => {
-            return Err(format!("hub responded HTTP {status} (is `wtf serve` running there?)"));
+            return Err(format!(
+                "hub responded HTTP {status} (is `wtf serve` running there?)"
+            ));
         }
         Err(e) => return Err(format!("cannot reach hub: {e}")),
     }
@@ -502,7 +537,9 @@ fn cmd_enroll_token(args: &[String]) -> i32 {
         return 1;
     }
     let Some(name) = args.iter().find(|a| !a.starts_with('-')) else {
-        eprintln!("usage: wtf enroll-token <name> [--ttl SECS] [--json] | wtf enroll-token revoke <name>");
+        eprintln!(
+            "usage: wtf enroll-token <name> [--ttl SECS] [--json] | wtf enroll-token revoke <name>"
+        );
         return 2;
     };
     let ttl: u64 = flag_value(args, "--ttl")
@@ -634,7 +671,11 @@ fn redeem_token(url: &str, name: &str, token: &str) -> Result<String, String> {
     )
     .map_err(|e| format!("cannot reach hub: {e}"))?;
     if resp.status != 200 {
-        eprintln!("enrollment refused (HTTP {}): {}", resp.status, resp.text().trim());
+        eprintln!(
+            "enrollment refused (HTTP {}): {}",
+            resp.status,
+            resp.text().trim()
+        );
         return Err("tokens are single-use and expire; ask the hub operator for a fresh `wtf enroll-token`.".into());
     }
     let parsed = resp.json().ok_or("hub returned a non-JSON response")?;
@@ -678,18 +719,19 @@ fn redeem_psk(url: &str, name: &str, psk: &str) -> Result<String, String> {
     )
     .map_err(|e| format!("cannot reach hub: {e}"))?;
     if resp.status != 200 {
-        eprintln!("enrollment refused (HTTP {}): {}", resp.status, resp.text().trim());
+        eprintln!(
+            "enrollment refused (HTTP {}): {}",
+            resp.status,
+            resp.text().trim()
+        );
         return Err("handshake rejected: wrong/expired secret, stale clock, replayed handshake, or the secret was rotated (`wtf enroll-secret --rotate` invalidates every copy)".into());
     }
     let parsed = resp.json().ok_or("hub returned a non-JSON response")?;
     let Some(sealed) = parsed.get("sealed").and_then(|x| x.as_str()) else {
         return Err("hub response missing sealed key package".into());
     };
-    let key32 = session_crypto::open_sealed_package(
-        sealed,
-        &id.dk,
-        &format!("wtf-enroll-v2:{name}"),
-    )?;
+    let key32 =
+        session_crypto::open_sealed_package(sealed, &id.dk, &format!("wtf-enroll-v2:{name}"))?;
     Ok(util::hex_encode(&key32))
 }
 
@@ -719,7 +761,9 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
         }
     };
     if as_json {
-        let url = HubConfig::load_or_create().map(|c| c.lan_url()).unwrap_or_default();
+        let url = HubConfig::load_or_create()
+            .map(|c| c.lan_url())
+            .unwrap_or_default();
         println!(
             "{}",
             json::Value::obj(vec![
@@ -730,7 +774,9 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
         );
         return 0;
     }
-    let url = HubConfig::load_or_create().map(|c| c.lan_url()).unwrap_or_default();
+    let url = HubConfig::load_or_create()
+        .map(|c| c.lan_url())
+        .unwrap_or_default();
     println!("site enrollment secret (copy once per joining machine):");
     println!("{secret}");
     println!();
@@ -804,7 +850,11 @@ fn cmd_sessions(args: &[String]) -> i32 {
         }
     };
     if resp.status != 200 {
-        eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+        eprintln!(
+            "error: hub refused (HTTP {}): {}",
+            resp.status,
+            resp.text().trim()
+        );
         return 1;
     }
     let Some(v) = resp.json() else {
@@ -812,17 +862,18 @@ fn cmd_sessions(args: &[String]) -> i32 {
         return 1;
     };
     // Local pairing keys (creator machine only; file is 0600).
-    let local_pairings: Vec<(String, String)> = crate::config::load_json(&home.join("session_keys.json"))
-        .ok()
-        .flatten()
-        .and_then(|v| {
-            v.get("pairings").and_then(|x| x.as_obj()).map(|o| {
-                o.iter()
-                    .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
+    let local_pairings: Vec<(String, String)> =
+        crate::config::load_json(&home.join("session_keys.json"))
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                v.get("pairings").and_then(|x| x.as_obj()).map(|o| {
+                    o.iter()
+                        .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
             })
-        })
-        .unwrap_or_default();
+            .unwrap_or_default();
     println!("AGENT CHATS (id · name · repo · members · msgs)");
     let sessions = v.get("sessions").and_then(|x| x.as_arr()).unwrap_or(&[]);
     if sessions.is_empty() {
@@ -832,14 +883,22 @@ fn cmd_sessions(args: &[String]) -> i32 {
         let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
         let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
         let repo = s.get("repo").and_then(|x| x.as_str()).unwrap_or("");
-        let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
+        let members = s
+            .get("members")
+            .and_then(|x| x.as_arr())
+            .map(|a| a.len())
+            .unwrap_or(0);
         let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
         let mut member_names: Vec<String> = s
             .get("members")
             .and_then(|x| x.as_arr())
             .map(|a| {
                 a.iter()
-                    .filter_map(|m| m.get("device").and_then(|v| v.as_str()).map(|d| d.to_string()))
+                    .filter_map(|m| {
+                        m.get("device")
+                            .and_then(|v| v.as_str())
+                            .map(|d| d.to_string())
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -876,7 +935,14 @@ fn cmd_federate(args: &[String]) -> i32 {
                 println!("no federation configured (this hub has no name yet)");
                 return 0;
             }
-            println!("this hub: {}", if fed.name.is_empty() { "(unnamed)" } else { &fed.name });
+            println!(
+                "this hub: {}",
+                if fed.name.is_empty() {
+                    "(unnamed)"
+                } else {
+                    &fed.name
+                }
+            );
             if fed.peers.is_empty() {
                 println!("no peers linked");
             }
@@ -965,8 +1031,11 @@ fn cmd_federate(args: &[String]) -> i32 {
                 let nonce = wtf::rand::hex(16);
                 let sig = hmac::hmac_sha256_hex(
                     &util::hex_decode(&peer_key)?,
-                    format!("wtf-hmac-v1\nGET\n/api/v1/fed/peers\n{ts}\n{nonce}\n{}",
-                        wtf::sha256::hexdigest(b"")).as_bytes(),
+                    format!(
+                        "wtf-hmac-v1\nGET\n/api/v1/fed/peers\n{ts}\n{nonce}\n{}",
+                        wtf::sha256::hexdigest(b"")
+                    )
+                    .as_bytes(),
                 );
                 let headers = vec![
                     ("X-Wtf-Device".to_string(), device.clone()),
@@ -974,11 +1043,13 @@ fn cmd_federate(args: &[String]) -> i32 {
                     ("X-Wtf-Nonce".to_string(), nonce),
                     ("X-Wtf-Signature".to_string(), sig),
                 ];
-                let resp = client::request(
-                    &format!("{url}/api/v1/fed/peers"), "GET", &headers, b"",
-                ).ok()?;
+                let resp =
+                    client::request(&format!("{url}/api/v1/fed/peers"), "GET", &headers, b"")
+                        .ok()?;
                 let v = resp.json()?;
-                v.get("name").and_then(|x| x.as_str()).map(|s| s.to_string())
+                v.get("name")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
             })();
             let peer_name = match real_name {
                 Some(n) if !n.is_empty() && config::valid_name(&n) && n != fed.name => n,
@@ -1007,7 +1078,12 @@ fn cmd_federate(args: &[String]) -> i32 {
                 added_at: 0,
             };
             let rep = wtf::replicate::Replicator {
-                store: Arc::new(Store::new(&std::env::temp_dir().join(format!("wtf-fedverify-{}", wtf::rand::hex(4)))).expect("tmp store")),
+                store: Arc::new(
+                    Store::new(
+                        &std::env::temp_dir().join(format!("wtf-fedverify-{}", wtf::rand::hex(4))),
+                    )
+                    .expect("tmp store"),
+                ),
                 hub_url: String::new(),
                 hub_name,
                 fed: Arc::new(Mutex::new(wtf::federation::FedConfig::default())),
@@ -1111,20 +1187,20 @@ fn cmd_bin(args: &[String]) -> i32 {
 
     match op {
         "ls" => {
-            let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins?k={key}"),
-                "GET",
-                &[],
-                b"",
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("error: cannot reach hub: {e}");
-                    return 1;
-                }
-            };
+            let resp =
+                match client::request(&format!("{hub_url}/api/v1/bins?k={key}"), "GET", &[], b"") {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("error: cannot reach hub: {e}");
+                        return 1;
+                    }
+                };
             if resp.status != 200 {
-                eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+                eprintln!(
+                    "error: hub refused (HTTP {}): {}",
+                    resp.status,
+                    resp.text().trim()
+                );
                 return 1;
             }
             let Some(v) = resp.json() else {
@@ -1162,13 +1238,18 @@ fn cmd_bin(args: &[String]) -> i32 {
                 }
             };
             if resp.status != 200 {
-                eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+                eprintln!(
+                    "error: hub refused (HTTP {}): {}",
+                    resp.status,
+                    resp.text().trim()
+                );
                 return 1;
             }
-            let Some(content) = resp
-                .json()
-                .and_then(|v| v.get("content").and_then(|x| x.as_str()).map(|s| s.to_string()))
-            else {
+            let Some(content) = resp.json().and_then(|v| {
+                v.get("content")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
+            }) else {
                 eprintln!("error: hub response missing content");
                 return 1;
             };
@@ -1232,13 +1313,20 @@ fn cmd_bin(args: &[String]) -> i32 {
                 }
             };
             if resp.status != 200 {
-                eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+                eprintln!(
+                    "error: hub refused (HTTP {}): {}",
+                    resp.status,
+                    resp.text().trim()
+                );
                 return 1;
             }
             if as_json {
                 println!("{}", resp.text().trim());
             } else {
-                println!("bin {id} updated ({} chars, by dashboard)", content.chars().count());
+                println!(
+                    "bin {id} updated ({} chars, by dashboard)",
+                    content.chars().count()
+                );
             }
             0
         }
@@ -1302,7 +1390,12 @@ fn cmd_url(args: &[String]) -> i32 {
     match args.first().map(|s| s.as_str()) {
         None => match HubConfig::load_or_create() {
             Ok(c) => {
-                println!("advertised url: {}", c.advertised_url.as_deref().unwrap_or("(not set; auto-detecting LAN address)"));
+                println!(
+                    "advertised url: {}",
+                    c.advertised_url
+                        .as_deref()
+                        .unwrap_or("(not set; auto-detecting LAN address)")
+                );
                 0
             }
             Err(e) => {
@@ -1322,7 +1415,10 @@ fn cmd_url(args: &[String]) -> i32 {
         },
         Some(u) => match HubConfig::set_advertised_url(Some(u.to_string())) {
             Ok(c) => {
-                println!("advertised url set: {}", c.advertised_url.as_deref().unwrap_or(""));
+                println!(
+                    "advertised url set: {}",
+                    c.advertised_url.as_deref().unwrap_or("")
+                );
                 println!("`wtf key issue` and `wtf join` now hand out this URL (overlay IP or public https host).");
                 0
             }

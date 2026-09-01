@@ -59,7 +59,12 @@ fn fed_request(
         ("X-Wtf-Nonce".to_string(), nonce),
         ("X-Wtf-Signature".to_string(), sig),
     ];
-    client::request(&format!("{}{}", peer.url, path_and_query), method, &headers, body)
+    client::request(
+        &format!("{}{}", peer.url, path_and_query),
+        method,
+        &headers,
+        body,
+    )
 }
 
 fn event_to_value(e: &Event) -> Value {
@@ -91,17 +96,53 @@ fn event_from_value(v: &Value) -> Option<Event> {
     Some(Event {
         id: 0,
         ts: v.get("ts").and_then(|x| x.as_i64())? as u64,
-        device: v.get("device").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        agent: v.get("agent").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        level: v.get("level").and_then(|x| x.as_str()).unwrap_or("info").to_string(),
-        message: v.get("message").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        status: v.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        task: v.get("task").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        details: v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        device: v
+            .get("device")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        agent: v
+            .get("agent")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        level: v
+            .get("level")
+            .and_then(|x| x.as_str())
+            .unwrap_or("info")
+            .to_string(),
+        message: v
+            .get("message")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        status: v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        task: v
+            .get("task")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        details: v
+            .get("details")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         kind: kind.to_string(),
-        origin: v.get("origin").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        origin: v
+            .get("origin")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         origin_id: origin_id as u64,
-        repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        repo: v
+            .get("repo")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -138,7 +179,11 @@ pub fn push_since(rep: &Replicator, peer: &Peer, after: &AtomicU64) -> Result<u6
 ///    re-ingest them locally; dedupe makes this a no-op, but it repairs the
 ///    peer's missing ranges on ITS next pull from us).
 /// Returns Ok(()) or an error string (throttled to a warn event by caller).
-pub fn anti_entropy(rep: &Replicator, peer: &Peer, pushed_cursor: &AtomicU64) -> Result<(), String> {
+pub fn anti_entropy(
+    rep: &Replicator,
+    peer: &Peer,
+    pushed_cursor: &AtomicU64,
+) -> Result<(), String> {
     // 1. peer's own origin → our store
     let mut after = 0u64;
     loop {
@@ -146,7 +191,10 @@ pub fn anti_entropy(rep: &Replicator, peer: &Peer, pushed_cursor: &AtomicU64) ->
             rep,
             peer,
             "GET",
-            &format!("/api/v1/fed/pull?origin={}&after={after}", urlencode(&peer.name)),
+            &format!(
+                "/api/v1/fed/pull?origin={}&after={after}",
+                urlencode(&peer.name)
+            ),
             b"",
         )?;
         if resp.status != 200 {
@@ -177,9 +225,9 @@ pub fn anti_entropy(rep: &Replicator, peer: &Peer, pushed_cursor: &AtomicU64) ->
             // events/min). Never log ingests that are themselves
             // federation-internal (device "federation"); throttle the rest
             // to one per WARN_THROTTLE_SECS per peer.
-            let only_fed_internal = events.iter().all(|e| {
-                e.get("device").and_then(|x| x.as_str()) == Some("federation")
-            });
+            let only_fed_internal = events
+                .iter()
+                .all(|e| e.get("device").and_then(|x| x.as_str()) == Some("federation"));
             if !only_fed_internal {
                 let mut lw = rep.last_warn.lock().unwrap();
                 let last = *lw.get(&format!("pull-{}", peer.name)).unwrap_or(&0);
@@ -211,7 +259,11 @@ pub fn anti_entropy(rep: &Replicator, peer: &Peer, pushed_cursor: &AtomicU64) ->
         rep,
         peer,
         "GET",
-        &format!("/api/v1/fed/pull?origin={}&after={}", urlencode(&rep.hub_name), pushed_cursor.load(Ordering::SeqCst)),
+        &format!(
+            "/api/v1/fed/pull?origin={}&after={}",
+            urlencode(&rep.hub_name),
+            pushed_cursor.load(Ordering::SeqCst)
+        ),
         b"",
     )?;
     if ours.status != 200 {
@@ -240,13 +292,9 @@ fn warn_throttled(rep: &Replicator, peer_name: &str, msg: &str) {
     if now.saturating_sub(last) > WARN_THROTTLE_SECS {
         lw.insert(peer_name.to_string(), now);
         drop(lw);
-        let _ = rep.store.log_event(
-            "federation",
-            &format!("fed-{peer_name}"),
-            "warn",
-            msg,
-            "",
-        );
+        let _ = rep
+            .store
+            .log_event("federation", &format!("fed-{peer_name}"), "warn", msg, "");
     }
 }
 
@@ -274,11 +322,19 @@ pub fn spawn(store: Arc<Store>, hub_name: String, fed: Arc<Mutex<FedConfig>>) {
                 // re-sync through pull + dedupe, so loss is benign)
                 match push_since(&rep, peer, &rep.push_gen) {
                     Ok(_) => {}
-                    Err(e) => warn_throttled(&rep, &peer.name, &format!("push to {} failed: {e}", peer.name)),
+                    Err(e) => warn_throttled(
+                        &rep,
+                        &peer.name,
+                        &format!("push to {} failed: {e}", peer.name),
+                    ),
                 }
                 match anti_entropy(&rep, peer, &rep.push_gen) {
                     Ok(_) => {}
-                    Err(e) => warn_throttled(&rep, &peer.name, &format!("sync with {} failed: {e}", peer.name)),
+                    Err(e) => warn_throttled(
+                        &rep,
+                        &peer.name,
+                        &format!("sync with {} failed: {e}", peer.name),
+                    ),
                 }
             }
             // sleep until: generation bump (new local events), explicit wake,

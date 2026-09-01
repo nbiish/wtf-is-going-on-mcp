@@ -176,8 +176,7 @@ pub fn intt(a: &mut [i32; N]) {
                 let t = a[j];
                 a[j] = barrett_reduce(t + a[j + len]);
                 a[j + len] = a[j + len] - t;
-                a[j + len] =
-                    montgomery_reduce_fe(zeta as i64 * a[j + len] as i64);
+                a[j + len] = montgomery_reduce_fe(zeta as i64 * a[j + len] as i64);
             }
             start += 2 * len;
         }
@@ -690,7 +689,7 @@ pub fn encaps(ek: &[u8; EK_BYTES]) -> ([u8; CT_BYTES], [u8; SS_BYTES]) {
 mod tests {
     use super::*;
     use std::fs;
-    
+
     fn load(name: &str) -> serde_json_ish::Value {
         serde_json_ish::parse(&fs::read_to_string(name).unwrap()).unwrap()
     }
@@ -703,7 +702,10 @@ mod tests {
         }
         impl Value {
             pub fn str_at(&self, k: &str) -> String {
-                self.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+                self.get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
             }
             pub fn i_at(&self, k: &str) -> i64 {
                 self.get(k).and_then(|v| v.as_i64()).unwrap_or(0)
@@ -721,15 +723,25 @@ mod tests {
         let p = load("tests/vectors/mlkem768-keygen-prompt.json");
         let e = load("tests/vectors/mlkem768-keygen-expected.json");
         let mut checked = 0;
-        for (pg, eg) in p.get("testGroups").unwrap().as_arr().unwrap().iter().zip(
-            e.get("testGroups").unwrap().as_arr().unwrap().iter(),
-        ) {
+        for (pg, eg) in p
+            .get("testGroups")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
+            .zip(e.get("testGroups").unwrap().as_arr().unwrap().iter())
+        {
             if pg.get("parameterSet").and_then(|v| v.as_str()) != Some("ML-KEM-768") {
                 continue;
             }
-            for (pt, et) in pg.get("tests").unwrap().as_arr().unwrap().iter().zip(
-                eg.get("tests").unwrap().as_arr().unwrap().iter(),
-            ) {
+            for (pt, et) in pg
+                .get("tests")
+                .unwrap()
+                .as_arr()
+                .unwrap()
+                .iter()
+                .zip(eg.get("tests").unwrap().as_arr().unwrap().iter())
+            {
                 let d = hex(&pt.str_at("d"));
                 let z = hex(&pt.str_at("z"));
                 let mut db = [0u8; 32];
@@ -752,7 +764,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked >= 20, "too few 768 keyGen vectors checked: {checked}");
+        assert!(
+            checked >= 20,
+            "too few 768 keyGen vectors checked: {checked}"
+        );
     }
 
     /// ACVP encapsulation: (ek, m) -> (ct, k) byte-exact.
@@ -761,17 +776,27 @@ mod tests {
         let p = load("tests/vectors/mlkem768-encapdecap-prompt.json");
         let e = load("tests/vectors/mlkem768-encapdecap-expected.json");
         let mut checked = 0;
-        for (pg, eg) in p.get("testGroups").unwrap().as_arr().unwrap().iter().zip(
-            e.get("testGroups").unwrap().as_arr().unwrap().iter(),
-        ) {
+        for (pg, eg) in p
+            .get("testGroups")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
+            .zip(e.get("testGroups").unwrap().as_arr().unwrap().iter())
+        {
             if pg.get("parameterSet").and_then(|v| v.as_str()) != Some("ML-KEM-768")
                 || pg.get("function").and_then(|v| v.as_str()) != Some("encapsulation")
             {
                 continue;
             }
-            for (pt, et) in pg.get("tests").unwrap().as_arr().unwrap().iter().zip(
-                eg.get("tests").unwrap().as_arr().unwrap().iter(),
-            ) {
+            for (pt, et) in pg
+                .get("tests")
+                .unwrap()
+                .as_arr()
+                .unwrap()
+                .iter()
+                .zip(eg.get("tests").unwrap().as_arr().unwrap().iter())
+            {
                 let ek = hex(&pt.str_at("ek"));
                 let m = hex(&pt.str_at("m"));
                 let mut ek_b = [0u8; EK_BYTES];
@@ -794,7 +819,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked >= 20, "too few 768 encapsulation vectors checked: {checked}");
+        assert!(
+            checked >= 20,
+            "too few 768 encapsulation vectors checked: {checked}"
+        );
     }
 
     /// ACVP decapsulation: (dk, c) -> k byte-exact (includes implicit
@@ -804,17 +832,27 @@ mod tests {
         let p = load("tests/vectors/mlkem768-encapdecap-prompt.json");
         let e = load("tests/vectors/mlkem768-encapdecap-expected.json");
         let mut checked = 0;
-        for (pg, eg) in p.get("testGroups").unwrap().as_arr().unwrap().iter().zip(
-            e.get("testGroups").unwrap().as_arr().unwrap().iter(),
-        ) {
+        for (pg, eg) in p
+            .get("testGroups")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
+            .zip(e.get("testGroups").unwrap().as_arr().unwrap().iter())
+        {
             if pg.get("parameterSet").and_then(|v| v.as_str()) != Some("ML-KEM-768")
                 || pg.get("function").and_then(|v| v.as_str()) != Some("decapsulation")
             {
                 continue;
             }
-            for (pt, et) in pg.get("tests").unwrap().as_arr().unwrap().iter().zip(
-                eg.get("tests").unwrap().as_arr().unwrap().iter(),
-            ) {
+            for (pt, et) in pg
+                .get("tests")
+                .unwrap()
+                .as_arr()
+                .unwrap()
+                .iter()
+                .zip(eg.get("tests").unwrap().as_arr().unwrap().iter())
+            {
                 let dk = hex(&pt.str_at("dk"));
                 let c = hex(&pt.str_at("c"));
                 let mut dk_b = [0u8; DK_BYTES];
@@ -831,7 +869,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked >= 5, "too few 768 decapsulation vectors checked: {checked}");
+        assert!(
+            checked >= 5,
+            "too few 768 decapsulation vectors checked: {checked}"
+        );
     }
 
     /// End-to-end random: keygen -> encaps -> decaps yields same secret.

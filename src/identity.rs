@@ -70,8 +70,13 @@ pub fn purge() -> Result<(), String> {
 fn parse_key<const N: usize>(hex: &str, path: &PathBuf) -> Result<[u8; N], String> {
     let bytes = crate::util::hex_decode(hex)
         .ok_or_else(|| format!("{}: key is not valid hex", path.display()))?;
-    <[u8; N]>::try_from(bytes.as_slice())
-        .map_err(|_| format!("{}: key has wrong length ({} bytes, want {N})", path.display(), bytes.len()))
+    <[u8; N]>::try_from(bytes.as_slice()).map_err(|_| {
+        format!(
+            "{}: key has wrong length ({} bytes, want {N})",
+            path.display(),
+            bytes.len()
+        )
+    })
 }
 
 #[cfg(test)]

@@ -104,12 +104,13 @@ pub fn parse(plaintext: &str) -> Option<Entry> {
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
-    let ts = v
-        .get("ts")
-        .and_then(|x| x.as_i64())
-        .unwrap_or(0)
-        .max(0) as u64;
-    Some(Entry { event, scope, note, ts })
+    let ts = v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0).max(0) as u64;
+    Some(Entry {
+        event,
+        scope,
+        note,
+        ts,
+    })
 }
 
 /// Render one decrypted message as a ledger line, e.g.
@@ -144,7 +145,12 @@ mod tests {
 
     #[test]
     fn build_parse_roundtrip() {
-        let env = build("update", "wtf-is-going-on-mcp/feat/comms", "gates green; merging").unwrap();
+        let env = build(
+            "update",
+            "wtf-is-going-on-mcp/feat/comms",
+            "gates green; merging",
+        )
+        .unwrap();
         let entry = parse(&env).expect("envelope parses");
         assert_eq!(entry.event, "update");
         assert_eq!(entry.scope, "wtf-is-going-on-mcp/feat/comms");
@@ -154,12 +160,21 @@ mod tests {
 
     #[test]
     fn build_fails_closed() {
-        assert!(build("bogus", "", "note").is_err(), "unknown event rejected");
+        assert!(
+            build("bogus", "", "note").is_err(),
+            "unknown event rejected"
+        );
         assert!(build("update", "", "   ").is_err(), "empty note rejected");
         let long = "n".repeat(MAX_NOTE_CHARS + 1);
-        assert!(build("update", "", &long).is_err(), "oversize note rejected");
+        assert!(
+            build("update", "", &long).is_err(),
+            "oversize note rejected"
+        );
         let long_scope = "s".repeat(MAX_SCOPE_CHARS + 1);
-        assert!(build("update", &long_scope, "note").is_err(), "oversize scope rejected");
+        assert!(
+            build("update", &long_scope, "note").is_err(),
+            "oversize scope rejected"
+        );
     }
 
     #[test]
@@ -175,11 +190,25 @@ mod tests {
     #[test]
     fn render_includes_scope_and_age() {
         let now = 1_000_000;
-        let e = Entry { event: "checkin".into(), scope: "repo/branch".into(), note: "starting".into(), ts: now - 30 };
+        let e = Entry {
+            event: "checkin".into(),
+            scope: "repo/branch".into(),
+            note: "starting".into(),
+            ts: now - 30,
+        };
         let line = render_line(7, "mac-agent", &e, now);
-        assert!(line.starts_with("#7 [checkin] mac-agent (repo/branch) (30s ago): starting"), "{line}");
-        let bare = Entry { scope: String::new(), ..e };
+        assert!(
+            line.starts_with("#7 [checkin] mac-agent (repo/branch) (30s ago): starting"),
+            "{line}"
+        );
+        let bare = Entry {
+            scope: String::new(),
+            ..e
+        };
         let line = render_line(8, "box-b", &bare, now);
-        assert!(line.starts_with("#8 [checkin] box-b (30s ago): starting"), "{line}");
+        assert!(
+            line.starts_with("#8 [checkin] box-b (30s ago): starting"),
+            "{line}"
+        );
     }
 }
