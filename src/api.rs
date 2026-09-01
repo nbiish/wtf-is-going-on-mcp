@@ -30,7 +30,7 @@ use crate::http::{HandlerResult, Request, Response, SseSession};
 use crate::json::{self, Value};
 use crate::session_crypto;
 use crate::sessions::{Sessions, MAX_CIPHERTEXT_CHARS};
-use crate::store::{LEVELS, STATUSES, Store};
+use crate::store::{Store, LEVELS, STATUSES};
 use crate::util::{ct_eq_str, now_secs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -134,8 +134,7 @@ fn bin_id_of(path: &str) -> Option<u8> {
 }
 
 fn device_auth(hub: &Hub, req: &Request) -> Result<String, Response> {
-    let headers =
-        auth::extract(&req.headers).map_err(|e| Response::error(401, &e.to_string()))?;
+    let headers = auth::extract(&req.headers).map_err(|e| Response::error(401, &e.to_string()))?;
     // keys.json may have changed on disk since the last request (issue,
     // revoke, rotate via `wtf key`). Reload unconditionally: the file is
     // tiny, and a stale in-memory record must never authenticate a revoked
@@ -143,7 +142,14 @@ fn device_auth(hub: &Hub, req: &Request) -> Result<String, Response> {
     let fresh = KeyStore::load().map_err(|_| Response::error(401, "keystore unavailable"))?;
     *hub.keys.lock().unwrap() = fresh;
     let verify = |keys: &KeyStore, nonces: &mut NonceCache| {
-        auth::verify(headers.clone(), keys, nonces, &req.method, &req.target, &req.body)
+        auth::verify(
+            headers.clone(),
+            keys,
+            nonces,
+            &req.method,
+            &req.target,
+            &req.body,
+        )
     };
     let mut nonces = hub.nonces.lock().unwrap();
     let keys = hub.keys.lock().unwrap();
@@ -293,7 +299,7 @@ fn stream(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
     HandlerResult::Sse(Box::new(move |session: &mut SseSession| {
         let mut cycles = 0u32;
         loop {
-        let st = hub2.store.to_state_json(hub2.started_at, &hub2.bins);
+            let st = hub2.store.to_state_json(hub2.started_at, &hub2.bins);
             if session.event("state", &st.to_json()).is_err() {
                 break; // client went away
             }
@@ -339,11 +345,19 @@ fn checkin(hub: &Arc<Hub>, req: &Request) -> Response {
     };
     let details = body.get("details").and_then(|v| v.as_str()).unwrap_or("");
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
-    let agent = body.get("agent").and_then(|v| v.as_str()).unwrap_or(device.as_str());
-    let ev = hub.store.check_in(&device, agent, status, task, details, repo);
+    let agent = body
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .unwrap_or(device.as_str());
+    let ev = hub
+        .store
+        .check_in(&device, agent, status, task, details, repo);
     Response::json(
         200,
-        &Value::obj(vec![("ok", Value::from(true)), ("id", Value::from(ev.id as i64))]),
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("id", Value::from(ev.id as i64)),
+        ]),
     )
 }
 
@@ -367,12 +381,18 @@ fn event(hub: &Arc<Hub>, req: &Request) -> Response {
         }
         None => "info",
     };
-    let agent = body.get("agent").and_then(|v| v.as_str()).unwrap_or(device.as_str());
+    let agent = body
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .unwrap_or(device.as_str());
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
     let ev = hub.store.log_event(&device, agent, level, message, repo);
     Response::json(
         200,
-        &Value::obj(vec![("ok", Value::from(true)), ("id", Value::from(ev.id as i64))]),
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("id", Value::from(ev.id as i64)),
+        ]),
     )
 }
 
@@ -382,7 +402,11 @@ fn heartbeat(hub: &Arc<Hub>, req: &Request) -> Response {
         Err(r) => return r,
     };
     let agent = match parse_body(req) {
-        Ok(body) => body.get("agent").and_then(|v| v.as_str()).unwrap_or(device.as_str()).to_string(),
+        Ok(body) => body
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or(device.as_str())
+            .to_string(),
         Err(_) => device.clone(),
     };
     hub.store.heartbeat(&device, &agent);
@@ -528,7 +552,9 @@ fn issue_and_respond(hub: &Arc<Hub>, name: &str, via: &str) -> Response {
         Ok(s) => s,
         Err(e) => return Response::error(400, &e),
     };
-    let hub_url = HubConfig::load_or_create().map(|c| c.lan_url()).unwrap_or_default();
+    let hub_url = HubConfig::load_or_create()
+        .map(|c| c.lan_url())
+        .unwrap_or_default();
     let _ = hub.store.log_event(
         "enroll",
         name,
@@ -563,10 +589,11 @@ fn issue_and_respond_sealed(hub: &Arc<Hub>, name: &str, ek: &str, cfg: &HubConfi
         }
         _ => return Response::error(500, "keystore unavailable"),
     };
-    let sealed = match session_crypto::seal_session_key(ek, &key32, &format!("wtf-enroll-v2:{name}")) {
-        Ok(s) => s,
-        Err(_) => return Response::error(500, "key sealing failed"),
-    };
+    let sealed =
+        match session_crypto::seal_session_key(ek, &key32, &format!("wtf-enroll-v2:{name}")) {
+            Ok(s) => s,
+            Err(_) => return Response::error(500, "key sealing failed"),
+        };
     let _ = hub.store.log_event(
         "enroll",
         name,
@@ -612,11 +639,10 @@ fn identity_register(hub: &Arc<Hub>, req: &Request) -> Response {
             None => reg.push((device.clone(), ek.to_string())),
         }
     }
-    let _ = hub.store.log_event(&device, &device, "info", "identity registered", "");
-    Response::json(
-        200,
-        &Value::obj(vec![("ok", Value::from(true))]),
-    )
+    let _ = hub
+        .store
+        .log_event(&device, &device, "info", "identity registered", "");
+    Response::json(200, &Value::obj(vec![("ok", Value::from(true))]))
 }
 
 /// GET /api/v1/devices — the identity registry (dashboard key or device).
@@ -630,9 +656,13 @@ fn devices_list(hub: &Arc<Hub>, req: &Request) -> Response {
         .map(|(d, ek)| {
             Value::obj(vec![
                 ("device", Value::from(d.as_str())),
-                ("ek_fp", Value::from(crate::util::hex_encode(
-                    &crate::keccak::sha3_256(&crate::util::hex_decode(ek).unwrap_or_default())[..8],
-                ))),
+                (
+                    "ek_fp",
+                    Value::from(crate::util::hex_encode(
+                        &crate::keccak::sha3_256(&crate::util::hex_decode(ek).unwrap_or_default())
+                            [..8],
+                    )),
+                ),
             ])
         })
         .collect();
@@ -669,15 +699,23 @@ fn session_create(hub: &Arc<Hub>, req: &Request) -> Response {
         let reg = hub.identities.lock().unwrap();
         match reg.iter().find(|(d, _)| *d == device) {
             Some((_, ek)) => ek.clone(),
-            None => {
-                return Response::error(400, "register identity first (POST /api/v1/identity)")
-            }
+            None => return Response::error(400, "register identity first (POST /api/v1/identity)"),
         }
     };
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
     match hub.sessions.create(name, &device, &ek, repo) {
         Ok((s, pairing_key)) => {
-            let _ = hub.store.log_event(&device, &device, "info", &format!("session '{}' created (repo {})", s.id, if s.repo.is_empty() { "-" } else { &s.repo }), "");
+            let _ = hub.store.log_event(
+                &device,
+                &device,
+                "info",
+                &format!(
+                    "session '{}' created (repo {})",
+                    s.id,
+                    if s.repo.is_empty() { "-" } else { &s.repo }
+                ),
+                "",
+            );
             // The pairing key crosses the wire exactly once, in the
             // creator's create response — same posture as `key issue`.
             Response::json(
@@ -762,12 +800,24 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                 // (identity rotation) by updating the member's ek in place.
                 hub.sessions.join_or_refresh(id, &device, ek)
             } else {
-                hub.sessions.join(id, &device, ek).map(|(s, sealed)| (s, sealed, false))
+                hub.sessions
+                    .join(id, &device, ek)
+                    .map(|(s, sealed)| (s, sealed, false))
             };
             match join_result {
                 Ok((s, sealed, refreshed)) => {
-                    let note = if refreshed { " (pairing: ek refreshed)" } else { "" };
-                    let _ = hub.store.log_event(&device, &device, "info", &format!("joined session {}{note}", id), "");
+                    let note = if refreshed {
+                        " (pairing: ek refreshed)"
+                    } else {
+                        ""
+                    };
+                    let _ = hub.store.log_event(
+                        &device,
+                        &device,
+                        "info",
+                        &format!("joined session {}{note}", id),
+                        "",
+                    );
                     Response::json(
                         200,
                         &Value::obj(vec![
@@ -778,7 +828,12 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                                 Value::Arr(
                                     sealed
                                         .iter()
-                                        .map(|p| Value::obj(vec![("ct", Value::from(p.ct.as_str())), ("ek_fp", Value::from(p.ek_fp.as_str()))]))
+                                        .map(|p| {
+                                            Value::obj(vec![
+                                                ("ct", Value::from(p.ct.as_str())),
+                                                ("ek_fp", Value::from(p.ek_fp.as_str())),
+                                            ])
+                                        })
                                         .collect(),
                                 ),
                             ),
@@ -828,7 +883,9 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                     let reg = hub.identities.lock().unwrap();
                     reg.iter().find(|(d, _)| *d == device).map(|(_, ek)| {
                         crate::util::hex_encode(
-                            &crate::keccak::sha3_256(&crate::util::hex_decode(ek).unwrap_or_default())[..8],
+                            &crate::keccak::sha3_256(
+                                &crate::util::hex_decode(ek).unwrap_or_default(),
+                            )[..8],
                         )
                     })
                 })
@@ -837,7 +894,12 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                 Ok(pkgs) => {
                     let arr: Vec<Value> = pkgs
                         .iter()
-                        .map(|p| Value::obj(vec![("ct", Value::from(p.ct.as_str())), ("ek_fp", Value::from(p.ek_fp.as_str()))]))
+                        .map(|p| {
+                            Value::obj(vec![
+                                ("ct", Value::from(p.ct.as_str())),
+                                ("ek_fp", Value::from(p.ek_fp.as_str())),
+                            ])
+                        })
                         .collect();
                     Response::json(200, &Value::obj(vec![("sealed", Value::Arr(arr))]))
                 }
@@ -864,7 +926,13 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             }
             match hub.sessions.post_message(id, &device, nonce, ct) {
                 Ok(msg) => {
-                    let _ = hub.store.log_event(&device, &device, "info", &format!("session msg seq {}", msg.seq), "");
+                    let _ = hub.store.log_event(
+                        &device,
+                        &device,
+                        "info",
+                        &format!("session msg seq {}", msg.seq),
+                        "",
+                    );
                     Response::json(
                         200,
                         &Value::obj(vec![
@@ -890,7 +958,10 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             if !is_member {
                 return Response::error(403, "not a member");
             }
-            let after = req.q("after").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let after = req
+                .q("after")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
             match hub.sessions.read_messages(id, after) {
                 Ok(msgs) => {
                     let arr: Vec<Value> = msgs
@@ -939,7 +1010,10 @@ fn fed_push(hub: &Arc<Hub>, req: &Request) -> Response {
     // credential itself is the trust anchor — the hub issued it to exactly
     // one peer via the PSK handshake.
     if !device.starts_with("fed-") {
-        return Response::error(403, "federation push requires a federated device credential");
+        return Response::error(
+            403,
+            "federation push requires a federated device credential",
+        );
     }
     let mut accepted = 0usize;
     let mut duplicates = 0usize;
@@ -999,17 +1073,37 @@ fn event_from_value(v: &Value) -> Option<crate::store::Event> {
     Some(crate::store::Event {
         id: 0, // assigned locally at ingest
         ts: ts as u64,
-        device: v.get("device").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        agent: v.get("agent").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        device: v
+            .get("device")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        agent: v
+            .get("agent")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         level: level.to_string(),
-        message: v.get("message").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        message: v
+            .get("message")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         status: status.to_string(),
         task: task.to_string(),
-        details: v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        details: v
+            .get("details")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         kind: kind.to_string(),
         origin: String::new(), // overwritten by caller
         origin_id: origin_id as u64,
-        repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        repo: v
+            .get("repo")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -1025,7 +1119,10 @@ fn fed_pull(hub: &Arc<Hub>, req: &Request) -> Response {
         Err(r) => return r,
     };
     if !device.starts_with("fed-") {
-        return Response::error(403, "federation pull requires a federated device credential");
+        return Response::error(
+            403,
+            "federation pull requires a federated device credential",
+        );
     }
     let origin = req.q("origin").unwrap_or_default();
     let after: u64 = req.q("after").and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -1033,10 +1130,7 @@ fn fed_pull(hub: &Arc<Hub>, req: &Request) -> Response {
         return Response::error(400, "missing 'origin'");
     }
     let events = hub.store.events_since(&origin, after);
-    let events_v: Vec<Value> = events
-        .iter()
-        .map(|e| event_to_value(e))
-        .collect();
+    let events_v: Vec<Value> = events.iter().map(|e| event_to_value(e)).collect();
     let cursor = events.last().map(|e| e.origin_id).unwrap_or(after);
     Response::json(
         200,
@@ -1114,7 +1208,10 @@ fn env_report(hub: &Arc<Hub>, req: &Request) -> Response {
     }
     Response::json(
         200,
-        &Value::obj(vec![("ok", Value::from(true)), ("devices", Value::from(reports.len() as i64))]),
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("devices", Value::from(reports.len() as i64)),
+        ]),
     )
 }
 

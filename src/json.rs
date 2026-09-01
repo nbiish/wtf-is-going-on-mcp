@@ -229,7 +229,10 @@ struct Parser<'a> {
 
 /// Parse a complete JSON document. Trailing garbage is an error.
 pub fn parse(input: &str) -> Result<Value> {
-    let mut p = Parser { s: input.as_bytes(), pos: 0 };
+    let mut p = Parser {
+        s: input.as_bytes(),
+        pos: 0,
+    };
     p.skip_ws();
     let v = p.value(0)?;
     p.skip_ws();
@@ -241,7 +244,10 @@ pub fn parse(input: &str) -> Result<Value> {
 
 impl<'a> Parser<'a> {
     fn err(&self, msg: &str) -> Error {
-        Error { msg: msg.to_string(), pos: self.pos }
+        Error {
+            msg: msg.to_string(),
+            pos: self.pos,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -375,7 +381,8 @@ impl<'a> Parser<'a> {
                             } else {
                                 hi as u32
                             };
-                            let ch = char::from_u32(cp).ok_or_else(|| self.err("invalid codepoint"))?;
+                            let ch =
+                                char::from_u32(cp).ok_or_else(|| self.err("invalid codepoint"))?;
                             let mut buf = [0u8; 4];
                             out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
                         }
@@ -392,7 +399,9 @@ impl<'a> Parser<'a> {
     fn u16_hex(&mut self) -> Result<u16> {
         let mut v: u16 = 0;
         for _ in 0..4 {
-            let c = self.bump().ok_or_else(|| self.err("truncated \\u escape"))?;
+            let c = self
+                .bump()
+                .ok_or_else(|| self.err("truncated \\u escape"))?;
             let d = (c as char)
                 .to_digit(16)
                 .ok_or_else(|| self.err("invalid hex in \\u escape"))?;
@@ -479,7 +488,10 @@ mod tests {
         let v = p(r#"{"a":1,"b":[true,null,"x"],"c":{"d":2}}"#);
         assert_eq!(v.get("a").and_then(|x| x.as_i64()), Some(1));
         assert_eq!(v.get("b").unwrap().as_arr().unwrap().len(), 3);
-        assert_eq!(v.get("c").and_then(|c| c.get("d")).and_then(|d| d.as_i64()), Some(2));
+        assert_eq!(
+            v.get("c").and_then(|c| c.get("d")).and_then(|d| d.as_i64()),
+            Some(2)
+        );
         assert_eq!(p("[]"), Value::Arr(vec![]));
         assert_eq!(p("{}"), Value::Obj(vec![]));
         assert_eq!(p("[[[]]]"), p("[[[]]]"));
@@ -497,10 +509,37 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         for bad in [
-            "", "  ", "{", "}", "[", "[1,", "{\"a\"}", "{\"a\":}", "{\"a\":1,}",
-            "[1,]", "01", "+1", ".5", "1.", "-", "1e", "1e+", "\"", "\"\\q\"",
-            "\"\\ud83d\"", "\"\\ude00\"", "\"\u{01}\"", "tru", "nul", "nulls",
-            "{\"a\":1} extra", "1 2", "{\"a\" 1}", "'x'", "NaN", "Infinity",
+            "",
+            "  ",
+            "{",
+            "}",
+            "[",
+            "[1,",
+            "{\"a\"}",
+            "{\"a\":}",
+            "{\"a\":1,}",
+            "[1,]",
+            "01",
+            "+1",
+            ".5",
+            "1.",
+            "-",
+            "1e",
+            "1e+",
+            "\"",
+            "\"\\q\"",
+            "\"\\ud83d\"",
+            "\"\\ude00\"",
+            "\"\u{01}\"",
+            "tru",
+            "nul",
+            "nulls",
+            "{\"a\":1} extra",
+            "1 2",
+            "{\"a\" 1}",
+            "'x'",
+            "NaN",
+            "Infinity",
         ] {
             assert!(parse(bad).is_err(), "should reject: {bad:?}");
         }

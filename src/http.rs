@@ -21,9 +21,9 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Debug)]
 pub struct Request {
     pub method: String,
-    pub target: String,              // raw path+query as received
-    pub path: String,                // percent-decoded path (no query)
-    pub query: String,               // raw query (no '?')
+    pub target: String,                 // raw path+query as received
+    pub path: String,                   // percent-decoded path (no query)
+    pub query: String,                  // raw query (no '?')
     pub headers: Vec<(String, String)>, // names lowercased
     pub body: Vec<u8>,
     pub http10: bool,
@@ -91,7 +91,10 @@ impl Response {
     pub fn error(status: u16, msg: &str) -> Response {
         Response::json(
             status,
-            &Value::obj(vec![("ok", Value::from(false)), ("error", Value::from(msg))]),
+            &Value::obj(vec![
+                ("ok", Value::from(false)),
+                ("error", Value::from(msg)),
+            ]),
         )
     }
 
@@ -168,11 +171,7 @@ fn security_headers() -> Vec<(&'static str, &'static str)> {
 
 /// Serialize status line + headers (no body). Pure; unit-tested.
 pub fn build_response_head(resp: &Response, close: bool) -> Vec<u8> {
-    let mut out = format!(
-        "HTTP/1.1 {} {}\r\n",
-        resp.status,
-        status_text(resp.status)
-    );
+    let mut out = format!("HTTP/1.1 {} {}\r\n", resp.status, status_text(resp.status));
     out.push_str(&format!("Content-Type: {}\r\n", resp.content_type));
     out.push_str(&format!("Content-Length: {}\r\n", resp.body.len()));
     for (k, v) in security_headers() {
@@ -207,8 +206,20 @@ fn header_token_char(c: u8) -> bool {
     c.is_ascii_alphanumeric()
         || matches!(
             c,
-            b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_'
-                | b'`' | b'|' | b'~'
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
         )
 }
 
@@ -261,11 +272,7 @@ fn try_parse(acc: &[u8]) -> TryParse {
     let http10 = match version.as_str() {
         "HTTP/1.1" => false,
         "HTTP/1.0" => true,
-        _ => {
-            return TryParse::Bad(
-                Response::error(501, "only HTTP/1.x supported").with_close(),
-            )
-        }
+        _ => return TryParse::Bad(Response::error(501, "only HTTP/1.x supported").with_close()),
     };
 
     let mut headers: Vec<(String, String)> = Vec::new();
@@ -285,26 +292,22 @@ fn try_parse(acc: &[u8]) -> TryParse {
             return TryParse::Bad(Response::error(400, "bad header name").with_close());
         }
         if headers.len() >= MAX_HEADERS {
-            return TryParse::Bad(
-                Response::error(431, "too many headers").with_close(),
-            );
+            return TryParse::Bad(Response::error(431, "too many headers").with_close());
         }
         headers.push((name_l, value.trim().to_string()));
     }
 
     if headers.iter().any(|(k, _)| k == "transfer-encoding") {
-        return TryParse::Bad(
-            Response::error(501, "transfer-encoding not supported").with_close(),
-        );
+        return TryParse::Bad(Response::error(501, "transfer-encoding not supported").with_close());
     }
     let content_len = match headers.iter().find(|(k, _)| k == "content-length") {
         None => 0usize,
         Some((_, v)) => match v.parse::<u64>() {
             Ok(n) if n <= MAX_BODY as u64 => n as usize,
-            Ok(_) => {
-                return TryParse::Bad(Response::error(413, "body too large").with_close())
+            Ok(_) => return TryParse::Bad(Response::error(413, "body too large").with_close()),
+            Err(_) => {
+                return TryParse::Bad(Response::error(400, "bad content-length").with_close())
             }
-            Err(_) => return TryParse::Bad(Response::error(400, "bad content-length").with_close()),
         },
     };
 
@@ -323,7 +326,15 @@ fn try_parse(acc: &[u8]) -> TryParse {
     };
     let path = crate::util::percent_decode(raw_path);
     TryParse::Ok(
-        Request { method, target, path, query, headers, body, http10 },
+        Request {
+            method,
+            target,
+            path,
+            query,
+            headers,
+            body,
+            http10,
+        },
         total,
     )
 }
@@ -343,8 +354,7 @@ fn read_request(stream: &mut TcpStream, acc: &mut Vec<u8>) -> ReadOutcome {
                         .map(|v| v.eq_ignore_ascii_case("keep-alive"))
                         .unwrap_or(false)
                 } else {
-                    !req
-                        .header("connection")
+                    !req.header("connection")
                         .map(|v| v.eq_ignore_ascii_case("close"))
                         .unwrap_or(false)
                 };
@@ -404,21 +414,19 @@ fn handle_conn(mut stream: TcpStream, handler: Handler) {
                 write_response(&mut stream, &resp, true);
                 return;
             }
-            ReadOutcome::Request(req, keep) => {
-                match handler(&req) {
-                    HandlerResult::Respond(resp) => {
-                        let close = resp.close || !keep;
-                        write_response(&mut stream, &resp, close);
-                        if close {
-                            return;
-                        }
-                    }
-                    HandlerResult::Sse(f) => {
-                        run_sse(&mut stream, f);
+            ReadOutcome::Request(req, keep) => match handler(&req) {
+                HandlerResult::Respond(resp) => {
+                    let close = resp.close || !keep;
+                    write_response(&mut stream, &resp, close);
+                    if close {
                         return;
                     }
                 }
-            }
+                HandlerResult::Sse(f) => {
+                    run_sse(&mut stream, f);
+                    return;
+                }
+            },
         }
     }
 }
@@ -480,11 +488,23 @@ mod tests {
         // non-alphabetic method bytes are rejected at parse; unknown but
         // token-valid methods surface later as 404/405 from the API layer
         assert_eq!(parse_full("GET2 / HTTP/1.1\r\n\r\n").unwrap_err(), 400);
-        assert_eq!(parse_full("GET /extra parts HTTP/1.1\r\n\r\n").unwrap_err(), 400);
+        assert_eq!(
+            parse_full("GET /extra parts HTTP/1.1\r\n\r\n").unwrap_err(),
+            400
+        );
         assert_eq!(parse_full("GET / HTTP/9.9\r\n\r\n").unwrap_err(), 501);
-        assert_eq!(parse_full("GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap_err(), 501);
-        assert_eq!(parse_full("GET / HTTP/1.1\r\nContent-Length: 999999999\r\n\r\n").unwrap_err(), 413);
-        assert_eq!(parse_full("GET / HTTP/1.1\r\nBad Header Here\r\n\r\n").unwrap_err(), 400);
+        assert_eq!(
+            parse_full("GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap_err(),
+            501
+        );
+        assert_eq!(
+            parse_full("GET / HTTP/1.1\r\nContent-Length: 999999999\r\n\r\n").unwrap_err(),
+            413
+        );
+        assert_eq!(
+            parse_full("GET / HTTP/1.1\r\nBad Header Here\r\n\r\n").unwrap_err(),
+            400
+        );
         assert_eq!(parse_full("GET /\u{0} HTTP/1.1\r\n\r\n").unwrap_err(), 400);
     }
 

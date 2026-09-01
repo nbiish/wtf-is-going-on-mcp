@@ -10,7 +10,7 @@ use crate::client;
 use crate::config::BridgeConfig;
 use crate::json::{self, Value};
 use crate::rand::nonce_hex;
-use crate::store::{LEVELS, STATUSES, rel_age};
+use crate::store::{rel_age, LEVELS, STATUSES};
 use crate::util::now_secs;
 use std::io::{BufRead, Write};
 use std::time::Duration;
@@ -49,8 +49,15 @@ impl Bridge {
     ) -> Result<Vec<(String, String)>, String> {
         let ts = now_secs();
         let nonce = nonce_hex();
-        let sig = crate::auth::sign(&self.cfg.device_key, method, path_and_query, ts, &nonce, body)
-            .ok_or_else(|| "device key is not valid hex".to_string())?;
+        let sig = crate::auth::sign(
+            &self.cfg.device_key,
+            method,
+            path_and_query,
+            ts,
+            &nonce,
+            body,
+        )
+        .ok_or_else(|| "device key is not valid hex".to_string())?;
         Ok(vec![
             ("X-Wtf-Device".into(), self.cfg.device_name.clone()),
             ("X-Wtf-Timestamp".into(), ts.to_string()),
@@ -61,7 +68,9 @@ impl Bridge {
 
     fn decode(&self, resp: client::ClientResponse, path: &str) -> Result<Value, String> {
         if resp.status == 401 {
-            return Err(format!("hub rejected credentials for {path} (HTTP 401) — key revoked or wrong?"));
+            return Err(format!(
+                "hub rejected credentials for {path} (HTTP 401) — key revoked or wrong?"
+            ));
         }
         if resp.status != 200 {
             return Err(format!("hub returned HTTP {} for {path}", resp.status));
@@ -214,7 +223,10 @@ fn error_resp(id: Value, code: i64, msg: &str) -> Value {
         ("id", id),
         (
             "error",
-            Value::obj(vec![("code", Value::from(code)), ("message", Value::from(msg))]),
+            Value::obj(vec![
+                ("code", Value::from(code)),
+                ("message", Value::from(msg)),
+            ]),
         ),
     ])
 }
@@ -256,10 +268,19 @@ impl Bridge {
     pub fn handle_line(&self, line: &str) -> Option<Value> {
         let v = match json::parse(line) {
             Ok(v) => v,
-            Err(e) => return Some(error_resp(Value::Null, ERR_PARSE, &format!("parse error: {e}"))),
+            Err(e) => {
+                return Some(error_resp(
+                    Value::Null,
+                    ERR_PARSE,
+                    &format!("parse error: {e}"),
+                ))
+            }
         };
         let id = v.get("id").cloned();
-        let method = v.get("method").and_then(|m| m.as_str()).map(|s| s.to_string());
+        let method = v
+            .get("method")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
         match (method, id) {
             // notification (no id): never answered
             (Some(_), None) => None,
@@ -327,7 +348,10 @@ impl Bridge {
                 "enum",
                 Value::arr(STATUSES.iter().map(|s| Value::from(*s)).collect()),
             ),
-            ("description", Value::from("working | blocked | done | idle")),
+            (
+                "description",
+                Value::from("working | blocked | done | idle"),
+            ),
         ]);
         let level_schema = Value::obj(vec![
             ("type", Value::from("string")),
@@ -872,10 +896,7 @@ impl Bridge {
             "session_read" => self.tool_session_read(args),
             "comms_post" => self.tool_comms_post(args),
             "comms_read" => self.tool_comms_read(args),
-            other => (
-                format!("unknown tool: {other}"),
-                true,
-            ),
+            other => (format!("unknown tool: {other}"), true),
         }
     }
 
@@ -935,7 +956,10 @@ impl Bridge {
             Some(l) if LEVELS.contains(&l) => l.to_string(),
             Some(other) => {
                 return (
-                    format!("invalid level '{other}'; must be one of: {}", LEVELS.join(", ")),
+                    format!(
+                        "invalid level '{other}'; must be one of: {}",
+                        LEVELS.join(", ")
+                    ),
                     true,
                 )
             }
@@ -980,9 +1004,7 @@ impl Bridge {
     fn tool_read_bin(&self, args: &Value) -> (String, bool) {
         let id = match args.get("bin").and_then(|v| v.as_i64()) {
             Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
-            Some(other) => {
-                return (format!("invalid bin {other}; must be 1, 2, or 3"), true)
-            }
+            Some(other) => return (format!("invalid bin {other}; must be 1, 2, or 3"), true),
             None => return ("missing required argument: bin".into(), true),
         };
         match self.api_get(&format!("/api/v1/bins/{id}")) {
@@ -1012,16 +1034,19 @@ impl Bridge {
     fn tool_write_bin(&self, args: &Value) -> (String, bool) {
         let id = match args.get("bin").and_then(|v| v.as_i64()) {
             Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
-            Some(other) => {
-                return (format!("invalid bin {other}; must be 1, 2, or 3"), true)
-            }
+            Some(other) => return (format!("invalid bin {other}; must be 1, 2, or 3"), true),
             None => return ("missing required argument: bin".into(), true),
         };
-        let content = match arg_str(args, "content") {
-            Some(c) if !c.is_empty() => c.to_string(),
-            Some(_) => return ("content must not be empty (bins have no delete; leave that to the operator)".into(), true),
-            None => return ("missing required argument: content".into(), true),
-        };
+        let content =
+            match arg_str(args, "content") {
+                Some(c) if !c.is_empty() => c.to_string(),
+                Some(_) => return (
+                    "content must not be empty (bins have no delete; leave that to the operator)"
+                        .into(),
+                    true,
+                ),
+                None => return ("missing required argument: content".into(), true),
+            };
         if content.chars().count() > crate::bins::MAX_BIN_CHARS {
             return (
                 format!(
@@ -1052,8 +1077,13 @@ impl Bridge {
     fn tool_list_bins(&self) -> (String, bool) {
         match self.api_get("/api/v1/bins") {
             Ok(v) => {
-                let bins = v.get("bins").and_then(|x| x.as_arr()).unwrap_or(&[]).to_vec();
-                let mut out = String::from("shared paste-bins (read_bin to fetch, write_bin to publish):\n");
+                let bins = v
+                    .get("bins")
+                    .and_then(|x| x.as_arr())
+                    .unwrap_or(&[])
+                    .to_vec();
+                let mut out =
+                    String::from("shared paste-bins (read_bin to fetch, write_bin to publish):\n");
                 for b in &bins {
                     let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
                     let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -1166,9 +1196,8 @@ impl Bridge {
                         false,
                     );
                 }
-                let mut out = String::from(
-                    "env reports (device · omp · hermes · freeclaude · os/arch):\n",
-                );
+                let mut out =
+                    String::from("env reports (device · omp · hermes · freeclaude · os/arch):\n");
                 for d in devices {
                     let dev = d.get("device").and_then(|x| x.as_str()).unwrap_or("?");
                     let rep = d.get("report").unwrap_or(&Value::Null);
@@ -1205,7 +1234,11 @@ impl Bridge {
                         "  {dev} · omp:{} hermes:{} freeclaude:{} · {os}/{arch}\n",
                         cli_state("omp"),
                         cli_state("hermes"),
-                        if tmux_sessions.is_empty() { "-".into() } else { tmux_sessions }
+                        if tmux_sessions.is_empty() {
+                            "-".into()
+                        } else {
+                            tmux_sessions
+                        }
                     ));
                 }
                 (out, false)
@@ -1219,7 +1252,9 @@ impl Bridge {
     fn tool_hub_info(&self) -> (String, bool) {
         let mut out = format!(
             "hub address: {}\nthis device: {} (bridge {})\n",
-            self.cfg.hub_url, self.cfg.device_name, crate::VERSION
+            self.cfg.hub_url,
+            self.cfg.device_name,
+            crate::VERSION
         );
         match client::get_text(&format!("{}/healthz", self.cfg.hub_url)) {
             Ok((200, body)) => {
@@ -1375,7 +1410,10 @@ impl Bridge {
         };
         let created = self.api_post_session("/api/v1/sessions", &body);
         let Ok(session) = created else {
-            return (format!("session create failed: {}", created.unwrap_err()), true);
+            return (
+                format!("session create failed: {}", created.unwrap_err()),
+                true,
+            );
         };
         let Some(sid) = session.get("id").and_then(|v| v.as_str()) else {
             return ("hub returned no session id".into(), true);
@@ -1459,14 +1497,22 @@ impl Bridge {
                     for s in matches {
                         let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
                         let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                        let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
+                        let members = s
+                            .get("members")
+                            .and_then(|x| x.as_arr())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
                         let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
                         let member_names: Vec<String> = s
                             .get("members")
                             .and_then(|x| x.as_arr())
                             .map(|a| {
                                 a.iter()
-                                    .filter_map(|m| m.get("device").and_then(|v| v.as_str()).map(|d| d.to_string()))
+                                    .filter_map(|m| {
+                                        m.get("device")
+                                            .and_then(|v| v.as_str())
+                                            .map(|d| d.to_string())
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -1483,9 +1529,17 @@ impl Bridge {
                     let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
                     let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
                     let repo = s.get("repo").and_then(|x| x.as_str()).unwrap_or("");
-                    let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
+                    let members = s
+                        .get("members")
+                        .and_then(|x| x.as_arr())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
                     let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
-                    let pairing = if s.get("pairing").and_then(|x| x.as_bool()).unwrap_or(false) { "key" } else { "-" };
+                    let pairing = if s.get("pairing").and_then(|x| x.as_bool()).unwrap_or(false) {
+                        "key"
+                    } else {
+                        "-"
+                    };
                     out.push_str(&format!(
                         "  {id} · '{name}' · {} · {members} member(s) · {msgs} msg(s) · pairing:{pairing}\n",
                         if repo.is_empty() { "-" } else { repo }
@@ -1507,7 +1561,8 @@ impl Bridge {
             return ("identity load failed".into(), true);
         };
         let ek_hex = crate::util::hex_encode(&identity.ek);
-        let mut join_pairs: Vec<(String, Value)> = vec![("ek".into(), Value::from(ek_hex.as_str()))];
+        let mut join_pairs: Vec<(String, Value)> =
+            vec![("ek".into(), Value::from(ek_hex.as_str()))];
         if let Some(p) = arg_str(args, "pairing") {
             join_pairs.push(("pairing".into(), Value::from(p)));
         }
@@ -1554,7 +1609,10 @@ impl Bridge {
                 false,
             );
         }
-        (format!("joined {sid}; session key recovered from {recovered} sealed package(s)"), false)
+        (
+            format!("joined {sid}; session key recovered from {recovered} sealed package(s)"),
+            false,
+        )
     }
 
     /// session_seal { session, member }: creator seals the session key to
@@ -1568,7 +1626,9 @@ impl Bridge {
         let Some(key) = load_session_key(sid) else {
             return; // we don't hold the key; nothing to do
         };
-        let Ok(identity) = self.identity() else { return };
+        let Ok(identity) = self.identity() else {
+            return;
+        };
         let Ok(sv) = self.api_get_session(&format!("/api/v1/sessions/{sid}/seals")) else {
             return;
         };
@@ -1577,7 +1637,11 @@ impl Bridge {
             .and_then(|x| x.as_arr())
             .map(|a| {
                 a.iter()
-                    .filter_map(|p| p.get("ek_fp").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .filter_map(|p| {
+                        p.get("ek_fp")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -1620,26 +1684,32 @@ impl Bridge {
             return ("missing required argument: session".into(), true);
         };
         let Some(member) = arg_str(args, "member") else {
-            return ("missing required argument: member (device name of the member to seal for)".into(), true);
+            return (
+                "missing required argument: member (device name of the member to seal for)".into(),
+                true,
+            );
         };
         // Session key must be local (creator holds it).
         let Some(key) = load_session_key(sid) else {
-            return (format!("no local session key for {sid} — only the creator can seal"), true);
+            return (
+                format!("no local session key for {sid} — only the creator can seal"),
+                true,
+            );
         };
         // Fetch the member's registered ek from the identity registry.
         let devices = self.api_get_session("/api/v1/devices");
         let Ok(dv) = devices else {
-            return (format!("device list failed: {}", devices.unwrap_err()), true);
+            return (
+                format!("device list failed: {}", devices.unwrap_err()),
+                true,
+            );
         };
-        let member_ek_fp = dv
-            .get("devices")
-            .and_then(|x| x.as_arr())
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|d| d.get("device").and_then(|v| v.as_str()) == Some(member))
-                    .and_then(|d| d.get("ek_fp").and_then(|v| v.as_str()))
-                    .map(|s| s.to_string())
-            });
+        let member_ek_fp = dv.get("devices").and_then(|x| x.as_arr()).and_then(|arr| {
+            arr.iter()
+                .find(|d| d.get("device").and_then(|v| v.as_str()) == Some(member))
+                .and_then(|d| d.get("ek_fp").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+        });
         let Some(fp) = member_ek_fp else {
             return (format!("member '{member}' has no registered identity — they must run session_join first"), true);
         };
@@ -1652,15 +1722,12 @@ impl Bridge {
         let Ok(sv) = sess else {
             return (format!("session fetch failed: {}", sess.unwrap_err()), true);
         };
-        let member_ek = sv
-            .get("members")
-            .and_then(|x| x.as_arr())
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|mm| mm.get("device").and_then(|v| v.as_str()) == Some(member))
-                    .and_then(|mm| mm.get("ek").and_then(|v| v.as_str()))
-                    .map(|s| s.to_string())
-            });
+        let member_ek = sv.get("members").and_then(|x| x.as_arr()).and_then(|arr| {
+            arr.iter()
+                .find(|mm| mm.get("device").and_then(|v| v.as_str()) == Some(member))
+                .and_then(|mm| mm.get("ek").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+        });
         let Some(member_ek) = member_ek else {
             return (format!("member '{member}' not in session {sid}"), true);
         };
@@ -1694,7 +1761,10 @@ impl Bridge {
         };
         self.auto_seal_members(sid);
         let Some(key) = load_session_key(sid) else {
-            return (format!("no local session key for {sid} — join the session first"), true);
+            return (
+                format!("no local session key for {sid} — join the session first"),
+                true,
+            );
         };
         let sender = &self.cfg.device_name;
         // seq: ask the hub for the next seq by listing the session.
@@ -1702,10 +1772,7 @@ impl Bridge {
         let Ok(sv) = sess else {
             return (format!("session fetch failed: {}", sess.unwrap_err()), true);
         };
-        let next_seq = sv
-            .get("next_seq")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as u64;
+        let next_seq = sv.get("next_seq").and_then(|v| v.as_i64()).unwrap_or(1) as u64;
         let (nonce, ct) =
             match crate::session_crypto::seal_message(&key, sid, sender, next_seq, message) {
                 Ok(v) => v,
@@ -1741,8 +1808,14 @@ impl Bridge {
                 if let Ok(sv) = self.api_get_session(&format!("/api/v1/sessions/{sid}/seals")) {
                     if let Some(pkgs) = sv.get("sealed").and_then(|x| x.as_arr()) {
                         for p in pkgs {
-                            let Some(pkg_hex) = p.get("ct").and_then(|v| v.as_str()) else { continue };
-                            if let Ok(key) = crate::session_crypto::open_sealed_package(pkg_hex, &identity.dk, sid) {
+                            let Some(pkg_hex) = p.get("ct").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            if let Ok(key) = crate::session_crypto::open_sealed_package(
+                                pkg_hex,
+                                &identity.dk,
+                                sid,
+                            ) {
                                 let _ = store_session_key(sid, &key);
                                 break;
                             }
@@ -1757,7 +1830,10 @@ impl Bridge {
             .unwrap_or(0)
             .max(0) as u64;
         let Some(key) = load_session_key(sid) else {
-            return (format!("no local session key for {sid} — join the session first"), true);
+            return (
+                format!("no local session key for {sid} — join the session first"),
+                true,
+            );
         };
         let msgs = self.api_get_session(&format!("/api/v1/sessions/{sid}/recv?after={after}"));
         let Ok(mv) = msgs else {
@@ -1812,10 +1888,7 @@ impl Bridge {
         let Ok(sv) = sess else {
             return (format!("session fetch failed: {}", sess.unwrap_err()), true);
         };
-        let next_seq = sv
-            .get("next_seq")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as u64;
+        let next_seq = sv.get("next_seq").and_then(|v| v.as_i64()).unwrap_or(1) as u64;
         let (nonce, ct) =
             match crate::session_crypto::seal_message(&key, sid, sender, next_seq, &envelope) {
                 Ok(v) => v,
@@ -1844,9 +1917,7 @@ impl Bridge {
             format!(" (scope '{}')", scope.trim())
         };
         (
-            format!(
-                "comms entry #{seq} [{event}] posted encrypted to {sid}{scope_note}",
-            ),
+            format!("comms entry #{seq} [{event}] posted encrypted to {sid}{scope_note}",),
             false,
         )
     }
@@ -1944,10 +2015,7 @@ fn session_keys_path() -> std::path::PathBuf {
 fn store_session_key(session_id: &str, key: &[u8; 32]) -> Result<(), String> {
     let path = session_keys_path();
     let mut map = load_session_keys(&path);
-    map.insert(
-        session_id.to_string(),
-        crate::util::hex_encode(key),
-    );
+    map.insert(session_id.to_string(), crate::util::hex_encode(key));
     save_session_keys(&path, &map)
 }
 
@@ -1958,7 +2026,10 @@ fn store_pairing_key(session_id: &str, key: &str) -> Result<(), String> {
     let path = session_keys_path();
     let mut root = match crate::config::load_json(&path) {
         Ok(Some(v)) => v,
-        _ => Value::obj(vec![("keys", Value::Obj(vec![])), ("pairings", Value::Obj(vec![]))]),
+        _ => Value::obj(vec![
+            ("keys", Value::Obj(vec![])),
+            ("pairings", Value::Obj(vec![])),
+        ]),
     };
     let mut pairings = root
         .get("pairings")
@@ -2007,7 +2078,10 @@ fn save_session_keys(
     }
     crate::config::save_json(
         path,
-        &Value::obj(vec![("keys", Value::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()))]),
+        &Value::obj(vec![(
+            "keys",
+            Value::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
+        )]),
         0o600,
     )
 }

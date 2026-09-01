@@ -2,7 +2,7 @@
 //!
 //! Validated against RFC 4231 test vectors below.
 
-use crate::sha256::{Sha256, sha256};
+use crate::sha256::{sha256, Sha256};
 
 const BLOCK: usize = 64;
 
@@ -68,7 +68,10 @@ mod tests {
         // TC6: 131-byte key exercises the hash-the-key-first path.
         let key = vec![0xaau8; 131];
         assert_eq!(
-            hmac_sha256_hex(&key, b"Test Using Larger Than Block-Size Key - Hash Key First"),
+            hmac_sha256_hex(
+                &key,
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            ),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
         );
     }

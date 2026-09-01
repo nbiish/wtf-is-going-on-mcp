@@ -48,14 +48,14 @@ pub struct SealedPkg {
 pub struct SessionMsg {
     pub seq: u64,
     pub sender: String,
-    pub nonce: String,  // hex, 24 bytes (96-bit GCM nonce)
-    pub ct: String,     // hex, AES-256-GCM ciphertext||tag
+    pub nonce: String, // hex, 24 bytes (96-bit GCM nonce)
+    pub ct: String,    // hex, AES-256-GCM ciphertext||tag
     pub ts: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
-    pub id: String,       // 128-bit hex, assigned by hub
+    pub id: String, // 128-bit hex, assigned by hub
     pub name: String,
     pub created_by: String,
     pub created_at: u64,
@@ -160,8 +160,16 @@ impl Session {
             created_by: v.get("created_by")?.as_str()?.to_string(),
             created_at: v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
             next_seq: v.get("next_seq").and_then(|x| x.as_i64()).unwrap_or(1) as u64,
-            pairing_hash: v.get("pairing_hash").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            pairing_hash: v
+                .get("pairing_hash")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            repo: v
+                .get("repo")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             members,
             sealed,
             msgs,
@@ -237,12 +245,19 @@ impl Sessions {
                 }
             }
         }
-        Sessions { inner: Mutex::new(sessions), path: path.clone() }
+        Sessions {
+            inner: Mutex::new(sessions),
+            path: path.clone(),
+        }
     }
 
     fn persist(&self, sessions: &[Session]) -> Result<(), String> {
         let arr: Vec<Value> = sessions.iter().map(|s| s.to_file_json()).collect();
-        config::save_json(&self.path, &Value::obj(vec![("sessions", Value::Arr(arr))]), 0o600)
+        config::save_json(
+            &self.path,
+            &Value::obj(vec![("sessions", Value::Arr(arr))]),
+            0o600,
+        )
     }
 
     pub fn list(&self) -> Vec<Session> {
@@ -272,7 +287,9 @@ impl Sessions {
         repo: &str,
     ) -> Result<(Session, String), String> {
         if name.trim().is_empty() || name.chars().count() > MAX_SESSION_NAME_CHARS {
-            return Err(format!("session name must be 1..{MAX_SESSION_NAME_CHARS} chars"));
+            return Err(format!(
+                "session name must be 1..{MAX_SESSION_NAME_CHARS} chars"
+            ));
         }
         if repo.chars().count() > MAX_REPO_CHARS {
             return Err(format!("repo label must be 1..{MAX_REPO_CHARS} chars"));
@@ -333,7 +350,12 @@ impl Sessions {
 
     /// Join a session as a new member with a fresh encapsulation key.
     /// Returns (session, sealed packages for this member).
-    pub fn join(&self, id: &str, device: &str, ek: &str) -> Result<(Session, Vec<SealedPkg>), String> {
+    pub fn join(
+        &self,
+        id: &str,
+        device: &str,
+        ek: &str,
+    ) -> Result<(Session, Vec<SealedPkg>), String> {
         let mut sessions = self.inner.lock().unwrap();
         {
             let Some(session) = sessions.iter_mut().find(|s| s.id == id) else {
@@ -351,7 +373,11 @@ impl Sessions {
                 joined_at: now_secs(),
             });
         }
-        let session = sessions.iter().find(|s| s.id == id).expect("just inserted").clone();
+        let session = sessions
+            .iter()
+            .find(|s| s.id == id)
+            .expect("just inserted")
+            .clone();
         let sealed: Vec<SealedPkg> = session.sealed.clone();
         self.persist(&sessions)?;
         Ok((session, sealed))
@@ -388,7 +414,11 @@ impl Sessions {
                 }),
             }
         }
-        let session = sessions.iter().find(|s| s.id == id).expect("just updated").clone();
+        let session = sessions
+            .iter()
+            .find(|s| s.id == id)
+            .expect("just updated")
+            .clone();
         let sealed: Vec<SealedPkg> = session.sealed.clone();
         self.persist(&sessions)?;
         Ok((session, sealed, true))
@@ -396,7 +426,12 @@ impl Sessions {
 
     /// A member posts ML-KEM ciphertexts sealing the session key for
     /// members that joined after creation.
-    pub fn post_sealed(&self, id: &str, device: &str, pkgs: &[(String, String)]) -> Result<(), String> {
+    pub fn post_sealed(
+        &self,
+        id: &str,
+        device: &str,
+        pkgs: &[(String, String)],
+    ) -> Result<(), String> {
         let mut sessions = self.inner.lock().unwrap();
         let Some(session) = sessions.iter_mut().find(|s| s.id == id) else {
             return Err("session not found".into());
@@ -449,7 +484,9 @@ impl Sessions {
             return Err("nonce must be 24 hex chars (96-bit GCM nonce)".into());
         }
         if ct.is_empty() || ct.len() > MAX_CIPHERTEXT_CHARS * 2 {
-            return Err(format!("ciphertext must be 1..{MAX_CIPHERTEXT_CHARS} chars (hex)"));
+            return Err(format!(
+                "ciphertext must be 1..{MAX_CIPHERTEXT_CHARS} chars (hex)"
+            ));
         }
         let mut sessions = self.inner.lock().unwrap();
         let total: usize = sessions.iter().map(|s| s.msgs.len()).sum();
@@ -485,7 +522,12 @@ impl Sessions {
         let Some(session) = sessions.iter().find(|s| s.id == id) else {
             return Err("session not found".into());
         };
-        Ok(session.msgs.iter().filter(|m| m.seq > after_seq).cloned().collect())
+        Ok(session
+            .msgs
+            .iter()
+            .filter(|m| m.seq > after_seq)
+            .cloned()
+            .collect())
     }
 }
 
@@ -506,7 +548,9 @@ mod tests {
     #[test]
     fn create_join_persist() {
         let (ss, d) = temp_sessions("persist");
-        let (s, pairing) = ss.create("design chat", "mac-agent", "aakey", "wtf-mcp").unwrap();
+        let (s, pairing) = ss
+            .create("design chat", "mac-agent", "aakey", "wtf-mcp")
+            .unwrap();
         assert_eq!(s.members.len(), 1);
         assert_eq!(s.next_seq, 1);
         assert_eq!(s.repo, "wtf-mcp");
@@ -519,8 +563,12 @@ mod tests {
         assert!(sealed.is_empty());
 
         // post_sealed by creator, then take by the joiner's fp
-        ss.post_sealed(&s.id, "mac-agent", &[("sealct".into(), "wbfingerprint".into())])
-            .unwrap();
+        ss.post_sealed(
+            &s.id,
+            "mac-agent",
+            &[("sealct".into(), "wbfingerprint".into())],
+        )
+        .unwrap();
         let got = ss.take_sealed(&s.id, "wbfingerprint").unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].ct, "sealct");
@@ -537,13 +585,19 @@ mod tests {
     fn message_seq_and_membership() {
         let (ss, d) = temp_sessions("msgs");
         let (s, _pk) = ss.create("ops", "box-a", "k", "").unwrap();
-        let r1 = ss.post_message(&s.id, "box-a", &"a".repeat(24), "ct1").unwrap();
+        let r1 = ss
+            .post_message(&s.id, "box-a", &"a".repeat(24), "ct1")
+            .unwrap();
         assert_eq!(r1.seq, 1);
-        let r2 = ss.post_message(&s.id, "box-a", &"b".repeat(24), "ct2").unwrap();
+        let r2 = ss
+            .post_message(&s.id, "box-a", &"b".repeat(24), "ct2")
+            .unwrap();
         assert_eq!(r2.seq, 2);
 
         // non-member rejected
-        assert!(ss.post_message(&s.id, "box-z", &"c".repeat(24), "ct3").is_err());
+        assert!(ss
+            .post_message(&s.id, "box-z", &"c".repeat(24), "ct3")
+            .is_err());
 
         let msgs = ss.read_messages(&s.id, 0).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -558,7 +612,14 @@ mod tests {
     fn caps_fail_closed() {
         let (ss, d) = temp_sessions("caps");
         // bad nonce lengths rejected
-        assert!(ss.post_message(&ss.create("x", "a", "k", "").unwrap().0.id, "a", "short", "c").is_err());
+        assert!(ss
+            .post_message(
+                &ss.create("x", "a", "k", "").unwrap().0.id,
+                "a",
+                "short",
+                "c"
+            )
+            .is_err());
         // oversize name
         assert!(ss.create(&"n".repeat(200), "a", "k", "").is_err());
         // registry cap: "x" from the nonce test already occupies one slot

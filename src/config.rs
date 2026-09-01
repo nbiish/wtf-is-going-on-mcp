@@ -71,14 +71,15 @@ pub fn load_json(path: &Path) -> Result<Option<Value>, String> {
 
 /// Atomically write a JSON document. `mode` is the unix file mode (0600 etc).
 pub fn save_json(path: &Path, val: &Value, mode: u32) -> Result<(), String> {
-    let dir = path.parent().ok_or_else(|| format!("bad path {}", path.display()))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("bad path {}", path.display()))?;
     std::fs::create_dir_all(dir)
         .and_then(|_| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     let tmp = path.with_extension("json.tmp");
     {
-        let mut f =
-            std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
         f.write_all(val.to_json().as_bytes())
             .and_then(|_| f.sync_all())
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
@@ -117,10 +118,17 @@ impl HubConfig {
                 .and_then(|x| x.as_str())
                 .unwrap_or(&std::net::Ipv4Addr::UNSPECIFIED.to_string())
                 .to_string();
-            let port = v.get("port").and_then(|x| x.as_i64()).unwrap_or(DEFAULT_PORT as i64) as u16;
+            let port = v
+                .get("port")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(DEFAULT_PORT as i64) as u16;
             let dashboard_key = match v.get("dashboard_key").and_then(|x| x.as_str()) {
                 Some(k) if !k.is_empty() => k.to_string(),
-                _ => return Err("config.json has empty dashboard_key; delete it to regenerate".into()),
+                _ => {
+                    return Err(
+                        "config.json has empty dashboard_key; delete it to regenerate".into(),
+                    )
+                }
             };
             let created_at = v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
             let advertised_url = v
@@ -262,7 +270,8 @@ impl KeyStore {
                         Some(DeviceRecord {
                             name: d.get("name")?.as_str()?.to_string(),
                             secret: d.get("secret")?.as_str()?.to_string(),
-                            created_at: d.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
+                            created_at: d.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0)
+                                as u64,
                             revoked: d.get("revoked").and_then(|x| x.as_bool()).unwrap_or(false),
                         })
                     })
@@ -270,7 +279,10 @@ impl KeyStore {
                 None => return Err(format!("{}: missing devices array", path.display())),
             },
         };
-        Ok(KeyStore { path: path.to_path_buf(), records })
+        Ok(KeyStore {
+            path: path.to_path_buf(),
+            records,
+        })
     }
 
     pub fn persist(&self) -> Result<(), String> {
@@ -291,9 +303,7 @@ impl KeyStore {
     }
 
     pub fn find_active(&self, name: &str) -> Option<&DeviceRecord> {
-        self.records
-            .iter()
-            .find(|r| r.name == name && !r.revoked)
+        self.records.iter().find(|r| r.name == name && !r.revoked)
     }
 
     /// Generate a new device secret. Refuses duplicate active names.
@@ -302,7 +312,9 @@ impl KeyStore {
             return Err("device name must match [A-Za-z0-9._-]{1,64}".into());
         }
         if self.find_active(name).is_some() {
-            return Err(format!("device '{name}' already exists (revoke it first to rotate)"));
+            return Err(format!(
+                "device '{name}' already exists (revoke it first to rotate)"
+            ));
         }
         let secret = rand::key_hex();
         self.records.retain(|r| !(r.name == name && r.revoked));
@@ -318,7 +330,11 @@ impl KeyStore {
 
     pub fn revoke(&mut self, name: &str) -> Result<bool, String> {
         let mut found = false;
-        for r in self.records.iter_mut().filter(|r| r.name == name && !r.revoked) {
+        for r in self
+            .records
+            .iter_mut()
+            .filter(|r| r.name == name && !r.revoked)
+        {
             r.revoked = true;
             found = true;
         }
@@ -377,10 +393,8 @@ impl EnrollTokenStore {
                         Some(EnrollToken {
                             name: d.get("name")?.as_str()?.to_string(),
                             token_hash: d.get("token_hash")?.as_str()?.to_string(),
-                            expires_at: d
-                                .get("expires_at")
-                                .and_then(|x| x.as_i64())
-                                .unwrap_or(0) as u64,
+                            expires_at: d.get("expires_at").and_then(|x| x.as_i64()).unwrap_or(0)
+                                as u64,
                             used: d.get("used").and_then(|x| x.as_bool()).unwrap_or(false),
                         })
                     })
@@ -388,7 +402,10 @@ impl EnrollTokenStore {
                 None => return Err(format!("{}: missing tokens array", path.display())),
             },
         };
-        Ok(EnrollTokenStore { path: path.to_path_buf(), records })
+        Ok(EnrollTokenStore {
+            path: path.to_path_buf(),
+            records,
+        })
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -515,11 +532,15 @@ impl BridgeConfig {
         let hub_url = env("WTF_HUB_URL").or_else(|| get("hub_url"));
         let device_name = env("WTF_DEVICE_NAME").or_else(|| get("device_name"));
         let device_key = env("WTF_DEVICE_KEY").or_else(|| get("device_key"));
-        let missing: Vec<&str> = [("hub_url", hub_url.is_none()), ("device_name", device_name.is_none()), ("device_key", device_key.is_none())]
-            .iter()
-            .filter(|(_, m)| *m)
-            .map(|(n, _)| *n)
-            .collect();
+        let missing: Vec<&str> = [
+            ("hub_url", hub_url.is_none()),
+            ("device_name", device_name.is_none()),
+            ("device_key", device_key.is_none()),
+        ]
+        .iter()
+        .filter(|(_, m)| *m)
+        .map(|(n, _)| *n)
+        .collect();
         if !missing.is_empty() {
             return Err(format!(
                 "bridge config incomplete; missing {} (env WTF_HUB_URL/WTF_DEVICE_NAME/WTF_DEVICE_KEY or '{}')",
@@ -541,12 +562,18 @@ impl BridgeConfig {
         // https:// covers deployments behind a TLS-terminating proxy. Request
         // authenticity comes from the HMAC signature in both cases.
         if !self.hub_url.starts_with("http://") && !self.hub_url.starts_with("https://") {
-            return Err("hub_url must start with http:// (LAN/overlay) or https:// (proxied)".into());
+            return Err(
+                "hub_url must start with http:// (LAN/overlay) or https:// (proxied)".into(),
+            );
         }
         if !valid_name(&self.device_name) {
             return Err("device_name must match [A-Za-z0-9._-]{1,64}".into());
         }
-        if crate::util::hex_decode(&self.device_key).map(|b| b.len()).unwrap_or(0) != 32 {
+        if crate::util::hex_decode(&self.device_key)
+            .map(|b| b.len())
+            .unwrap_or(0)
+            != 32
+        {
             return Err("device_key must be 64 hex chars (256 bits)".into());
         }
         Ok(())
@@ -653,16 +680,25 @@ mod tests {
         assert!(c0.advertised_url.is_none());
         let c1 =
             HubConfig::set_advertised_url_at(&p, Some("http://hub.tailnet:7800".into())).unwrap();
-        assert_eq!(c1.advertised_url.as_deref(), Some("http://hub.tailnet:7800"));
+        assert_eq!(
+            c1.advertised_url.as_deref(),
+            Some("http://hub.tailnet:7800")
+        );
         // Persists, preserves other fields, and wins over lan_url().
         let c2 = HubConfig::load_or_create_at(&p).unwrap();
-        assert_eq!(c2.advertised_url.as_deref(), Some("http://hub.tailnet:7800"));
+        assert_eq!(
+            c2.advertised_url.as_deref(),
+            Some("http://hub.tailnet:7800")
+        );
         assert_eq!(c2.dashboard_key, c0.dashboard_key);
         assert_eq!(c2.lan_url(), "http://hub.tailnet:7800");
         // Trailing slash trimmed; clearing works; bad scheme refused.
         let c3 =
             HubConfig::set_advertised_url_at(&p, Some("https://hub.example.com/".into())).unwrap();
-        assert_eq!(c3.advertised_url.as_deref(), Some("https://hub.example.com"));
+        assert_eq!(
+            c3.advertised_url.as_deref(),
+            Some("https://hub.example.com")
+        );
         assert!(HubConfig::set_advertised_url_at(&p, Some("ftp://x".into())).is_err());
         let c4 = HubConfig::set_advertised_url_at(&p, None).unwrap();
         assert!(c4.advertised_url.is_none());

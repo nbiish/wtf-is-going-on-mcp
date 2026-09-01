@@ -147,7 +147,10 @@ fn hub_bridge_end_to_end() {
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
     );
 
-    rpc_write(&mut agent, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+    );
     let tl = rpc_read(&mut reader);
     let tools = tl
         .get("result")
@@ -164,7 +167,10 @@ fn hub_bridge_end_to_end() {
     );
     let ci = rpc_read(&mut reader);
     assert_eq!(
-        ci.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        ci.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
         Some(false)
     );
 
@@ -174,7 +180,10 @@ fn hub_bridge_end_to_end() {
     );
     let le = rpc_read(&mut reader);
     assert_eq!(
-        le.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        le.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
         Some(false)
     );
 
@@ -183,14 +192,26 @@ fn hub_bridge_end_to_end() {
         r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wtf_is_going_on","arguments":{}}}"#,
     );
     let st = rpc_read(&mut reader);
-    let text = st.get("result").unwrap().get("content").unwrap().as_arr().unwrap()[0]
+    let text = st
+        .get("result")
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_arr()
+        .unwrap()[0]
         .get("text")
         .unwrap()
         .as_str()
         .unwrap()
         .to_string();
-    assert!(text.contains("box2"), "state text should mention device: {text}");
-    assert!(text.contains("e2e proof"), "state text should show the task");
+    assert!(
+        text.contains("box2"),
+        "state text should mention device: {text}"
+    );
+    assert!(
+        text.contains("e2e proof"),
+        "state text should show the task"
+    );
 
     // Invalid tool arguments -> isError result, not a protocol error.
     rpc_write(
@@ -199,7 +220,10 @@ fn hub_bridge_end_to_end() {
     );
     let bad = rpc_read(&mut reader);
     assert_eq!(
-        bad.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        bad.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
         Some(true)
     );
 
@@ -227,8 +251,12 @@ fn hub_bridge_end_to_end() {
     let cap = cap.trim();
     let dash_cap = wtf::client::request(&format!("{url}/w/{cap}"), "GET", &[], b"").unwrap();
     assert_eq!(dash_cap.status, 200, "capability path serves the dashboard");
-    let dash_wrong = wtf::client::request(&format!("{url}/w/{}", "0".repeat(64)), "GET", &[], b"").unwrap();
-    assert_eq!(dash_wrong.status, 404, "wrong capability = uniform 404 (no oracle)");
+    let dash_wrong =
+        wtf::client::request(&format!("{url}/w/{}", "0".repeat(64)), "GET", &[], b"").unwrap();
+    assert_eq!(
+        dash_wrong.status, 404,
+        "wrong capability = uniform 404 (no oracle)"
+    );
 
     let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
     let dkey = wtf::json::parse(&cfg_text)
@@ -239,13 +267,19 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .to_string();
     let dash = wtf::client::request(&format!("{url}/w/{cap}"), "GET", &[], b"").unwrap();
-    assert_eq!(dash.status, 200, "capability path serves the dashboard on loopback hubs");
+    assert_eq!(
+        dash.status, 200,
+        "capability path serves the dashboard on loopback hubs"
+    );
     assert!(dash.text().contains("WTF IS GOING ON"));
 
     // Forged signature is rejected.
     let forged = vec![
         ("X-Wtf-Device".to_string(), "box2".to_string()),
-        ("X-Wtf-Timestamp".to_string(), wtf::util::now_secs().to_string()),
+        (
+            "X-Wtf-Timestamp".to_string(),
+            wtf::util::now_secs().to_string(),
+        ),
         ("X-Wtf-Nonce".to_string(), "abcd".to_string()),
         ("X-Wtf-Signature".to_string(), "00".repeat(32)),
     ];
@@ -253,8 +287,8 @@ fn hub_bridge_end_to_end() {
     assert_eq!(r.status, 401);
 
     // 6. Signed state via the dashboard key shows the checked-in agent.
-    let state = wtf::client::request(&format!("{url}/api/v1/state?k={dkey}"), "GET", &[], b"")
-        .unwrap();
+    let state =
+        wtf::client::request(&format!("{url}/api/v1/state?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(state.status, 200);
     let sv = state.json().expect("state json");
     let agents = sv.get("agents").unwrap().as_arr().unwrap();
@@ -311,19 +345,24 @@ fn hub_bridge_end_to_end() {
     .unwrap();
     assert_eq!(too_big.status, 400);
 
-    let got = wtf::client::request(
-        &format!("{url}/api/v1/bins/1?k={dkey}"),
-        "GET",
-        &[],
-        b"",
-    )
-    .unwrap();
+    let got =
+        wtf::client::request(&format!("{url}/api/v1/bins/1?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(got.status, 200);
     assert!(got.text().contains("work from this bin: e2e spec"));
 
-    let all = wtf::client::request(&format!("{url}/api/v1/bins?k={dkey}"), "GET", &[], b"").unwrap();
+    let all =
+        wtf::client::request(&format!("{url}/api/v1/bins?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(all.status, 200);
-    assert_eq!(all.json().unwrap().get("bins").unwrap().as_arr().unwrap().len(), 3);
+    assert_eq!(
+        all.json()
+            .unwrap()
+            .get("bins")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .len(),
+        3
+    );
 
     // 8. Bridge tools expose the bins to agents on any machine.
     rpc_write(
@@ -338,7 +377,10 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_str()
         .unwrap();
-    assert!(rbtext.contains("work from this bin: e2e spec"), "read_bin text: {rbtext}");
+    assert!(
+        rbtext.contains("work from this bin: e2e spec"),
+        "read_bin text: {rbtext}"
+    );
 
     rpc_write(
         &mut agent,
@@ -346,7 +388,11 @@ fn hub_bridge_end_to_end() {
     );
     let badrb = rpc_read(&mut reader);
     assert_eq!(
-        badrb.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        badrb
+            .get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
         Some(true)
     );
 
@@ -370,12 +416,21 @@ fn hub_bridge_end_to_end() {
         r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"wtf_is_going_on","arguments":{}}}"#,
     );
     let st2 = rpc_read(&mut reader);
-    let st2text = st2.get("result").unwrap().get("content").unwrap().as_arr().unwrap()[0]
+    let st2text = st2
+        .get("result")
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_arr()
+        .unwrap()[0]
         .get("text")
         .unwrap()
         .as_str()
         .unwrap();
-    assert!(st2text.contains("BIN 1"), "state text should list bins: {st2text}");
+    assert!(
+        st2text.contains("BIN 1"),
+        "state text should list bins: {st2text}"
+    );
 
     // 8b. Bridge write_bin: the agent publishes to a shared bin with a
     // device-signed PUT; the hub attributes it to the device.
@@ -400,7 +455,11 @@ fn hub_bridge_end_to_end() {
     );
     let wbempty = rpc_read(&mut reader);
     assert_eq!(
-        wbempty.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        wbempty
+            .get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
         Some(true)
     );
 
@@ -418,23 +477,31 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_str()
         .unwrap();
-    assert!(hitext.contains(&url), "hub_info must report the hub address: {hitext}");
-    assert!(hitext.contains("box2"), "hub_info must identify this device: {hitext}");
-    assert!(!hitext.contains("?k="), "dashboard key must never travel over MCP: {hitext}");
+    assert!(
+        hitext.contains(&url),
+        "hub_info must report the hub address: {hitext}"
+    );
+    assert!(
+        hitext.contains("box2"),
+        "hub_info must identify this device: {hitext}"
+    );
+    assert!(
+        !hitext.contains("?k="),
+        "dashboard key must never travel over MCP: {hitext}"
+    );
 
     // The device write is durable and attributed: dashboard-key GET shows
     // the content with the device as last writer.
-    let got2 = wtf::client::request(
-        &format!("{url}/api/v1/bins/2?k={dkey}"),
-        "GET",
-        &[],
-        b"",
-    )
-    .unwrap();
+    let got2 =
+        wtf::client::request(&format!("{url}/api/v1/bins/2?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(got2.status, 200);
     let bin2 = got2.json().expect("bin 2 json");
     assert!(
-        bin2.get("content").unwrap().as_str().unwrap().contains("e2e wrote this from the bridge"),
+        bin2.get("content")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("e2e wrote this from the bridge"),
         "device write must persist: {bin2:?}"
     );
     assert_eq!(
@@ -456,7 +523,10 @@ fn hub_bridge_end_to_end() {
         String::from_utf8_lossy(&du.stderr)
     );
     let dutext = String::from_utf8_lossy(&du.stdout);
-    assert!(dutext.contains("http://localhost:"), "localhost link: {dutext}");
+    assert!(
+        dutext.contains("http://localhost:"),
+        "localhost link: {dutext}"
+    );
     assert!(dutext.contains("/?k="), "link must carry the key: {dutext}");
 
     // 9. Cleanup.
@@ -552,7 +622,10 @@ fn key_issue_json_and_hot_enrollment() {
     );
     let ci = rpc_read(&mut reader);
     assert_eq!(
-        ci.get("result").unwrap().get("isError").and_then(|v| v.as_bool()),
+        ci.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
         Some(false)
     );
 
@@ -627,7 +700,10 @@ fn enroll_token_flow_end_to_end() {
     let mv = wtf::json::parse(mline.trim()).expect("token json valid");
     let token = mv.get("token").unwrap().as_str().unwrap().to_string();
     let minted_hub_url = mv.get("hub_url").unwrap().as_str().unwrap();
-    assert_eq!(minted_hub_url, url, "token json must advertise the real hub url");
+    assert_eq!(
+        minted_hub_url, url,
+        "token json must advertise the real hub url"
+    );
     assert_eq!(token.len(), 64);
 
     let post = |name: &str, tok: &str| {
@@ -733,7 +809,10 @@ fn skill_install_distributes_portable_skill() {
         .join("SKILL.md");
     let text = std::fs::read_to_string(&path).expect("installed skill");
     assert!(text.contains("name: wtf-agent-hub"), "frontmatter: {text}");
-    assert!(text.contains("write_bin") && text.contains("hub_info"), "current tool set: {text}");
+    assert!(
+        text.contains("write_bin") && text.contains("hub_info"),
+        "current tool set: {text}"
+    );
 
     // Identical re-install is an idempotent no-op.
     let again = run(&[]);
@@ -743,12 +822,17 @@ fn skill_install_distributes_portable_skill() {
     // A drifted file is refused without --force.
     std::fs::write(&path, "stale content").unwrap();
     let refused = run(&[]);
-    assert!(!refused.status.success(), "must refuse drifted skill without --force");
+    assert!(
+        !refused.status.success(),
+        "must refuse drifted skill without --force"
+    );
 
     // --force restores the embedded copy.
     let forced = run(&["--force"]);
     assert!(forced.status.success());
-    assert!(std::fs::read_to_string(&path).unwrap().contains("name: wtf-agent-hub"));
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("name: wtf-agent-hub"));
 
     // `wtf skill print` emits exactly the embedded skill.
     let printed = Command::new(env!("CARGO_BIN_EXE_wtf"))
@@ -829,8 +913,7 @@ fn revocation_is_instant() {
     let body = b"{\"status\":\"working\",\"task\":\"pre-revoke\",\"details\":\"signed\"}".to_vec();
     let mut ts = wtf::util::now_secs();
     let mut nonce = wtf::rand::hex(16);
-    let mut sig =
-        wtf::auth::sign(&secret, "POST", "/api/v1/checkin", ts, &nonce, &body).unwrap();
+    let mut sig = wtf::auth::sign(&secret, "POST", "/api/v1/checkin", ts, &nonce, &body).unwrap();
     let head = |ts: u64, nonce: &str, sig: &str| -> Vec<(String, String)> {
         vec![
             ("Content-Type".to_string(), "application/json".to_string()),
@@ -872,7 +955,10 @@ fn revocation_is_instant() {
         &body,
     )
     .unwrap();
-    assert_eq!(denied.status, 401, "revoked device must be rejected instantly");
+    assert_eq!(
+        denied.status, 401,
+        "revoked device must be rejected instantly"
+    );
 
     let _ = hub.kill();
     let _ = std::fs::remove_dir_all(&home);
@@ -952,7 +1038,10 @@ fn device_signed_bin_write_auth_matrix() {
     assert_eq!(ok.status, 200, "device-signed bin write must pass");
     let okv = ok.json().expect("write json");
     assert_eq!(okv.get("ok").and_then(|v| v.as_bool()), Some(true));
-    assert!(okv.get("event").and_then(|v| v.as_i64()).unwrap_or(0) > 0, "write must land in the event feed");
+    assert!(
+        okv.get("event").and_then(|v| v.as_i64()).unwrap_or(0) > 0,
+        "write must land in the event feed"
+    );
 
     // 2. Device-signed GET reads it back, attributed to the device.
     let gts = wtf::util::now_secs();
@@ -971,7 +1060,10 @@ fn device_signed_bin_write_auth_matrix() {
         gotv.get("content").and_then(|v| v.as_str()),
         Some("device-signed write from boxw")
     );
-    assert_eq!(gotv.get("updated_by").and_then(|v| v.as_str()), Some("boxw"));
+    assert_eq!(
+        gotv.get("updated_by").and_then(|v| v.as_str()),
+        Some("boxw")
+    );
 
     // 3. Wrong signature is rejected.
     let wts = wtf::util::now_secs();
@@ -1040,8 +1132,14 @@ fn device_signed_bin_write_auth_matrix() {
     let r = wtf::client::request(&format!("{url}{path}?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(r.status, 200);
     let v = r.json().expect("bin json");
-    assert_eq!(v.get("content").and_then(|x| x.as_str()), Some("dashboard overwrote bin 3"));
-    assert_eq!(v.get("updated_by").and_then(|x| x.as_str()), Some("dashboard"));
+    assert_eq!(
+        v.get("content").and_then(|x| x.as_str()),
+        Some("dashboard overwrote bin 3")
+    );
+    assert_eq!(
+        v.get("updated_by").and_then(|x| x.as_str()),
+        Some("dashboard")
+    );
 
     let _ = hub.kill();
     let _ = std::fs::remove_dir_all(&home);
@@ -1163,7 +1261,12 @@ fn session_channels_end_to_end() {
     }
 
     // A creates the channel.
-    let (err, text) = call!(agent_a, reader_a, "session_create", r#"{"name":"design chat"}"#);
+    let (err, text) = call!(
+        agent_a,
+        reader_a,
+        "session_create",
+        r#"{"name":"design chat"}"#
+    );
     assert!(!err, "session_create failed: {text}");
     let sid = text
         .split_whitespace()
@@ -1172,7 +1275,12 @@ fn session_channels_end_to_end() {
         .to_string();
 
     // B joins (gets "no sealed package yet" since A hasn't sealed to B).
-    let (err, text) = call!(agent_b, reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, text) = call!(
+        agent_b,
+        reader_b,
+        "session_join",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(!err, "session_join failed: {text}");
 
     // A seals the session key for B.
@@ -1185,7 +1293,12 @@ fn session_channels_end_to_end() {
     assert!(!err, "session_seal failed: {text}");
 
     // B re-joins to pick up the sealed package (join returns sealed pkgs).
-    let (err, text) = call!(agent_b, reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, text) = call!(
+        agent_b,
+        reader_b,
+        "session_join",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(
         !err && text.contains("session key recovered"),
         "re-join should recover the key: {text}"
@@ -1202,7 +1315,12 @@ fn session_channels_end_to_end() {
     assert!(text.contains("seq 1"), "send should report seq: {text}");
 
     // B reads and decrypts.
-    let (err, text) = call!(agent_b, reader_b, "session_read", &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, text) = call!(
+        agent_b,
+        reader_b,
+        "session_read",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(!err, "session_read failed: {text}");
     assert!(
         text.contains("hello from A: the plan is x"),
@@ -1218,8 +1336,16 @@ fn session_channels_end_to_end() {
         &format!(r#"{{"session":"{sid}","message":"ack from B, proceeding"}}"#)
     );
     assert!(!err, "B send failed");
-    let (err, text) = call!(agent_a, reader_a, "session_read", &format!(r#"{{"session":"{sid}"}}"#));
-    assert!(!err && text.contains("ack from B, proceeding"), "A must decrypt B's reply: {text}");
+    let (err, text) = call!(
+        agent_a,
+        reader_a,
+        "session_read",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
+    assert!(
+        !err && text.contains("ack from B, proceeding"),
+        "A must decrypt B's reply: {text}"
+    );
 
     // The hub's stored state carries only ciphertext: fetch the session
     // via dashboard key and assert no plaintext leaks.
@@ -1231,8 +1357,8 @@ fn session_channels_end_to_end() {
         .as_str()
         .unwrap()
         .to_string();
-    let state = wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"")
-        .unwrap();
+    let state =
+        wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(state.status, 200);
     let body = state.text();
     assert!(
@@ -1377,14 +1503,24 @@ fn comms_channels_end_to_end() {
     }
 
     // Handshake: A creates, B joins, A seals, B re-joins + recovers the key.
-    let (err, text) = call!(agents[0], reader_a, "session_create", r#"{"name":"team comms"}"#);
+    let (err, text) = call!(
+        agents[0],
+        reader_a,
+        "session_create",
+        r#"{"name":"team comms"}"#
+    );
     assert!(!err, "session_create failed: {text}");
     let sid = text
         .split_whitespace()
         .find(|t| t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
         .unwrap_or_else(|| panic!("session id in create output: {text}"))
         .to_string();
-    let (err, _) = call!(agents[1], reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, _) = call!(
+        agents[1],
+        reader_b,
+        "session_join",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(!err, "session_join failed");
     let (err, text) = call!(
         agents[0],
@@ -1393,8 +1529,16 @@ fn comms_channels_end_to_end() {
         &format!(r#"{{"session":"{sid}","member":"box-b"}}"#)
     );
     assert!(!err, "session_seal failed: {text}");
-    let (err, text) = call!(agents[1], reader_b, "session_join", &format!(r#"{{"session":"{sid}"}}"#));
-    assert!(!err && text.contains("session key recovered"), "key recovery: {text}");
+    let (err, text) = call!(
+        agents[1],
+        reader_b,
+        "session_join",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
+    assert!(
+        !err && text.contains("session key recovered"),
+        "key recovery: {text}"
+    );
 
     // A posts a scoped checkin entry.
     let (err, text) = call!(
@@ -1406,7 +1550,10 @@ fn comms_channels_end_to_end() {
         )
     );
     assert!(!err, "A comms_post failed: {text}");
-    assert!(text.contains("#1 [checkin]"), "post should report seq + event: {text}");
+    assert!(
+        text.contains("#1 [checkin]"),
+        "post should report seq + event: {text}"
+    );
 
     // B posts an update, then a handoff.
     let (err, _) = call!(
@@ -1429,13 +1576,21 @@ fn comms_channels_end_to_end() {
     assert!(!err, "B handoff failed");
 
     // B reads the full ledger: sees A's entry with sender + scope.
-    let (err, text) = call!(agents[1], reader_b, "comms_read", &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, text) = call!(
+        agents[1],
+        reader_b,
+        "comms_read",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(!err, "B comms_read failed: {text}");
     assert!(
         text.contains("#1 [checkin] box-a (wtf-is-going-on-mcp/feat/comms-channels)"),
         "ledger line must carry event, sender, scope: {text}"
     );
-    assert!(text.contains("COMMSRB takes verification"), "B must decrypt own handoff: {text}");
+    assert!(
+        text.contains("COMMSRB takes verification"),
+        "B must decrypt own handoff: {text}"
+    );
 
     // A filters by event type: only the update shows, not the checkin.
     let (err, text) = call!(
@@ -1445,8 +1600,14 @@ fn comms_channels_end_to_end() {
         &format!(r#"{{"session":"{sid}","event":"update"}}"#)
     );
     assert!(!err, "filtered read failed: {text}");
-    assert!(text.contains("[update] box-b"), "filter must keep updates: {text}");
-    assert!(!text.contains("[checkin]"), "filter must drop checkins: {text}");
+    assert!(
+        text.contains("[update] box-b"),
+        "filter must keep updates: {text}"
+    );
+    assert!(
+        !text.contains("[checkin]"),
+        "filter must drop checkins: {text}"
+    );
 
     // Pagination: after seq 2 only the handoff remains.
     let (err, text) = call!(
@@ -1455,8 +1616,14 @@ fn comms_channels_end_to_end() {
         "comms_read",
         &format!(r#"{{"session":"{sid}","after":2}}"#)
     );
-    assert!(!err && text.contains("[handoff]"), "after=2 must show handoff: {text}");
-    assert!(!text.contains("COMMSRA started"), "after=2 must hide seq 1: {text}");
+    assert!(
+        !err && text.contains("[handoff]"),
+        "after=2 must show handoff: {text}"
+    );
+    assert!(
+        !text.contains("COMMSRA started"),
+        "after=2 must hide seq 1: {text}"
+    );
 
     // Fail closed: unknown event type rejected before encryption.
     let (err, text) = call!(
@@ -1465,10 +1632,18 @@ fn comms_channels_end_to_end() {
         "comms_post",
         &format!(r#"{{"session":"{sid}","event":"bogus","note":"x"}}"#)
     );
-    assert!(err && text.contains("invalid event"), "bogus event must fail: {text}");
+    assert!(
+        err && text.contains("invalid event"),
+        "bogus event must fail: {text}"
+    );
 
     // Non-member cannot read: C has no session key.
-    let (err, text) = call!(agents[2], reader_c, "comms_read", &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, text) = call!(
+        agents[2],
+        reader_c,
+        "comms_read",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(
         err && text.contains("no local session key"),
         "non-member must fail closed: {text}"
@@ -1482,7 +1657,12 @@ fn comms_channels_end_to_end() {
         &format!(r#"{{"session":"{sid}","message":"plain ping from A"}}"#)
     );
     assert!(!err);
-    let (err, text) = call!(agents[1], reader_b, "comms_read", &format!(r#"{{"session":"{sid}","after":3}}"#));
+    let (err, text) = call!(
+        agents[1],
+        reader_b,
+        "comms_read",
+        &format!(r#"{{"session":"{sid}","after":3}}"#)
+    );
     assert!(
         !err && text.contains("<plain session message> plain ping from A"),
         "plain messages must render as raw: {text}"
@@ -1497,11 +1677,15 @@ fn comms_channels_end_to_end() {
         .as_str()
         .unwrap()
         .to_string();
-    let state = wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"")
-        .unwrap();
+    let state =
+        wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"").unwrap();
     assert_eq!(state.status, 200);
     let body = state.text();
-    for secret_string in ["COMMSRA started", "COMMSRB takes verification", "secrets only in this channel"] {
+    for secret_string in [
+        "COMMSRA started",
+        "COMMSRB takes verification",
+        "secrets only in this channel",
+    ] {
         assert!(
             !body.contains(secret_string),
             "hub wire state must not carry envelope plaintext: {secret_string}"
@@ -1576,7 +1760,9 @@ fn psk_handshake_end_to_end() {
     // Happy path via the real CLI: proof computed device-side, key arrives
     // sealed and is unwrapped into bridge.json — the operator's joiner flow.
     let enroll = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["enroll", "--url", &url, "--name", "boxpsk", "--psk", &secret])
+        .args([
+            "enroll", "--url", &url, "--name", "boxpsk", "--psk", &secret,
+        ])
         .env("WTF_HOME", &dev_home)
         .output()
         .expect("wtf enroll --psk");
@@ -1593,7 +1779,10 @@ fn psk_handshake_end_to_end() {
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(bridge.get("device_name").unwrap().as_str().unwrap(), "boxpsk");
+    assert_eq!(
+        bridge.get("device_name").unwrap().as_str().unwrap(),
+        "boxpsk"
+    );
     assert_eq!(dev_key.len(), 64);
 
     // The sealed-then-unwrapped key authenticates immediately.
@@ -1661,7 +1850,10 @@ fn psk_handshake_end_to_end() {
         ov.get("ek_fp").and_then(|v| v.as_str()).is_some(),
         "psk response must carry the ek fingerprint"
     );
-    assert!(ov.get("key").is_none(), "psk mode must never return plaintext key");
+    assert!(
+        ov.get("key").is_none(),
+        "psk mode must never return plaintext key"
+    );
     assert_eq!(ov.get("device").unwrap().as_str().unwrap(), "rawpsk");
 
     // Every rejection below is the same uniform 403.
@@ -1733,7 +1925,9 @@ fn psk_handshake_end_to_end() {
     assert_ne!(secret2, secret, "rotation must mint a fresh secret");
     let dev3 = temp_home("pskdev3");
     let enroll2 = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["enroll", "--url", &url, "--name", "boxrot", "--psk", &secret2])
+        .args([
+            "enroll", "--url", &url, "--name", "boxrot", "--psk", &secret2,
+        ])
         .env("WTF_HOME", &dev3)
         .output()
         .expect("enroll with rotated secret");
@@ -1759,7 +1953,6 @@ fn psk_handshake_end_to_end() {
 /// bootstrap and general cross-machine copy/paste. A wrong key is refused
 /// with the uniform 401. Finally, an enrolled agent (device auth, no
 /// dashboard key) sees the same payload through the MCP read_bin tool.
-
 
 #[test]
 fn session_pairing_key_end_to_end() {
@@ -1802,11 +1995,21 @@ fn session_pairing_key_end_to_end() {
             .output()
             .expect("key issue");
         assert!(out.status.success());
-        let keys = wtf::json::parse(&std::fs::read_to_string(home.join("keys.json")).unwrap()).unwrap();
+        let keys =
+            wtf::json::parse(&std::fs::read_to_string(home.join("keys.json")).unwrap()).unwrap();
         let secret = keys
-            .get("devices").unwrap().as_arr().unwrap().iter()
+            .get("devices")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
             .find(|d| d.get("name").and_then(|v| v.as_str()) == Some(dev))
-            .unwrap().get("secret").unwrap().as_str().unwrap().to_string();
+            .unwrap()
+            .get("secret")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
         secrets.insert(dev.to_string(), secret);
     }
 
@@ -1848,10 +2051,15 @@ fn session_pairing_key_end_to_end() {
     }
 
     // A creates a repo-tagged chat; pairing key comes back once.
-    let (err, text) = call!(a, rd_a, "session_create",
-        r#"{"name":"cross-machine design","repo":"wtf-is-going-on-mcp"}"#);
+    let (err, text) = call!(
+        a,
+        rd_a,
+        "session_create",
+        r#"{"name":"cross-machine design","repo":"wtf-is-going-on-mcp"}"#
+    );
     assert!(!err, "session_create failed: {text}");
-    let sid = text.split_whitespace()
+    let sid = text
+        .split_whitespace()
         .find(|t| t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
         .unwrap_or_else(|| panic!("session id in create output: {text}"))
         .to_string();
@@ -1864,28 +2072,50 @@ fn session_pairing_key_end_to_end() {
     assert_eq!(pairing.len(), 64, "pairing key is 256-bit hex: {text}");
 
     // Wrong pairing key is rejected with a uniform error.
-    let (err, text) = call!(b, rd_b, "session_join",
-        &format!(r#"{{"session":"{sid}","pairing":"{}"}}"#, "f".repeat(64)));
+    let (err, text) = call!(
+        b,
+        rd_b,
+        "session_join",
+        &format!(r#"{{"session":"{sid}","pairing":"{}"}}"#, "f".repeat(64))
+    );
     assert!(err, "wrong pairing must fail: {text}");
 
     // B joins with the right pairing key.
-    let (err, text) = call!(b, rd_b, "session_join",
-        &format!(r#"{{"session":"{sid}","pairing":"{pairing}"}}"#));
+    let (err, text) = call!(
+        b,
+        rd_b,
+        "session_join",
+        &format!(r#"{{"session":"{sid}","pairing":"{pairing}"}}"#)
+    );
     assert!(!err, "pairing join failed: {text}");
 
     // A sends (auto-seal runs first) → B reads without any manual seal.
-    let (err, text) = call!(a, rd_a, "session_send",
-        &format!(r#"{{"session":"{sid}","message":"hello from the creator"}}"#));
+    let (err, text) = call!(
+        a,
+        rd_a,
+        "session_send",
+        &format!(r#"{{"session":"{sid}","message":"hello from the creator"}}"#)
+    );
     assert!(!err, "send failed: {text}");
-    let (err, text) = call!(b, rd_b, "session_read",
-        &format!(r#"{{"session":"{sid}"}}"#));
+    let (err, text) = call!(
+        b,
+        rd_b,
+        "session_read",
+        &format!(r#"{{"session":"{sid}"}}"#)
+    );
     assert!(!err, "read failed: {text}");
-    assert!(text.contains("hello from the creator"), "B reads A's message: {text}");
+    assert!(
+        text.contains("hello from the creator"),
+        "B reads A's message: {text}"
+    );
 
     // session_list shows the repo pairing.
     let (err, text) = call!(a, rd_a, "session_list", r#"{}"#);
     assert!(!err, "list failed: {text}");
-    assert!(text.contains("wtf-is-going-on-mcp"), "repo shows in list: {text}");
+    assert!(
+        text.contains("wtf-is-going-on-mcp"),
+        "repo shows in list: {text}"
+    );
 
     a.kill().unwrap();
     b.kill().unwrap();
@@ -1910,7 +2140,9 @@ fn federation_two_hub_end_to_end() {
     };
     let bind_a = format!("127.0.0.1:{}", free_port());
     let bind_b = format!("127.0.0.1:{}", free_port());
-    let spawn_hub = |home: &std::path::PathBuf, bind: &str| -> (Child, BufReader<std::process::ChildStdout>, String) {
+    let spawn_hub = |home: &std::path::PathBuf,
+                     bind: &str|
+     -> (Child, BufReader<std::process::ChildStdout>, String) {
         let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
             .args(["serve", "--bind", bind, "--no-open"])
             .env("WTF_HOME", home)
@@ -1941,10 +2173,17 @@ fn federation_two_hub_end_to_end() {
 
     // Peer B's site secret.
     let cfg_b = wtf::json::parse(
-        std::fs::read_to_string(home_b.join("config.json")).unwrap().trim(),
+        std::fs::read_to_string(home_b.join("config.json"))
+            .unwrap()
+            .trim(),
     )
     .unwrap();
-    let psk_b = cfg_b.get("enroll_secret").unwrap().as_str().unwrap().to_string();
+    let psk_b = cfg_b
+        .get("enroll_secret")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Link A -> B. One command on one side; replication must be bidirectional.
     let add = Command::new(env!("CARGO_BIN_EXE_wtf"))
@@ -1962,7 +2201,10 @@ fn federation_two_hub_end_to_end() {
     let fed_text = std::fs::read_to_string(home_a.join("federation.json")).unwrap();
     let fed_v = wtf::json::parse(fed_text.trim()).unwrap();
     let fed_name_a = fed_v.get("name").unwrap().as_str().unwrap().to_string();
-    assert!(fed_name_a.starts_with("hub-"), "hub name minted: {fed_name_a}");
+    assert!(
+        fed_name_a.starts_with("hub-"),
+        "hub name minted: {fed_name_a}"
+    );
     let peer = &fed_v.get("peers").unwrap().as_arr().unwrap()[0];
     let peer_name = peer.get("name").unwrap().as_str().unwrap().to_string();
     assert!(
@@ -1971,12 +2213,20 @@ fn federation_two_hub_end_to_end() {
     );
     let fed_dev = peer.get("device").unwrap().as_str().unwrap().to_string();
     assert_eq!(fed_dev, format!("fed-{fed_name_a}"));
-    let peer_key = peer.get("device_key").unwrap().as_str().unwrap().to_string();
+    let peer_key = peer
+        .get("device_key")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(peer_key.len(), 64, "peer issued a device key");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home_a.join("federation.json")).unwrap().permissions().mode();
+        let mode = std::fs::metadata(home_a.join("federation.json"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "federation.json is 0600");
     }
 
@@ -2036,9 +2286,19 @@ fn federation_two_hub_end_to_end() {
         .spawn()
         .unwrap();
     let mut rd_a = BufReader::new(ag_a.stdout.take().unwrap());
-    rpc_write(&mut ag_a, r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"working","task":"repo alpha work","repo":"repo-alpha"}}}"#);
+    rpc_write(
+        &mut ag_a,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"working","task":"repo alpha work","repo":"repo-alpha"}}}"#,
+    );
     let r = rpc_read(&mut rd_a);
-    assert_ne!(r.get("result").unwrap().get("isError").and_then(|v| v.as_bool()), Some(true), "agent-a check-in");
+    assert_ne!(
+        r.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "agent-a check-in"
+    );
 
     let mut ag_b = Command::new(env!("CARGO_BIN_EXE_wtf"))
         .args(["agent"])
@@ -2052,9 +2312,19 @@ fn federation_two_hub_end_to_end() {
         .spawn()
         .unwrap();
     let mut rd_b = BufReader::new(ag_b.stdout.take().unwrap());
-    rpc_write(&mut ag_b, r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"blocked","task":"repo beta work","repo":"repo-beta","details":"waiting on tests"}}}"#);
+    rpc_write(
+        &mut ag_b,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_in","arguments":{"status":"blocked","task":"repo beta work","repo":"repo-beta","details":"waiting on tests"}}}"#,
+    );
     let r = rpc_read(&mut rd_b);
-    assert_ne!(r.get("result").unwrap().get("isError").and_then(|v| v.as_bool()), Some(true), "agent-b check-in");
+    assert_ne!(
+        r.get("result")
+            .unwrap()
+            .get("isError")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "agent-b check-in"
+    );
 
     // Wait for replication both ways (2s poll loop; cadence is immediate on
     // generation bump and the sweep runs every 30s worst-case; first push
@@ -2085,8 +2355,14 @@ fn federation_two_hub_end_to_end() {
         }
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
-    assert!(saw_b_on_a, "hub A ledger carries hub B's agent (origin-tagged)");
-    assert!(saw_a_on_b, "hub B ledger carries hub A's agent (origin-tagged)");
+    assert!(
+        saw_b_on_a,
+        "hub A ledger carries hub B's agent (origin-tagged)"
+    );
+    assert!(
+        saw_a_on_b,
+        "hub B ledger carries hub A's agent (origin-tagged)"
+    );
 
     ag_a.kill().unwrap();
     ag_b.kill().unwrap();

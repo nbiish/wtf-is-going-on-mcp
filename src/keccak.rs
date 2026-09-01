@@ -20,12 +20,30 @@ const RHO: [[u32; 5]; 5] = [
 
 /// Round constants RC[i] for iota.
 const RC: [u64; ROUNDS] = [
-    0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
-    0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
-    0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
-    0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
-    0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
-    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+    0x0000000000000001,
+    0x0000000000008082,
+    0x800000000000808a,
+    0x8000000080008000,
+    0x000000000000808b,
+    0x0000000080000001,
+    0x8000000080008081,
+    0x8000000000008009,
+    0x000000000000008a,
+    0x0000000000000088,
+    0x0000000080008009,
+    0x000000008000000a,
+    0x000000008000808b,
+    0x800000000000008b,
+    0x8000000000008089,
+    0x8000000000008003,
+    0x8000000000008002,
+    0x8000000000000080,
+    0x000000000000800a,
+    0x800000008000000a,
+    0x8000000080008081,
+    0x8000000000008080,
+    0x0000000080000001,
+    0x8000000080008008,
 ];
 
 /// One Keccak-f[1600] permutation of the 25-lane state (in place).
@@ -89,7 +107,7 @@ const fn rate_bytes(strength: u32) -> usize {
         224 => 144,
         256 => 136, // SHA3-256 / SHAKE256: rate 1088 bits
         384 => 104,
-        512 => 72,  // SHA3-512: rate 576 bits
+        512 => 72, // SHA3-512: rate 576 bits
         _ => unreachable!(),
     }
 }
@@ -97,15 +115,21 @@ const fn rate_bytes(strength: u32) -> usize {
 /// Sponge state shared by all SHA3/SHAKE modes.
 pub struct Keccak {
     state: [u64; 25],
-    rate: usize,      // bytes absorbed per permutation
-    pad: u8,          // domain suffix: 0x06 SHA3, 0x1f SHAKE
-    pos: usize,       // bytes absorbed into the current block
-    squeeze: bool,    // true once in squeezing phase
+    rate: usize,   // bytes absorbed per permutation
+    pad: u8,       // domain suffix: 0x06 SHA3, 0x1f SHAKE
+    pos: usize,    // bytes absorbed into the current block
+    squeeze: bool, // true once in squeezing phase
 }
 
 impl Keccak {
     fn new(rate: usize, pad: u8) -> Keccak {
-        Keccak { state: [0u64; 25], rate, pad, pos: 0, squeeze: false }
+        Keccak {
+            state: [0u64; 25],
+            rate,
+            pad,
+            pos: 0,
+            squeeze: false,
+        }
     }
 
     /// SHA3-256 (FIPS 202): 1088-bit rate, 0x06 domain suffix.

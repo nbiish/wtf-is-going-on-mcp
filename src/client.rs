@@ -69,7 +69,8 @@ pub fn request(
     let (host, port) = match hostport.rsplit_once(':') {
         Some((h, p)) => (
             h,
-            p.parse::<u16>().map_err(|_| format!("bad port in '{hostport}'"))?,
+            p.parse::<u16>()
+                .map_err(|_| format!("bad port in '{hostport}'"))?,
         ),
         None => (hostport, 80),
     };
@@ -135,7 +136,11 @@ pub fn request(
         body_bytes.truncate(n.min(body_bytes.len()));
     }
 
-    Ok(ClientResponse { status, headers: resp_headers, body: body_bytes })
+    Ok(ClientResponse {
+        status,
+        headers: resp_headers,
+        body: body_bytes,
+    })
 }
 
 /// GET returning (status, text) — convenience for probes.
@@ -155,10 +160,7 @@ mod tests {
         assert!(chunked_decode(b"4\r\nWik").is_none());
         assert_eq!(chunked_decode(b"0\r\n\r\n").unwrap(), Vec::<u8>::new());
         let with_ext = b"a;ext=1\r\n0123456789\r\n0\r\n\r\n";
-        assert_eq!(
-            chunked_decode(with_ext).unwrap(),
-            b"0123456789".to_vec()
-        );
+        assert_eq!(chunked_decode(with_ext).unwrap(), b"0123456789".to_vec());
     }
 
     #[test]

@@ -180,7 +180,10 @@ mod tests {
         let key = k32("0000000000000000000000000000000000000000000000000000000000000000");
         let nonce = n12("000000000000000000000000");
         let out = seal(&key, &nonce, b"", b"");
-        assert_eq!(crate::util::hex_encode(&out), "530f8afbc74536b9a963b4f1c4cb738b");
+        assert_eq!(
+            crate::util::hex_encode(&out),
+            "530f8afbc74536b9a963b4f1c4cb738b"
+        );
     }
 
     /// Test Case 2: one zero block, empty AAD.
@@ -210,8 +213,7 @@ mod tests {
         let out = seal(&key, &nonce, &aad, &pt);
         assert_eq!(
             crate::util::hex_encode(&out),
-            "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa"
-                .to_owned()
+            "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa".to_owned()
                 + "8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662898015a"
                 + "d2df7cd675b4f09163b41ebf980a7f638"
         );

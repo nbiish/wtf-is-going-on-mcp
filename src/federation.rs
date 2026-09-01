@@ -284,8 +284,7 @@ mod tests {
         assert_eq!(origin, "hub-a");
         assert_eq!(events.len(), 1);
         assert!(parse_push(&Value::obj(vec![])).is_err());
-        let no_events =
-            json::parse(r#"{"origin":"hub-a"}"#).unwrap();
+        let no_events = json::parse(r#"{"origin":"hub-a"}"#).unwrap();
         assert!(parse_push(&no_events).is_err());
     }
 }
