@@ -12,3 +12,6 @@ Format (append-only, one line per CLI):
 - 2026-09-01T17:45:32Z omp@mac: headless append verified via omp CLI
 - 2026-09-01T17:45:58Z hermes@mac: headless append verified via hermes CLI
 - 2026-09-01T17:53:24Z fcc-claude@mac: headless append verified via fcc-claude through tmux freeclaude-wtf-mcp
+- 2026-09-01T18:18:40Z omp@windows: headless append verified via omp CLI
+- 2026-09-01T18:25:06Z hermes@windows: headless append verified via hermes CLI
+- 2026-09-01T18:25:29Z fcc-claude@windows: headless append verified via fcc-claude
