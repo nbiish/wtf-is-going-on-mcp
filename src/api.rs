@@ -1382,7 +1382,12 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
                 Ok(v) => v,
                 Err(r) => return r,
             };
-            if let Some(spawn) = body.get("spawn").and_then(|x| x.as_str()) {
+            let spawn_req = body.get("spawn").map(|x| match x {
+                Value::Str(s) => Some(s.clone()),
+                Value::Bool(true) => Some(String::new()),
+                _ => None,
+            }).unwrap_or(None);
+            if let Some(_spawn_cmd) = spawn_req {
                 // Create the session if absent (mirrors executor reuse rule).
                 let exists = std::process::Command::new("tmux")
                     .args(["has-session", "-t", &name])
@@ -1399,7 +1404,6 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
                         return Response::error(500, "cannot create tmux session");
                     }
                 }
-                let _ = spawn; // reserved: initial command (unused today)
                 return Response::json(200, &Value::obj(vec![("ok", Value::from(true)), ("session", Value::from(name.as_str()))]));
             }
             let Some(keys) = body.get("keys").and_then(|x| x.as_str()) else {
