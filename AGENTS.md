@@ -127,6 +127,23 @@ coordination is OPERATIONAL. Both agents work from the same remote
 that chat: `comms_post`/`session_send` there, not the older
 `mac-win-pipeline` channel.
 
+**Latest (v0.14.0, dashboard chats + per-chat executor, 2026-09-01):** the dashboard
+gains a SESSIONS card — `/api/v1/state` carries a `sessions` array (id, name, repo,
+members, msg_count; metadata only) and clicking a chat opens its viewer (member-encrypted
+bodies stay opaque to the hub). The executor ships as MCP tools `chat_run`/`chat_sessions`
+(20 tools total): each dispatched task maps to ONE persistent tmux session
+`wtf-chat-<slug>` and runs the omp → hermes → fcc-claude fallback chain
+(first installed + exit-0 wins, trace names the lane; E2E receipt CHAT-RUN-E2E-OK).
+
+**SINGULAR MODEL SYSTEM (operator, 2026-09-01 — DONE both machines):** every agent
+harness (omp, hermes, fcc-claude, real ollama CLI) points at the LOCAL ROUTER —
+`local-router/fallback-models` on the Ollama-compatible port 11434 — so all agents
+on all machines share one iterable model system. Receipts: OMP/HERMES/FCC-ROUTER-OK on
+mac; OMP3/HERMES3/FCC3/OLLAMA3-OK on windows. Cross-machine key/config transfer runs
+through PQC envelopes (`pqc-secrets envelope export|import`, now cross-platform in the
+local-router py engine @ a6154e0; 17 keys delivered mac→windows, recipient fingerprint
+verified). Federation log-echo defect FIXED en route (43bced1, v0.13.2).
+
 **Machine-2 status (windows, updated 2026-09-01):** both hubs + bridges on
 0.13.1; same-remote parity holds (`origin/main` matching heads). Headless
 chain verified END-TO-END by the MAC-TO-WINDOWS append test
@@ -146,16 +163,16 @@ replicate, peers re-log them (~20 events/min flooding the 1000-event
 ring). Fix proposal: suppress when only federation-kind events ingested +
 per-peer throttle.
 
-**NEXT FOCUS (operator, 2026-09-01):** the wtf federated comms layer is
-functionally complete — this repo shifts to MAINTENANCE (the federation
-log-echo fix above is the known code debt). The next build priority is the
-separate LOCAL ROUTER project (`/mnt/d/Code/local-router`): one localhost
-port (Ollama-compatible 11434 surface) routing every model, targeting
-cross-architecture binaries and a troubleshooting lane. This repo's ties:
-agents coordinate router work through the federated chats; machine env
-facts (router ports, binaries) surface via `env_report`/`env_probe`; the
-dead-port incident above is the first router-adjacent troubleshooting
-entry. Router work happens in ITS repo with its own worktree gates.
+**NEXT FOCUS (operator, 2026-09-01):** the federated chat system is the operating
+control plane — from ONE chat (dashboard-clickable) the operator dispatches agentic
+tasks to any connected machine, each machine’s executor runs them in its tmux
+harness session (fallback chain), and work is visible live (dashboard + `tmux attach`).
+Ongoing goals: keep the singular model system (local-router fallback chain) healthy on
+all machines — interruptions are router troubleshooting items, not harness changes;
+onboard new machines/repos through the chat (session_create + pairing key + enroll);
+keep windows-1’s pqc-secrets current (pull local-router main for the py envelope
+signature-verify engine). Maintenance debt in THIS repo: none open; router work stays in
+its repo.
 
 **Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
 three paste-bins into the operator's copy/paste channel between machines and
