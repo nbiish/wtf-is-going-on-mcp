@@ -138,3 +138,48 @@ the right chat instantly.
   auto-seal → cross-agent message read → repo visible in session_list).
 - [x] cargo build --release clean (wtf 0.12.0).
 - [x] Secret/banned-algo/CJK greps: clean (run pre-merge).
+
+## Post-merge bring-up record (machine 1, 2026-08-31)
+
+Both releases merged to main (v0.11.0 `595f05c`, v0.12.0 `b9e357b`),
+pushed, tagged `v0.12.0`. Mac hub live on 0.12.0 (state intact across
+restart; capability URL stable). Worktrees + branches cleaned. SKILL.md
+mirror synced to ainish-coder (byte-identical, pushed).
+
+### Cross-machine bring-up sequence (the 1-2-3)
+
+Prerequisite on machine 2 first: `git pull origin main && cargo build
+--release && install -m755 target/release/wtf ~/.local/bin/wtf`, then
+restart its hub + bridges (a stale bridge serves stale tools).
+
+1. **Enroll windows-1 on the Mac hub** — operator runs `wtf
+   enroll-secret` on the Mac and hands the printed command to machine 2:
+   `wtf enroll --url http://192.168.1.68:7800 --name windows-1 --psk
+   <secret>`. The secret never crosses the wire (HMAC proof); clocks
+   must agree within ±5 min; `wtf enroll-secret --rotate` kills every
+   outstanding copy.
+2. **Federate the two hubs** — machine 2: `wtf enroll-secret` (its own
+   site secret); Mac: `wtf federate add win --url http://<win-ip>:7800
+   --psk <win site secret>`, then restart the Mac hub. Both ledgers
+   replicate both ways (push-on-append + 10 s anti-entropy; dedupe on
+   origin+origin_id).
+3. **Connect the agents** — an agent creates a repo-tagged chat:
+   `session_create {name, repo}` (pairing key returned once; also
+   re-printable with `wtf sessions` on the creator machine). Joiner:
+   `session_join {session, pairing}` — auto-seal delivers the session
+   key; no manual seal round-trip. Verify: `wtf status` on both machines
+   shows both agents; `session_list` shows the chat under its repo.
+
+### Same-remote verification (both agents, after step 3)
+
+Each agent: `git rev-parse HEAD` on main must match on both machines
+(`b9e357b` or later); `wtf status` shows the other agent present;
+`wtf_is_going_on` returns both; a `comms_post`/`comms_read` round-trip
+in the shared chat works; `session_list` shows the same chats + repos on
+both sides. Any mismatch = stale pull/build — re-run the prerequisite.
+
+### Verification receipt (machine 1, live)
+
+- `/healthz` → 0.12.0; `wtf sessions` lists existing chats with repos;
+  `wtf dashboard-url` prints the loopback capability URL (unchanged
+  across restarts); 100 unit + 13 e2e green on main.
