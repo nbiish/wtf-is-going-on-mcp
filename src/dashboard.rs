@@ -197,29 +197,68 @@ async function openSession(id){
       +'<div id="feed">'+viewRows+'</div>'
       +'<h2 style="font-size:13px;margin:14px 0 4px">terminal — '+esc(termName)+' (this machine)</h2>'
       +'<div class="row"><input id="cmd" placeholder="type a command for the agent terminal, Enter sends"/><button id="send">send</button><span id="tstat" class="dim"></span></div>'
-      +'<div id="term">loading pane…</div>'
-      +'<script id="viewer-init">'
-      +'const TERM='+JSON.stringify(termName)+';const AUTH='+JSON.stringify(AUTH)+';'
-      +'async function poll(){try{const r=await fetch("/api/v1/term/"+TERM+"?lines=400&"+AUTH);if(r.ok){const j=await r.json();document.getElementById("term").textContent=j.pane||"(empty pane)";document.getElementById("tstat").textContent="live";}else{const e=await r.json().catch(()=>({}));document.getElementById("tstat").textContent=e.error||("HTTP "+r.status);if(String(e.error||"").includes("not found")){await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spawn:true})});}}}catch(e){document.getElementById("tstat").textContent=String(e);}setTimeout(poll,2000);}'
-      +'async function sendCmd(){const c=document.getElementById("cmd");const v=c.value.trim();if(!v)return;try{await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys:v})});c.value="";setTimeout(poll,400);}catch(e){document.getElementById("tstat").textContent=String(e);}}'
-      +'document.getElementById("send").addEventListener("click",sendCmd);'
-      +'document.getElementById("cmd").addEventListener("keydown",e=>{if(e.key==="Enter")sendCmd();});'
-      +'document.getElementById("scopesave").addEventListener("click",async()=>{const v=document.getElementById("scope").value;const r=await fetch("/api/v1/sessions/'+id+'/scope?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo:v})});const j=await r.json().catch(()=>({}));document.getElementById("scopestat").textContent=r.ok?"saved":(j.error||("HTTP "+r.status));});'
-      +'poll();'
-      +'<\/script></body></html>';
+      +'<div id="term">loading pane…</div></body></html>';
     w.document.write(doc);
     w.document.close();
-    // Some browsers don't execute document.write-injected inline scripts into an
-    // about:blank window reliably (observed: script in DOM, never ran). Re-arm the
-    // script by cloning its body into a fresh node — this always executes.
-    try{
-      const written = w.document.getElementById("viewer-init");
-      if (written && typeof w.TERM === "undefined") {
-        const s = w.document.createElement("script");
-        s.textContent = written.textContent;
-        w.document.body.appendChild(s);
+    // Opener-driven viewer (fix): document.write-injected inline scripts do not
+    // execute reliably in the written window (observed across browsers), so the
+    // OPENER owns the logic — the viewer window is a pure display. The poll
+    // loop, send, auto-spawn, and scope save all run here, driving the viewer's
+    // DOM through `w`. The opener page has a live JS context and the same
+    // origin, so this is robust by construction.
+    const vdoc = w.document;
+    let dead = false;
+    w.addEventListener("unload", () => { dead = true; });
+    async function vpoll(){
+      if (dead) return;
+      try{
+        const r = await fetch("/api/v1/term/"+termName+"?lines=400&"+AUTH);
+        if (r.ok) {
+          const j = await r.json();
+          const t = vdoc.getElementById("term");
+          if (t) { t.textContent = j.pane || "(empty pane)"; t.scrollTop = t.scrollHeight; }
+          const st = vdoc.getElementById("tstat");
+          if (st) st.textContent = "live";
+        } else {
+          const ej = await r.json().catch(()=>({}));
+          const st = vdoc.getElementById("tstat");
+          if (st) st.textContent = ej.error || ("HTTP "+r.status);
+          if (String(ej.error||"").includes("not found")) {
+            await fetch("/api/v1/term/"+termName+"?"+AUTH, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({spawn:true})});
+          }
+        }
+      }catch(e){
+        const st = vdoc.getElementById("tstat");
+        if (st) st.textContent = String(e);
       }
-    }catch(_){}
+      if (!dead) setTimeout(vpoll, 2000);
+    }
+    vpoll();
+    async function vsend(){
+      const c = vdoc.getElementById("cmd");
+      const v = c ? c.value.trim() : "";
+      if (!v) return;
+      try{
+        await fetch("/api/v1/term/"+termName+"?"+AUTH, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({keys: v})});
+        c.value = "";
+        setTimeout(vpoll, 400);
+      }catch(e){
+        const st = vdoc.getElementById("tstat");
+        if (st) st.textContent = String(e);
+      }
+    }
+    const sendBtn = vdoc.getElementById("send");
+    const cmdInput = vdoc.getElementById("cmd");
+    if (sendBtn) sendBtn.addEventListener("click", vsend);
+    if (cmdInput) cmdInput.addEventListener("keydown", e => { if (e.key === "Enter") vsend(); });
+    const scopeBtn = vdoc.getElementById("scopesave");
+    if (scopeBtn) scopeBtn.addEventListener("click", async () => {
+      const v = vdoc.getElementById("scope").value;
+      const r = await fetch("/api/v1/sessions/"+encodeURIComponent(id)+"/scope?"+AUTH, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({repo: v})});
+      const j = await r.json().catch(()=>({}));
+      const st = vdoc.getElementById("scopestat");
+      if (st) st.textContent = r.ok ? "saved" : (j.error || ("HTTP "+r.status));
+    });
   }catch(e){
     try{w.document.write('<body style="background:#0b0e14;color:#d7dde8;font:14px ui-monospace">chat open failed: '+esc(String(e.message||e))+' <a style="color:#4aa3ff" href="javascript:location.reload()">retry</a></body>');w.document.close();}catch(_){}
   }
