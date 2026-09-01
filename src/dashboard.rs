@@ -175,7 +175,10 @@ async function openSession(id){
       +'input#cmd{width:70%;background:#0d1320;color:#d7dde8;border:1px solid #233152;border-radius:6px;padding:6px 8px;font:13px ui-monospace,monospace}'
       +'button{background:#16345c;color:#d7dde8;border:0;border-radius:6px;padding:6px 14px;cursor:pointer}'
       +'.row{display:flex;gap:8px;align-items:center}</style></head><body>'
-      +'<h1>💬 '+esc(s.name||id)+'</h1><div class="dim">repo '+(s.repo?esc(s.repo):'-')+' · members: '+esc((s.members||[]).map(m=>m.device).join(", ")||"-")+'</div>'
+      +'<h1>💬 '+esc(s.name||id)+'</h1>'
+      +'<div class="row"><span class="dim">scope</span><input id="scope" value="'+esc(s.repo||'')+'" placeholder="repo-a+repo-b@machine1+machine2" style="width:40%;background:#0d1320;color:#4aa3ff;border:1px solid #234;border-radius:10px;padding:2px 8px;font:12px ui-monospace"/>'
+      +'<button id="scopesave" style="padding:2px 10px;font-size:12px">save scope</button><span id="scopestat" class="dim"></span></div>'
+      +'<div class="dim">members: '+esc((s.members||[]).map(m=>m.device).join(", ")||"-")+'</div>'
       +'<div id="feed">'+viewRows+'</div>'
       +'<h2 style="font-size:13px;margin:14px 0 4px">terminal — '+esc(termName)+' (this machine)</h2>'
       +'<div class="row"><input id="cmd" placeholder="type a command for the agent terminal, Enter sends"/><button id="send">send</button><span id="tstat" class="dim"></span></div>'
@@ -184,9 +187,8 @@ async function openSession(id){
       +'const TERM='+JSON.stringify(termName)+';const AUTH='+JSON.stringify(AUTH)+';'
       +'async function poll(){try{const r=await fetch("/api/v1/term/"+TERM+"?lines=400&"+AUTH);if(r.ok){const j=await r.json();document.getElementById("term").textContent=j.pane||"(empty pane)";document.getElementById("tstat").textContent="live";}else{const e=await r.json().catch(()=>({}));document.getElementById("tstat").textContent=e.error||("HTTP "+r.status);}}catch(e){document.getElementById("tstat").textContent=String(e);}setTimeout(poll,2000);}'
       +'poll();'
-      +'async function sendCmd(){const c=document.getElementById("cmd").value;if(!c)return;await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys:c})});document.getElementById("cmd").value="";setTimeout(poll,400);}'
-      +'document.getElementById("send").addEventListener("click",sendCmd);'
       +'document.getElementById("cmd").addEventListener("keydown",e=>{if(e.key==="Enter")sendCmd();});'
+      +'document.getElementById("scopesave").addEventListener("click",async()=>{const v=document.getElementById("scope").value;const r=await fetch("/api/v1/sessions/'+id+'/scope?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo:v})});const j=await r.json().catch(()=>({}));document.getElementById("scopestat").textContent=r.ok?"saved":(j.error||("HTTP "+r.status));});'
       +'<\/script></body></html>';
     w.document.write(doc);
     w.document.close();

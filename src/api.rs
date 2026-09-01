@@ -986,6 +986,28 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                 Err(e) => Response::error(400, &e),
             }
         }
+        ("POST", "scope") => {
+            // Chat-as-project scope labels (operator directive): a chat may
+            // span several repos/machines. The repo field carries a free
+            // scope string ("repo-a+repo-b@mac+win"); the dashboard renders
+            // it as chips. Dashboard-key or device auth (member) may set it.
+            let is_dash = dash_ok(hub, req) || term_allowed(hub, req);
+            let member = device_auth(hub, req).ok();
+            if !is_dash && member.is_none() {
+                return Response::error(401, "operator or member auth required");
+            }
+            let body = match parse_body(req) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
+            let Some(repo) = body.get("repo").and_then(|v| v.as_str()) else {
+                return Response::error(400, "missing 'repo' scope label");
+            };
+            match hub.sessions.set_repo(id, repo) {
+                Ok(()) => Response::json(200, &Value::obj(vec![("ok", Value::from(true))])),
+                Err(e) => Response::error(400, &e),
+            }
+        }
         ("GET", "view") => {
             // Operator chat viewer (v0.15.0, operator directive): the
             // dashboard-key holder may read decrypted chat bodies. The
