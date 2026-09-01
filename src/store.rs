@@ -273,6 +273,7 @@ impl Store {
         details: &str,
         repo: &str,
         bump_agent: bool,
+        quiet: bool,
     ) -> Event {
         let ts = now_secs();
         let mut inner = self.inner.lock().unwrap();
@@ -336,6 +337,14 @@ impl Store {
                 }
             }
         }
+        // Quiet events (heartbeats, replication churn) update agent
+        // presence but never enter the ring, the dashboard feed, or the
+        // log file — operator directive: the dashboard shows work, not
+        // connection noise; disk keeps only troubleshooting-worthy logs.
+        if quiet {
+            drop(inner);
+            return ev;
+        }
         inner.events.push_back(ev.clone());
         while inner.events.len() > MAX_EVENTS_IN_MEMORY {
             inner.events.pop_front();
@@ -366,6 +375,7 @@ impl Store {
             details,
             repo,
             true,
+            false,
         )
     }
 
@@ -378,7 +388,7 @@ impl Store {
         repo: &str,
     ) -> Event {
         self.record(
-            "event", device, agent, level, message, "", "", "", repo, true,
+            "event", device, agent, level, message, "", "", "", repo, true, false,
         )
     }
 
@@ -393,6 +403,7 @@ impl Store {
             "",
             "",
             "",
+            true,
             true,
         );
     }
@@ -617,9 +628,11 @@ mod tests {
         assert_eq!(agents[0].status, "working"); // heartbeat touches last_seen only
         assert_eq!(agents[0].task, "build hub");
         assert_eq!(agents[0].repo, "wtf");
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[2].message, "heartbeat");
-        assert!(s.generation() >= 4);
+        // v0.15.0: heartbeats are quiet — they update presence but never
+        // enter the ring, the feed, or the log.
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].message, "clippy unhappy");
+        assert!(s.generation() >= 3);
         std::fs::remove_dir_all(&d).ok();
     }
 

@@ -201,7 +201,8 @@ async function openSession(id){
       +'<script>'
       +'const TERM='+JSON.stringify(termName)+';const AUTH='+JSON.stringify(AUTH)+';'
       +'async function poll(){try{const r=await fetch("/api/v1/term/"+TERM+"?lines=400&"+AUTH);if(r.ok){const j=await r.json();document.getElementById("term").textContent=j.pane||"(empty pane)";document.getElementById("tstat").textContent="live";}else{const e=await r.json().catch(()=>({}));document.getElementById("tstat").textContent=e.error||("HTTP "+r.status);if(String(e.error||"").includes("not found")){await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spawn:true})});}}}catch(e){document.getElementById("tstat").textContent=String(e);}setTimeout(poll,2000);}'
-      +'poll();'
+      +'async function sendCmd(){const c=document.getElementById("cmd");const v=c.value.trim();if(!v)return;try{await fetch("/api/v1/term/"+TERM+"?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys:v})});c.value="";setTimeout(poll,400);}catch(e){document.getElementById("tstat").textContent=String(e);}}'
+      +'document.getElementById("send").addEventListener("click",sendCmd);'
       +'document.getElementById("cmd").addEventListener("keydown",e=>{if(e.key==="Enter")sendCmd();});'
       +'document.getElementById("scopesave").addEventListener("click",async()=>{const v=document.getElementById("scope").value;const r=await fetch("/api/v1/sessions/'+id+'/scope?"+AUTH,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo:v})});const j=await r.json().catch(()=>({}));document.getElementById("scopestat").textContent=r.ok?"saved":(j.error||("HTTP "+r.status));});'
       +'<\/script></body></html>';

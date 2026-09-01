@@ -159,7 +159,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 20);
+    assert_eq!(tools.len(), 21); // +chat_session_lifecycle (v0.15.0)
 
     rpc_write(
         &mut agent,

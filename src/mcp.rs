@@ -913,6 +913,31 @@ impl Bridge {
                     ]),
                 ),
             ]),
+            Value::obj(vec![
+                ("name", Value::from("chat_session_lifecycle")),
+                ("description", Value::from(
+                    "Lifecycle control for this machine's executor tmux sessions (wtf-chat-*): action=open (create if missing), close (graceful exit + kill), reconnect (kill + fresh session), delete (kill + drop exec state). Lifecycle contract for every agent connection: open a session when work starts, close or delete it when done, reconnect on a hung pane.",
+                )),
+                ("inputSchema", Value::obj(vec![
+                    ("type", Value::from("object")),
+                    ("properties", Value::obj(vec![
+                        ("session", Value::obj(vec![
+                            ("type", Value::from("string")),
+                            ("description", Value::from("session name (wtf-chat-<slug>) or bare chat slug")),
+                        ])),
+                        ("action", Value::obj(vec![
+                            ("type", Value::from("string")),
+                            ("enum", Value::arr(vec![Value::from("open"), Value::from("close"), Value::from("reconnect"), Value::from("delete")])),
+                        ])),
+                        ("workdir", Value::obj(vec![
+                            ("type", Value::from("string")),
+                            ("description", Value::from("optional working directory for open/reconnect (default: cwd)")),
+                        ])),
+                    ])),
+                    ("required", Value::arr(vec![Value::from("session"), Value::from("action")])),
+                    ("additionalProperties", Value::from(false)),
+                ])),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -951,6 +976,7 @@ impl Bridge {
             "comms_read" => self.tool_comms_read(args),
             "chat_run" => self.tool_chat_run(args),
             "chat_sessions" => self.tool_chat_sessions(),
+            "chat_session_lifecycle" => self.tool_chat_session_lifecycle(args),
             other => (format!("unknown tool: {other}"), true),
         }
     }
@@ -2121,6 +2147,63 @@ impl Bridge {
             ));
         }
         (out, false)
+    }
+
+    /// chat_session_lifecycle { session, action, workdir? }: open / close /
+    /// reconnect / delete an executor tmux session (wtf-chat-* only). The
+    /// lifecycle contract for every agent connection: open on work start,
+    /// close/delete when done, reconnect on a hung pane.
+    fn tool_chat_session_lifecycle(&self, args: &Value) -> (String, bool) {
+        let Some(session) = arg_str(args, "session") else {
+            return ("missing required argument: session".into(), true);
+        };
+        let Some(action) = arg_str(args, "action") else {
+            return ("missing required argument: action".into(), true);
+        };
+        let name = if session.starts_with(crate::executor::SESSION_PREFIX) {
+            session.to_string()
+        } else {
+            format!("{}-{}", crate::executor::SESSION_PREFIX, crate::executor::slugify(session))
+        };
+        if !name.starts_with("wtf-chat-") || name.len() > 48 {
+            return (format!("invalid session name: {name} (wtf-chat-* only)"), true);
+        }
+        let tmux = |a: &[&str]| -> bool {
+            std::process::Command::new("tmux").args(a).status().map(|s| s.success()).unwrap_or(false)
+        };
+        let exists = tmux(&["has-session", "-t", &name]);
+        match action {
+            "open" => {
+                if exists {
+                    return (format!("{name}: already open (live)"), false);
+                }
+                let wd = arg_str(args, "workdir").unwrap_or(".");
+                let ok = tmux(&["new-session", "-d", "-s", &name, "-c", wd]);
+                if ok { (format!("{name}: opened (workdir {wd})"), false) } else { (format!("{name}: open failed (tmux missing?)"), true) }
+            }
+            "close" => {
+                if !exists { return (format!("{name}: not running"), false); }
+                tmux(&["send-keys", "-t", &name, "C-d"]);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let gone = !tmux(&["has-session", "-t", &name]);
+                if !gone { let _ = tmux(&["kill-session", "-t", &name]); }
+                (format!("{name}: closed"), false)
+            }
+            "reconnect" => {
+                if exists { let _ = tmux(&["kill-session", "-t", &name]); }
+                let wd = arg_str(args, "workdir").unwrap_or(".");
+                let ok = tmux(&["new-session", "-d", "-s", &name, "-c", wd]);
+                if ok { (format!("{name}: reconnected (fresh session, workdir {wd})"), false) } else { (format!("{name}: reconnect failed"), true) }
+            }
+            "delete" => {
+                if exists { let _ = tmux(&["kill-session", "-t", &name]); }
+                let slug = crate::executor::slugify(&name);
+                let _ = std::fs::remove_file(format!("/tmp/wtf-chat-exec-{slug}.log"));
+                let _ = std::fs::remove_file(format!("/tmp/wtf-chat-exec-{slug}.code"));
+                (format!("{name}: deleted (session + exec state)"), false)
+            }
+            other => (format!("invalid action: {other} (open|close|reconnect|delete)"), true),
+        }
     }
 }
 
