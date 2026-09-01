@@ -42,6 +42,7 @@ fn run() -> i32 {
         Some("enroll") => cmd_enroll(&args[1..]),
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
         Some("bin") => cmd_bin(&args[1..]),
+        Some("sessions") => cmd_sessions(&args[1..]),
         Some("federate") => cmd_federate(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
@@ -83,6 +84,7 @@ fn print_help() {
     println!("  wtf bin put N TEXT|--file F|- [--url U] [--k K]   write a bin (dashboard-key gated)");
     println!("  wtf federate add <name> --url URL --psk SECRET [--as DEV]  link a peer hub (one secret copy per edge)");
     println!("  wtf federate list                         show the federation peer table");
+    println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
     println!("  wtf federate remove <name>                unlink a peer hub");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
@@ -735,6 +737,121 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
     println!("  wtf enroll --url {url} --name DEVICE --psk {secret}");
     println!();
     println!("rotate with `wtf enroll-secret --rotate` to invalidate every outstanding copy.");
+    0
+}
+
+/// Operator session-chat view: lists every chat on the hub (id, name,
+/// paired repo, members, messages) so the operator can see which chat maps
+/// to which repo and hand out pairing keys. On the machine that CREATED a
+/// chat (the creator's session_keys.json holds its pairing key), the local
+/// pairing keys are printed too — that is the key the operator copies to
+/// the other machine/agent. Hub URL + key resolve like `wtf bin`.
+fn cmd_sessions(args: &[String]) -> i32 {
+    let rest = &args[..];
+    let url_flag = flag_value(rest, "--url");
+    let k_flag = flag_value(rest, "--k");
+    let home = config::home();
+    let hub_url = match url_flag {
+        Some(u) => Some(u.trim_end_matches('/').to_string()),
+        None => match std::env::var("WTF_HUB_URL") {
+            Ok(u) if !u.trim().is_empty() => Some(u.trim().trim_end_matches('/').to_string()),
+            _ => {
+                let bridge = home.join("bridge.json");
+                let cfg = home.join("config.json");
+                if bridge.exists() {
+                    read_json_field(&bridge, "hub_url")
+                } else if cfg.exists() {
+                    HubConfig::load_or_create_at(&cfg).map(|c| c.lan_url()).ok()
+                } else {
+                    None
+                }
+            }
+        },
+    };
+    let Some(hub_url) = hub_url else {
+        eprintln!("error: no hub URL: pass --url, set WTF_HUB_URL, or run where bridge.json/config.json exists");
+        return 2;
+    };
+    let key = match k_flag {
+        Some(k) => Some(k),
+        None => match std::env::var("WTF_DASHBOARD_KEY") {
+            Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
+            _ => {
+                let cfg = home.join("config.json");
+                if cfg.exists() {
+                    read_json_field(&cfg, "dashboard_key")
+                } else {
+                    None
+                }
+            }
+        },
+    };
+    let Some(key) = key else {
+        eprintln!("error: no dashboard key: pass --k or set WTF_DASHBOARD_KEY");
+        return 2;
+    };
+    let resp = match client::request(
+        &format!("{hub_url}/api/v1/sessions?k={key}"),
+        "GET",
+        &[],
+        b"",
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: cannot reach hub: {e}");
+            return 1;
+        }
+    };
+    if resp.status != 200 {
+        eprintln!("error: hub refused (HTTP {}): {}", resp.status, resp.text().trim());
+        return 1;
+    }
+    let Some(v) = resp.json() else {
+        eprintln!("error: hub returned a non-JSON response");
+        return 1;
+    };
+    // Local pairing keys (creator machine only; file is 0600).
+    let local_pairings: Vec<(String, String)> = crate::config::load_json(&home.join("session_keys.json"))
+        .ok()
+        .flatten()
+        .and_then(|v| {
+            v.get("pairings").and_then(|x| x.as_obj()).map(|o| {
+                o.iter()
+                    .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    println!("AGENT CHATS (id · name · repo · members · msgs)");
+    let sessions = v.get("sessions").and_then(|x| x.as_arr()).unwrap_or(&[]);
+    if sessions.is_empty() {
+        println!("  (none — an agent creates one with session_create)");
+    }
+    for s in sessions {
+        let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+        let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+        let repo = s.get("repo").and_then(|x| x.as_str()).unwrap_or("");
+        let members = s.get("members").and_then(|x| x.as_arr()).map(|a| a.len()).unwrap_or(0);
+        let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
+        let mut member_names: Vec<String> = s
+            .get("members")
+            .and_then(|x| x.as_arr())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.get("device").and_then(|v| v.as_str()).map(|d| d.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        member_names.sort();
+        println!(
+            "  {id} · '{name}' · repo: {} · {members} member(s) [{}] · {msgs} msg(s)",
+            if repo.is_empty() { "-" } else { repo },
+            member_names.join(", ")
+        );
+        if let Some((_, pk)) = local_pairings.iter().find(|(sid, _)| sid == id) {
+            println!("    pairing key (copy to joiners on other machines): {pk}");
+        }
+    }
     0
 }
 

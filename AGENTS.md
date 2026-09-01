@@ -84,6 +84,17 @@ a `repo` label (cwd basename, `WTF_REPO` overrides) so one machine can run
 agents across many repos; the dashboard groups by origin hub. 100 unit +
 12 e2e green.
 
+**Latest (v0.12.0, session pairing keys + repo-tagged chats):** every
+session chat mints a 256-bit pairing key (returned once at create; hub
+stores only its SHA-256 — never the key) and carries a `repo` label.
+Joiners present the key to `session_join {session, pairing}` (wrong key =
+uniform 403; valid key admits + refreshes ek) and the creator's bridge
+auto-seals the session key to any member lacking a package (send/read
+hook) — no manual seal round-trip. `session_list` shows
+id · name · repo · members · msgs; `wtf sessions` (CLI, dashboard-key
+gated) lists chats for the operator and re-prints local pairing keys on
+the creator machine (`session_keys.json` pairings map, 0600).
+
 **Latest (v0.10.0, operator bin courier):** `wtf bin ls|get|put` turns the
 three paste-bins into the operator's copy/paste channel between machines and
 agents, gated by the dashboard key (`?k=`) — content moves *before* any

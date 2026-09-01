@@ -95,3 +95,46 @@ the ledger is a public-surface event log by design, secrets forbidden).
   ports because `federation.json` records the peer URL at add time.
 - Mesh verified by hand beyond the e2e: two hubs converge both ways in
   <3 s; single-warn on peer-down, no crash; dedupe holds under restart.
+
+
+---
+
+# TASK — session pairing keys + repo-tagged chats (2026-08-31, machine 1)
+
+Operator directive: a hard-to-guess pairing key for the federated chat
+system, copyable to the other machine/agent or redeemable via CLI; MCP
+tooling that lists agent chats WITH their paired repo so agents can pick
+the right chat instantly.
+
+## Shipped
+
+- `sessions.rs`: `pairing_hash` (SHA-256 of the 256-bit pairing key; the
+  key itself never touches the hub) + `repo` per session;
+  `create` mints the key and returns it once; `check_pairing`
+  constant-time; `join_or_refresh` (pairing path: admit + ek refresh on
+  identity rotation); `set_repo`.
+- `api.rs`: create returns `{...pairing_key}` once; join accepts
+  `pairing` (wrong key = uniform 403; valid key joins even when the
+  membership edge would block, refreshing ek); response carries
+  `pairing_ok`.
+- `mcp.rs`: `session_create` takes `repo`, surfaces the pairing key, and
+  persists it locally (`session_keys.json` `pairings`, 0600) so the
+  operator can re-print it; `session_join` takes `pairing`;
+  `auto_seal_members` (key-holder seals to any member lacking a package;
+  hooked into send/read); `session_read` recovers the key from seals;
+  `session_list` shows repo + pairing status.
+- `main.rs`: `wtf sessions` — operator chat list (id, name, repo,
+  members, msgs) with local pairing keys re-printed on the creator
+  machine; dashboard-key gated.
+- Docs: root + src llms.txt, README (tools table, pairing paragraph,
+  CLI row), SKILL.md §6 (pairing flow, auto-seal, manual fallback).
+  Version 0.11.0 -> 0.12.0.
+
+## Gates
+
+- [x] cargo test: 100 unit + 13 e2e green (new
+  `session_pairing_key_end_to_end`: repo-tagged create → pairing key
+  surfaced once → wrong key uniform reject → pairing join → creator
+  auto-seal → cross-agent message read → repo visible in session_list).
+- [x] cargo build --release clean (wtf 0.12.0).
+- [x] Secret/banned-algo/CJK greps: clean (run pre-merge).

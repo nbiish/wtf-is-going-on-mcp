@@ -668,10 +668,21 @@ fn session_create(hub: &Arc<Hub>, req: &Request) -> Response {
             }
         }
     };
-    match hub.sessions.create(name, &device, &ek) {
-        Ok(s) => {
-            let _ = hub.store.log_event(&device, &device, "info", &format!("session '{}' created", s.id), "");
-            Response::json(200, &s.to_wire_json(false))
+    let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+    match hub.sessions.create(name, &device, &ek, repo) {
+        Ok((s, pairing_key)) => {
+            let _ = hub.store.log_event(&device, &device, "info", &format!("session '{}' created (repo {})", s.id, if s.repo.is_empty() { "-" } else { &s.repo }), "");
+            // The pairing key crosses the wire exactly once, in the
+            // creator's create response — same posture as `key issue`.
+            Response::json(
+                200,
+                &Value::obj(vec![
+                    ("id", Value::from(s.id.as_str())),
+                    ("name", Value::from(s.name.as_str())),
+                    ("repo", Value::from(s.repo.as_str())),
+                    ("pairing_key", Value::from(pairing_key.as_str())),
+                ]),
+            )
         }
         Err(e) => Response::error(400, &e),
     }
@@ -724,6 +735,14 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             if ek.len() != 2368 || !ek.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Response::error(400, "ek must be 2368 hex chars (ML-KEM-768)");
             }
+            // Optional pairing key (v0.12.0): a joiner presenting the valid
+            // session pairing key is admitted even if the membership edge
+            // would otherwise block (e.g. re-join after identity rotation).
+            let pairing = body.get("pairing").and_then(|v| v.as_str()).unwrap_or("");
+            let pairing_ok = !pairing.is_empty() && hub.sessions.check_pairing(id, pairing);
+            if !pairing.is_empty() && !pairing_ok {
+                return Response::error(403, "pairing key rejected");
+            }
             // Register identity implicitly on join (first contact point).
             {
                 let mut reg = hub.identities.lock().unwrap();
@@ -732,13 +751,22 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                     None => reg.push((device.to_string(), ek.to_string())),
                 }
             }
-            match hub.sessions.join(id, &device, ek) {
-                Ok((s, sealed)) => {
-                    let _ = hub.store.log_event(&device, &device, "info", &format!("joined session {}", id), "");
+            let join_result = if pairing_ok {
+                // Pairing-validated join: tolerate duplicate membership
+                // (identity rotation) by updating the member's ek in place.
+                hub.sessions.join_or_refresh(id, &device, ek)
+            } else {
+                hub.sessions.join(id, &device, ek).map(|(s, sealed)| (s, sealed, false))
+            };
+            match join_result {
+                Ok((s, sealed, refreshed)) => {
+                    let note = if refreshed { " (pairing: ek refreshed)" } else { "" };
+                    let _ = hub.store.log_event(&device, &device, "info", &format!("joined session {}{note}", id), "");
                     Response::json(
                         200,
                         &Value::obj(vec![
                             ("session", s.to_wire_json(false)),
+                            ("pairing_ok", Value::from(pairing_ok)),
                             (
                                 "sealed",
                                 Value::Arr(
