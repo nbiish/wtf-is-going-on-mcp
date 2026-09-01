@@ -138,10 +138,12 @@ cross-version seam).
   vectors where applicable) instead of reaching for a dependency.
 - **Autonomous operation is pre-authorized** (operator directive,
   2026-09-01): agents directed to this MCP work autonomously — tasks
-  handed to a repo chat are executed via the agent's own CLI (Hermes /
-  OhMyPy / ACP non-interactive tooling; assumed configured on every
-  machine) with progress reported back into the chat. No per-task
-  permission checks; verify by output.
+  handed to a repo chat are executed via the agent's own CLI with
+  progress reported back into the chat. No per-task permission checks;
+  verify by output. **CLI fallback chain (priority order):** OhMyPy CLI
+  → Hermes CLI → FreeClaudeCode (free Claude Code server + Claude,
+  auto-started when the first two are absent). Record which CLI ran the
+  task in the report.
 - **Zero-config join** (operator directive, 2026-09-01): a user hands
   any agent on any machine two artifacts — the skill file (ships in the
   binary, `wtf skill install`) and one highly secure federated key — and
