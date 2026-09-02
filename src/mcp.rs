@@ -868,7 +868,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (omp → hermes → fcc-claude, first installed + exit-0 wins). All CLIs route through local-router/fallback-models per operator config. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
+                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (free-claude-code → omp → trae-cli, first installed + exit-0 wins) with optional agent selection and Trae/Mini fleet toggle. All CLIs route through local-router/fallback-models per operator config. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
                     ),
                 ),
                 (
@@ -879,6 +879,8 @@ impl Bridge {
                             "properties",
                             Value::obj(vec![
                                 ("prompt", Self::prop("the task prompt to execute headlessly")),
+                                ("agent", Self::prop("optional agent choice: auto (default), free-claude-code, omp, trae-cli, mini")),
+                                ("fleet_enabled", Self::prop("optional boolean: enable Trae/Mini agent fleet (default true)")),
                                 ("repo", Self::prop("optional repo label for the session slug (default: device name)")),
                                 ("label", Self::prop("optional task label refining the tmux session name")),
                                 ("workdir", Self::prop("optional working directory (default: bridge cwd)")),
@@ -2113,7 +2115,9 @@ impl Bridge {
             "{repo}-{}",
             crate::executor::slugify(arg_str(args, "label").unwrap_or("task"))
         ));
-        let outcome = crate::executor::run_in_tmux(&name, &workdir, prompt, timeout);
+        let agent = arg_str(args, "agent").unwrap_or("auto");
+        let fleet_enabled = args.get("fleet_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        let outcome = crate::executor::run_in_tmux_with_options(&name, &workdir, prompt, timeout, agent, fleet_enabled);
         let mut out = format!(
             "lane: {} — {}\nsession: {} (tmux attach -t {})\ntrace: {}\n---\n{}",
             outcome.cli,

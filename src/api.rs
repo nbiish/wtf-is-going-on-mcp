@@ -1406,8 +1406,21 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
                 }
                 return Response::json(200, &Value::obj(vec![("ok", Value::from(true)), ("session", Value::from(name.as_str()))]));
             }
+            if let Some(agent_prompt) = body.get("prompt").and_then(|x| x.as_str()) {
+                let agent = body.get("agent").and_then(|x| x.as_str()).unwrap_or("auto");
+                let fleet = body.get("fleet").and_then(|x| x.as_bool()).unwrap_or(true);
+                let cwd = std::env::current_dir().unwrap_or_default().display().to_string();
+                let outcome = crate::executor::run_in_tmux_with_options(&name, &cwd, agent_prompt, 300, agent, fleet);
+                return Response::json(200, &Value::obj(vec![
+                    ("ok", Value::from(outcome.ok)),
+                    ("cli", Value::from(outcome.cli.as_str())),
+                    ("output", Value::from(outcome.output.as_str())),
+                    ("trace", Value::arr(outcome.trace.into_iter().map(|s| Value::from(s.as_str())).collect())),
+                    ("session", Value::from(name.as_str())),
+                ]));
+            }
             let Some(keys) = body.get("keys").and_then(|x| x.as_str()) else {
-                return Response::error(400, "body must be {keys: \"...\"} or {spawn: true}");
+                return Response::error(400, "body must be {prompt: \"...\"}, {keys: \"...\"} or {spawn: true}");
             };
             if keys.len() > 8192 {
                 return Response::error(413, "keys payload too large");

@@ -53,7 +53,7 @@ pub fn session_name(chat_id: &str) -> String {
 
 pub struct ChainOutcome {
     /// Which CLI ran (or attempted last on total failure).
-    pub cli: &'static str,
+    pub cli: String,
     /// Full combined stdout+stderr of the winning (or last) attempt.
     pub output: String,
     pub ok: bool,
@@ -94,7 +94,13 @@ fn run_cli(
     cmd.args(args)
         .arg(prompt)
         .current_dir(workdir)
-        .env("NONINTERACTIVE", "1");
+        .env("NONINTERACTIVE", "1")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:11434")
+        .env("ANTHROPIC_AUTH_TOKEN", "local-router")
+        .env("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+        .env("OPENAI_API_KEY", "local-router")
+        .env("OLLAMA_HOST", "http://127.0.0.1:11434")
+        .env("MODEL", "local-router/fallback-models");
     // Best-effort kill switch: rely on the CLI's own non-interactive flags;
     // tmux keeps the session alive for inspection either way.
     let _ = timeout_secs;
@@ -113,9 +119,22 @@ fn run_cli(
 }
 
 /// Execute `prompt` inside tmux session `name`, created in `workdir`,
-/// through the omp → hermes → fcc-claude fallback chain. Returns the
+/// through the free-claude-code → omp → trae-cli fallback chain. Returns the
 /// outcome; the tmux session persists for attach (`tmux attach -t NAME`).
 pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -> ChainOutcome {
+    run_in_tmux_with_options(name, workdir, prompt, timeout_secs, "auto", true)
+}
+
+/// Execute with agent selection ("auto", "free-claude-code", "omp", "trae-cli", "mini")
+/// and Trae/Mini fleet toggle.
+pub fn run_in_tmux_with_options(
+    name: &str,
+    workdir: &str,
+    prompt: &str,
+    timeout_secs: u64,
+    agent_choice: &str,
+    fleet_enabled: bool,
+) -> ChainOutcome {
     let mut trace = Vec::new();
     let router = router_alive();
     trace.push(format!(
@@ -137,7 +156,7 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
             .unwrap_or(false);
         if !created {
             return ChainOutcome {
-                cli: "none",
+                cli: "none".into(),
                 output: format!("cannot create tmux session {name} (tmux missing?)"),
                 ok: false,
                 trace,
@@ -145,19 +164,78 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
         }
     }
 
-    // Chain: (binary, pre-args before the prompt).
-    let chain: [(&str, &str); 3] = [
-        ("omp", "-p"),
-        ("hermes", "-z"),
-        ("fcc-claude", "-p --dangerously-skip-permissions"),
+    struct Candidate {
+        id: &'static str,
+        bins: &'static [&'static str],
+        pre: String,
+    }
+
+    let trae_pre = if fleet_enabled {
+        "run --console-type simple --fleet -p".to_string()
+    } else {
+        "run --console-type simple -p".to_string()
+    };
+
+    let all_candidates = [
+        Candidate {
+            id: "free-claude-code",
+            bins: &["fcc-claude", "claude"],
+            pre: "-p --dangerously-skip-permissions".into(),
+        },
+        Candidate {
+            id: "omp",
+            bins: &["omp"],
+            pre: "-p".into(),
+        },
+        Candidate {
+            id: "trae-cli",
+            bins: &["trae-cli"],
+            pre: trae_pre,
+        },
+        Candidate {
+            id: "mini",
+            bins: &["mini", "mini-live"],
+            pre: "--yolo --exit-immediately --task".into(),
+        },
     ];
-    let mut last: Option<ChainOutcome> = None;
-    for (bin, pre) in chain {
-        if !have(bin) {
-            trace.push(format!("{bin}: not installed"));
-            continue;
+
+    let candidates: Vec<&Candidate> = match agent_choice {
+        "free-claude-code" | "fcc-claude" | "claude" => {
+            all_candidates.iter().filter(|c| c.id == "free-claude-code").collect()
         }
-        // fcc server for the fcc lane must live in this tmux session.
+        "omp" => {
+            all_candidates.iter().filter(|c| c.id == "omp").collect()
+        }
+        "trae-cli" | "trae" => {
+            all_candidates.iter().filter(|c| c.id == "trae-cli").collect()
+        }
+        "mini" | "mini-live" => {
+            all_candidates.iter().filter(|c| c.id == "mini").collect()
+        }
+        _ => {
+            // "auto" fallback chain: free-claude-code -> omp -> trae-cli
+            vec![&all_candidates[0], &all_candidates[1], &all_candidates[2]]
+        }
+    };
+
+    let mut last: Option<ChainOutcome> = None;
+    for cand in candidates {
+        let mut resolved_bin = None;
+        for b in cand.bins {
+            if have(b) {
+                resolved_bin = Some(*b);
+                break;
+            }
+        }
+        let Some(bin) = resolved_bin else {
+            trace.push(format!("{}: not installed", cand.id));
+            continue;
+        };
+
+        // Environment configuration ensuring all agents route to local-router/fallback-models on 11434
+        let env_prefix = "export ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=local-router OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=local-router OLLAMA_HOST=http://127.0.0.1:11434 MODEL=local-router/fallback-models NONINTERACTIVE=1;";
+
+        // fcc server for the fcc lane must live in this tmux session if fcc-claude is used.
         if bin == "fcc-claude" {
             let srv = Command::new("tmux")
                 .args([
@@ -169,10 +247,12 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
                 .status();
             let _ = srv;
         }
+
         // Run inside the session via a capture pane so the output is also
         // visible live to anyone attaching.
         let run_line = format!(
-            "{bin} {pre} {} 2>&1 | tee /tmp/wtf-chat-exec-{}.log; echo EXIT:$? > /tmp/wtf-chat-exec-{}.code",
+            "{env_prefix} {bin} {} {} 2>&1 | tee /tmp/wtf-chat-exec-{}.log; echo EXIT:$? > /tmp/wtf-chat-exec-{}.code",
+            cand.pre,
             shell_quote(prompt),
             slugify(name),
             slugify(name)
@@ -180,6 +260,7 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
         let _ = Command::new("tmux")
             .args(["send-keys", "-t", name, &run_line, "Enter"])
             .status();
+
         // Poll for the exit-code file (bounded by timeout).
         let code_file = format!("/tmp/wtf-chat-exec-{}.code", slugify(name));
         let _ = std::fs::remove_file(&code_file);
@@ -204,7 +285,7 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
         let ok = code == "0";
         trace.push(format!("{bin}: {}", if ok { "ok" } else { "fail" }));
         last = Some(ChainOutcome {
-            cli: bin,
+            cli: bin.to_string(),
             output,
             ok,
             trace: trace.clone(),
@@ -213,8 +294,8 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
             return last.unwrap();
         }
     }
-    last.unwrap_or(ChainOutcome {
-        cli: "none",
+    last.unwrap_or_else(|| ChainOutcome {
+        cli: "none".into(),
         output: "no CLI in the fallback chain is installed".into(),
         ok: false,
         trace,

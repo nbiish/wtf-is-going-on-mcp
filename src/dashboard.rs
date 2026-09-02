@@ -195,8 +195,12 @@ async function openSession(id){
       +'<button id="scopesave" style="padding:2px 10px;font-size:12px">save scope</button><span id="scopestat" class="dim"></span></div>'
       +'<div class="dim">members: '+esc((s.members||[]).map(m=>m.device).join(", ")||"-")+'</div>'
       +'<div id="feed">'+viewRows+'</div>'
-      +'<h2 style="font-size:13px;margin:14px 0 4px">terminal — '+esc(termName)+' (this machine)</h2>'
-      +'<div class="row"><input id="cmd" placeholder="type a command for the agent terminal, Enter sends"/><button id="send">send</button><span id="tstat" class="dim"></span></div>'
+      +'<h2 style="font-size:13px;margin:14px 0 4px">terminal — '+esc(termName)+' · <span style="color:#00ffc8;font-size:11px">local-router/fallback-models (11434)</span></h2>'
+      +'<div class="row" style="margin-bottom:6px"><span class="dim">agent</span><select id="agent" style="background:#0d1320;color:#00ffc8;border:1px solid #234;border-radius:6px;padding:2px 8px;font:11px ui-monospace">'
+      +'<option value="auto">⚡ Auto (FCC → OMP → Trae)</option><option value="free-claude-code">Free Claude Code</option><option value="omp">OhMyPy</option><option value="trae-cli">Trae-CLI</option><option value="mini">Live-SWE</option></select>'
+      +'<label style="font-size:11px;display:inline-flex;align-items:center;gap:4px;color:#d7dde8;cursor:pointer"><input type="checkbox" id="fleet" checked style="cursor:pointer"/> Fleet</label>'
+      +'<button id="runagent" style="background:#00ffc8;color:#0b0e14;font-weight:600;padding:3px 10px;font-size:11px">run agent</button></div>'
+      +'<div class="row"><input id="cmd" placeholder="type a command or prompt, Enter sends keys, \'run agent\' dispatches agent"/><button id="send">send keys</button><span id="tstat" class="dim"></span></div>'
       +'<div id="term">loading pane…</div></body></html>';
     w.document.write(doc);
     w.document.close();
@@ -247,9 +251,33 @@ async function openSession(id){
         if (st) st.textContent = String(e);
       }
     }
+    async function vrunagent(){
+      const c = vdoc.getElementById("cmd");
+      const v = c ? c.value.trim() : "";
+      if (!v) return;
+      const ag = vdoc.getElementById("agent").value;
+      const fl = vdoc.getElementById("fleet").checked;
+      const st = vdoc.getElementById("tstat");
+      if (st) st.textContent = "running " + ag + "…";
+      try {
+        const res = await fetch("/api/v1/term/"+termName+"?"+AUTH, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({prompt: v, agent: ag, fleet: fl})
+        });
+        const j = await res.json();
+        if (st) st.textContent = j.ok ? ("completed (" + j.cli + ")") : ("failed (" + (j.error || j.cli) + ")");
+        c.value = "";
+        setTimeout(vpoll, 500);
+      } catch(e) {
+        if (st) st.textContent = String(e);
+      }
+    }
     const sendBtn = vdoc.getElementById("send");
     const cmdInput = vdoc.getElementById("cmd");
+    const runBtn = vdoc.getElementById("runagent");
     if (sendBtn) sendBtn.addEventListener("click", vsend);
+    if (runBtn) runBtn.addEventListener("click", vrunagent);
     if (cmdInput) cmdInput.addEventListener("keydown", e => { if (e.key === "Enter") vsend(); });
     const scopeBtn = vdoc.getElementById("scopesave");
     if (scopeBtn) scopeBtn.addEventListener("click", async () => {
