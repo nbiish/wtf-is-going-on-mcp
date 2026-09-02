@@ -1,0 +1,84 @@
+# Custom OpenAI-compatible providers for omp.
+# Docs: https://github.com/can1357/oh-my-pi/blob/main/docs/models.md
+#
+# Modal-hosted vLLM proxies (us-west), one provider per Modal app:
+#   modal      → moonshotai/Kimi-K3    (ep-kimi-k3-nbiish-server)
+#   modal-glm  → zai-org/GLM-5.3-Flash (ep-glm-5-3-flash-server)
+#
+# Select with:  omp --model modal-glm/zai-org/GLM-5.3-Flash   (or 'modal-glm')
+# NOTE: bare 'glm-5.3-flash' fuzzy-matches the bundled wafer-serverless
+# GLM-5.3-Flash, not this proxy — always prefix with modal-glm/.
+# Kimi-K3: omp --model kimi   (unambiguous; only served here)
+#
+# Auth: Modal proxy token (tokenId.secret) stored inline — same token
+# authorizes both endpoints (same Modal workspace). Sent as
+# `Authorization: Bearer <apiKey>`.
+providers:
+  modal:
+    baseUrl: https://nbiish--ep-kimi-k3-nbiish-server.us-west.modal.direct/v1
+    apiKey: <redacted-was-inline>
+    api: openai-completions
+    models:
+      - id: moonshotai/Kimi-K3
+        name: Kimi K3 (Modal)
+        reasoning: true
+        input: [text, image]          # endpoint advertises input_modalities: [text, image]
+        contextWindow: 1048576        # from GET /v1/models metadata
+        maxTokens: 65536
+        compat:
+          # Endpoint reports reasoning_options: effort [low, high, max].
+          # Let omp drive reasoning depth via --thinking, mapped onto those.
+          supportsReasoningEffort: true
+          reasoningEffortMap:
+            minimal: low
+            low: low
+            medium: high
+            high: high
+            xhigh: max
+            max: max
+          # vLLM returns thinking in `reasoning_content` (confirmed by metadata).
+          reasoningContentField: reasoning_content
+          # Keep the body matching the documented Modal/vLLM shape.
+          supportsStore: false
+          maxTokensField: max_tokens
+
+  modal-glm:
+    baseUrl: https://nbiish--ep-glm-5-3-flash-server.us-west.modal.direct/v1
+    apiKey: <redacted-was-inline>
+    api: openai-completions
+    models:
+      - id: zai-org/GLM-5.3-Flash
+        name: GLM 5.3 Flash (Modal)
+        reasoning: true
+        input: [text, image]          # endpoint advertises input_modalities: [text, image]
+        contextWindow: 1048576        # from GET /v1/models metadata
+        maxTokens: 65536              # endpoint allows up to 1048576 out; 64k keeps requests lean
+        compat:
+          # Endpoint reports reasoning_options: effort [low, high, max].
+          # Let omp drive reasoning depth via --thinking, mapped onto those.
+          supportsReasoningEffort: true
+          reasoningEffortMap:
+            minimal: low
+            low: low
+            medium: high
+            high: high
+            xhigh: max
+            max: max
+          # vLLM returns thinking in `reasoning_content` (confirmed by metadata:
+          # interleaved.field = reasoning_content).
+          reasoningContentField: reasoning_content
+          # Keep the body matching the documented Modal/vLLM shape.
+          supportsStore: false
+          maxTokensField: max_tokens
+
+  local-router:
+    baseUrl: http://127.0.0.1:11434/v1
+    apiKey: <redacted-was-inline>
+    api: openai-completions
+    models:
+      - id: local-router/fallback-models
+        name: Local Router (fallback chain)
+        reasoning: true
+        input: [text]
+        contextWindow: 1000000
+        maxTokens: 65536
