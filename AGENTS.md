@@ -53,14 +53,15 @@ and agent (MCP stdio bridge). The hub never sees plaintext session keys
 
 **MISSION (operator):** build the **WTF FEDERATED FLEET** — every machine the
 operator touches (Windows, mac, any Linux, WSL, VMs, cloud compute) runs this
-hub + bridge and hosts headless ACP agents driven by the designated fallback
-chain **omp → hermes → fcc-claude**. The hub mesh coordinates the fleet: chats
-are project lanes (scope = repos×machines), the dashboard is the operator's
+hub + bridge and hosts headless coding agents governed by **trae-mini-fleet**
+(`trae-cli` and `mini` / `mini-live`) and ACP agents driven by the designated
+fallback chain **omp → hermes → fcc-claude**. The hub mesh coordinates the fleet:
+chats are project lanes (scope = repos×machines), the dashboard is the operator's
 terminal into every agent session (decrypted chat viewer + live tmux terminal),
 and `wtf-ask`/`wtf-ask-remote` + `chat_run` are the dispatch primitives. The
-local-router project (`/mnt/d/Code/local-router`) provides the singular model
-system (`local-router/fallback-models` :11434) that every fleet agent routes
-through — its tooling is refined via fleet chats, never harness swaps.
+local-router project (`/Volumes/1tb-sandisk/code-external/local-router` or Windows equivalent)
+provides the singular model system (`local-router/fallback-models` :11434) that every
+fleet agent routes through — its tooling is refined via fleet chats, never harness swaps.
 Architecture-agnostic by contract: Windows/mac/Linux/WSL all join with one
 skill file + one signed-handshake key (secret never crosses the wire), then
 coordinate autonomously.
@@ -72,16 +73,17 @@ coordinate autonomously.
 2. **On user request** — create the chat (`session_create {name, repo}`) and
    hand the user the pairing key + other-machine connection steps (LAN HTTP
    enroll; internet = overlay/TLS proxy only, never raw port-forward).
-3. **Execute headlessly** — fallback chain (1) OhMyPy `omp` → (2) Hermes →
-   (3) FreeClaudeCode `fcc-claude` (ALWAYS inside tmux session
-   `freeclaude-<slug>`; report session name + PID). `ainish-coder --rules
-   <repo>` bootstraps a fresh machine's whole environment.
+3. **Execute headlessly** — dispatch master coding agents via `trae-mini-fleet`
+   (`trae-cli` for AST navigation & patch creation; `mini-live` for test-driven
+   reproduction) or ACP fallback (`omp` → `hermes` → `fcc-claude` in tmux).
+   All subagents route through `local-router/fallback-models` on port 11434.
 4. **Verify capabilities cross-machine** — `env_report` (own machine) +
    `env_probe` (all machines) before configuring anything remote. Presence +
    versions only; keys port ONLY via explicit operator action (PQC envelope).
-5. **Report** — chain-of-draft to the public feed; full detail in the repo
-   chat. The MCP `initialize` instructions carry this contract to every
-   harness; SKILL.md §5 details it.
+5. **Report & Observe** — subagents log milestones (`log_event`) and task
+   transitions (`check_in`) to the wtf hub; full detail in the repo chat.
+   The MCP `initialize` instructions carry this contract to every harness;
+   SKILL.md §5 details it.
 
 **Shipped (v0.8.0 → v0.9.0, main @ `e859f63`):** one-time enrollment tokens —
 `wtf enroll-token` (stored SHA-256-hashed, single-use, TTL, burn-on-success),
@@ -582,18 +584,24 @@ PQC for every secret the hub touches; enrollment keys travel sealed, never plain
 ---
 
 <FLEET_BUILDOUT>
-## FLEET BUILDOUT — CURRENT INTENT (2026-09-01, operator directive)
+## FLEET BUILDOUT — CURRENT INTENT (2026-09-02, operator directive)
 
 This repo is the coordination plane of the **WTF Federated Fleet**. The fleet
-enhancement phase (post-v0.15.1) extends this repo so the fallback chain
-(`omp` → `hermes` → `fcc-claude`) runs as headless ACP-controlled agents on
-every machine:
+enhancement phase extends this repo so that master headless coding subagents
+governed by `trae-mini-fleet` (`trae-cli` and `mini` / `mini-live`) and ACP agents
+(`omp` → `hermes` → `fcc-claude`) coordinate across machines:
 
-**Done (v0.15.0/0.15.1):** operator chat viewer (decrypted bodies),
-opener-driven web terminal on `wtf-chat-*` sessions, chats-as-projects scope
-labels, per-connection dynamic bins, `chat_session_lifecycle`
-(open/close/reconnect/delete), quiet heartbeats, auto-spawn of executor
-sessions, NDJSON fix upstream in local-router (abbea72).
+**Headless Coding Fleet Orchestration:**
+- Master coding agents (`trae-cli` and `mini-live`) route exclusively through
+  `http://localhost:11434/v1` with model `local-router/fallback-models`.
+- Cross-platform auto-start: Local Router starts automatically whenever the Ollama
+  CLI or Desktop app launches on macOS, Windows, Linux, and WSL (port 11434 for
+  Local Router, port 11435 for backend Ollama).
+- Observability reporting: subagents check in (`check_in`) and log progress events
+  (`log_event`) to the wtf hub at dispatch boundaries, providing live visibility
+  across the operator dashboard.
+- Continuous action reflection: orchestrators reflect on each subagent action in
+  the `.txt` reflection doc, incorporating the 9 TTS.COMMS master directives.
 
 **Open fleet items (work in `local-router` repo unless noted):**
 - `fleet_run` / `fleet_status` MCP tools — dispatch a task to ANY machine's
