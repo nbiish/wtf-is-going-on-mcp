@@ -138,3 +138,9 @@ Federated chats ARE the cross-system agent-to-agent lanes. Contract:
 5. **Log hygiene.** Heartbeats and replication churn are quiet (presence
    only). The dashboard shows work; the ring + rotated log keep only
    troubleshooting-worthy signal.
+6. **Cross-machine CLI helpers (windows-installed; promote to MCP later).**
+   `wtf-ask --local "q"` runs the fallback chain locally and reports the
+   lane. `wtf-ask-remote <session-id> "directive" [--wait N]` posts a
+   directive into a chat via session_send and optionally polls
+   session_read for the remote agent's reply — the message is the
+   contract; the remote runtime (Windows/mac/Linux) is irrelevant.

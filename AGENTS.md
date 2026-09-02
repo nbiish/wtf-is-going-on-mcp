@@ -51,9 +51,19 @@ and agent (MCP stdio bridge). The hub never sees plaintext session keys
 (`auth.rs`); enrollment is the only unauthenticated surface and is rate-limited
 (20/5min global) with uniform failures.
 
-**MISSION (operator):** federated agent communication + coordination that any
-agent harness can drive — non-technical and technical users alike — with a
-PQC-secured hub accessible from every machine the user works on.
+**MISSION (operator):** build the **WTF FEDERATED FLEET** — every machine the
+operator touches (Windows, mac, any Linux, WSL, VMs, cloud compute) runs this
+hub + bridge and hosts headless ACP agents driven by the designated fallback
+chain **omp → hermes → fcc-claude**. The hub mesh coordinates the fleet: chats
+are project lanes (scope = repos×machines), the dashboard is the operator's
+terminal into every agent session (decrypted chat viewer + live tmux terminal),
+and `wtf-ask`/`wtf-ask-remote` + `chat_run` are the dispatch primitives. The
+local-router project (`/mnt/d/Code/local-router`) provides the singular model
+system (`local-router/fallback-models` :11434) that every fleet agent routes
+through — its tooling is refined via fleet chats, never harness swaps.
+Architecture-agnostic by contract: Windows/mac/Linux/WSL all join with one
+skill file + one signed-handshake key (secret never crosses the wire), then
+coordinate autonomously.
 
 **MANDATORY ORCHESTRATION (every agent on every task):**
 1. **Discover** — `session_list {repo: <current repo>}`: MATCH = that chat is
@@ -568,3 +578,35 @@ Run before any code touching crypto, secrets storage, or networking:
 <REINFORCEMENT>
 PQC for every secret the hub touches; enrollment keys travel sealed, never plaintext. Rust, zero external dependencies — `[dependencies]` stays empty. One task = one worktree from `main`, gates green, merged back after the user confirms, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`; cross-machine truth flows through the federated hub mesh — a hub on every machine. Never paste hub serve logs (dashboard key). Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code.
 </REINFORCEMENT>
+
+---
+
+<FLEET_BUILDOUT>
+## FLEET BUILDOUT — CURRENT INTENT (2026-09-01, operator directive)
+
+This repo is the coordination plane of the **WTF Federated Fleet**. The fleet
+enhancement phase (post-v0.15.1) extends this repo so the fallback chain
+(`omp` → `hermes` → `fcc-claude`) runs as headless ACP-controlled agents on
+every machine:
+
+**Done (v0.15.0/0.15.1):** operator chat viewer (decrypted bodies),
+opener-driven web terminal on `wtf-chat-*` sessions, chats-as-projects scope
+labels, per-connection dynamic bins, `chat_session_lifecycle`
+(open/close/reconnect/delete), quiet heartbeats, auto-spawn of executor
+sessions, NDJSON fix upstream in local-router (abbea72).
+
+**Open fleet items (work in `local-router` repo unless noted):**
+- `fleet_run` / `fleet_status` MCP tools — dispatch a task to ANY machine's
+  agent via the hub mesh and read fleet-wide agent+session state (wtf repo).
+- Cross-machine CLI fallback as first-class tools: `wtf-ask` (local chain)
+  and `wtf-ask-remote` (post directive to a chat + poll reply) exist as
+  windows shell helpers — promote into the bridge.
+- R1: persist hub identity registry across restarts.
+- R2: windows durable COMMS ledger entries (COMMS protocol — in progress).
+- Router-side: headroom proxy stays disabled until actually deployed;
+  graceful cascade preflight (fix/fallback-graceful) merged after mac review.
+
+**Continuation:** a fresh chat resumes from `agents.txt` (both repos) +
+this section + `docs/FLEET.md`/`docs/OPERATIONS.md`/`docs/ROADMAP.md` +
+the ops chat (`local-router ops`, 828d3341…). Never re-derive from memory.
+</FLEET_BUILDOUT>

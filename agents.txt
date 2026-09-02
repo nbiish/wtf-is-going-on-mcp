@@ -1,0 +1,65 @@
+# agents.txt — CONTINUATION MANIFEST (fresh-chat entry point)
+# Repo: wtf-is-going-on-mcp  ·  Generated: 2026-09-01  ·  windows-1
+#
+# A new chat reading this file resumes the fleet work without context loss.
+# Read order: THIS FILE → AGENTS.md (mission + FLEET_BUILDOUT section at the
+# end) → llms.txt → docs/FLEET.md + docs/OPERATIONS.md + docs/ROADMAP.md →
+# AGENTS/2026-09-01.COMMS.md → join the ops chats (see below).
+
+## STATE (verified 2026-09-01)
+
+- windows hub: hub-2538554f @ http://localhost:7800 (LAN: 192.168.1.248:7800
+  via netsh portproxy → WSL), binary v0.15.0 + quiet-heartbeat/lifecycle
+  fixes (main @ 848850e, docs @ 4cf1167).
+- mac hub: hub-799c0c4c @ http://192.168.1.68:7800, v0.14.2 — needs pull of
+  main (v0.15.0/0.15.1 + docs).
+- Federation: RESTORED both ways (mac ran federate add with our site secret
+  via portproxy). Canary verified.
+- Repo chats: wtf-is-going-on-mcp = a305c8ea6934b65b5531d631410b81cc;
+  local-router ops = 828d334113c772c7a8b8cb34db637698 (pairing key in ops
+  chat seq 22 / runbook bin 3). session_join re-registers after any hub
+  restart (R1 defect: identity registry is in-memory).
+
+## DONE THIS SESSION (all pushed)
+
+- v0.15.0/0.15.1: operator chat viewer (decrypted bodies via
+  /api/v1/sessions/<id>/view), opener-driven web terminal on wtf-chat-*
+  sessions (/api/v1/term/*), chats-as-projects scope labels
+  (POST .../scope), per-connection dynamic bins (ids 1..=255, trio per
+  device slot), chat_session_lifecycle MCP tool (open/close/reconnect/
+  delete), quiet heartbeats (presence-only), auto-spawn of missing
+  executor sessions, capability self-discovery for the /w/ page.
+- NDJSON newline fix committed upstream in local-router main (abbea72).
+- Hardened ollama always-route shim: branch fix/shim-always-route
+  (9e65e44) on local-router origin — awaiting mac merge + `route set`.
+- Graceful fallback cascade: branch fix/fallback-graceful (d0fd9a2) —
+  dead stages skip with zero retries; awaiting mac review/merge.
+- Docs split: branch docs/split-per-audience (7c40495) — docs/FLEET.md,
+  docs/OPERATIONS.md, docs/ROADMAP.md + docs/llms.txt rail.
+- Helpers installed windows-side: wtf-ask (local CLI chain omp→hermes→
+  fcc-claude), wtf-ask-remote (post directive to a chat + poll replies).
+- Headroom proxy DISABLED in ~/.config/local-router/headroom-config.json
+  (nothing listens on 8787; it stalled every stage 10s). Re-enable only
+  when the proxy actually runs.
+
+## NEXT (priority order)
+
+1. mac: merge fix/shim-always-route + fix/fallback-graceful into
+   local-router main; `local-router route set`; verify MAC-ROUTER-OK.
+2. mac: pull wtf main (v0.15.0/0.15.1 + docs split) + rebuild/restart.
+3. wtf repo: build fleet_run + fleet_status MCP tools (dispatch tasks to
+   any machine's agent via the mesh; fleet-wide agent/session state).
+4. Promote wtf-ask / wtf-ask-remote into the bridge as first-class MCP
+   tools (they are bash helpers in ~/.local/bin today).
+5. R1 identity-registry persistence (hub restarts clear it).
+6. mac: verify router was actually down + report root cause (operator saw
+   hermes miss the fallback model).
+
+## RULES THAT DON'T CHANGE
+
+- PQC for every secret (ML-KEM-768 + AES-256-GCM; envelope verify-before-
+  decapsulate). Secrets cross machines ONLY via E2E chats or envelopes.
+- Never add crates.io/npm deps to the wtf binary (zero-dependency Rust).
+- English only in code and docs.
+- One bridge per machine; repo-scoped .mcp.json files all point at it.
+- Headroom stays disabled until its proxy actually runs.
