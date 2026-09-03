@@ -1,5 +1,5 @@
 ---
-description: Universal AGENTS.md rules standard for AI coding assistants. PQC secrets for all API keys. Worktree per task — branch from main, merge back to main after verification, then clean up. Polyglot (Rust, TS, Py, etc). Chain-of-Draft: ≤5 words per step, output after ####. llms.txt is the PRD anchor — read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops; standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Branch naming `<type>/<scope>-<slug>`. Ask before merging. Output full production code. Concurrent agents coordinate via AGENTS/{date}.COMMS.md. Cross-machine reporting goes through the wtf hub (live; mandatory; chain-of-draft; see .agents/skills/wtf-agent-hub/SKILL.md). Terminal sub-agents orchestrate via trae-mini-fleet under local-router/fallback-models.
+description: Universal AGENTS.md rules standard for AI coding assistants. PQC secrets for all API keys. Worktree per task — branch from main, merge back to main after verification, then clean up. Polyglot (Rust, TS, Py, etc). Chain-of-Draft: ≤5 words per step, output after ####. llms.txt is the PRD anchor — read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops; standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Branch naming `<type>/<scope>-<slug>`. Ask before merging. Output full production code. Concurrent agents coordinate via AGENTS/{date}.COMMS.md. Cross-machine reporting and federated execution go through the wtf hub v0.15.2 (singular capability dashboard /w/<capability>, paired federated shell ~/ with architecture LKGL tracking and distributed compute; mandatory chain-of-draft; see .agents/skills/wtf-agent-hub/SKILL.md). Terminal sub-agents orchestrate via trae-mini-fleet under local-router/fallback-models :11434.
 ---
 
 # 🚧 WORKTREE GATE — MANDATORY CHECKPOINT
@@ -58,12 +58,22 @@ When ≥1 agent works at once, coordinate through the dated ledger at **`AGENTS/
 ---
 
 <AGENT_HUB>
-## WTF HUB — CROSS-MACHINE REPORTING (MANDATORY)
+## WTF HUB — CROSS-MACHINE OBSERVABILITY & FEDERATED ENGINE (MANDATORY)
 
-The **wtf observability hub** is the cross-machine coordination layer. All agents on all machines report through it. Wire format: **chain-of-draft** (terse fragments, ≤5 words, no secrets).
+The **wtf observability hub** is the cross-machine coordination and federated execution layer. All agents on all machines report through it and orchestrate distributed workloads through its singular interface. Wire format: **chain-of-draft** (terse fragments, ≤5 words, no secrets).
 
-- **Status:** Live system on port `7800`. Machine credentials live in `bridge.json` (0600) or `WTF_*` env.
-- **Setup:** Read `.agents/skills/wtf-agent-hub/SKILL.md`. Authenticate via signed handshake (`wtf enroll --psk <secret>`), token (`wtf enroll --token <token>`), or manual PQC keys.
+- **Status & Topologies:** Live system on port `7800` (macOS, Linux, Windows WSL2 behind host portproxy). Machine credentials live in `bridge.json` (0600) or `WTF_*` env.
+- **Singular Capability Dashboard URL:** Unguessable 64-hex capability endpoint (`/w/<capability>`) serving loopback and LAN with zero query-string secret leakage and uniform 404 security. Print via `wtf dashboard-url`.
+- **Embedded Chat Studio & Federated Multi-Machine Shell:**
+  - Left pane: Chat & Agent Orchestration Studio for lane management, prompt execution, and headless SWE-bench coding fleet tasks (`wtf-chat-<slug>` tmux sessions).
+  - Right pane: Paired Federated Shell with virtual cluster root (`~/`) mapping to connected cluster nodes (`~/mac`, `~/windows`, `~/creeper-pi`). Supports cross-architecture compound command execution in a single prompt:
+    ```bash
+    cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test
+    ```
+- **Architecture LKGL Tracking & Distributed OMP Config:**
+  - **LKGL Tracking (`$WTF_HOME/lkgl.json`):** Persists the Last Known Good Location per architecture across sessions; automatically anchors executions to native directory workspaces.
+  - **Federated OMP Configuration (`$WTF_HOME/fed_omp_config.json`):** Synchronizes model parameters (`local-router/fallback-models`), proxy endpoint (`127.0.0.1:11434`), and fallback cascades across all connected nodes via `/api/v1/shell/config`.
+- **Intelligent Distributed Compute:** `chat_run` supports `machine: "<name>"`. Any connected node (including edge devices like a Raspberry Pi) can dispatch heavy compilation, model synthesis, or testing workloads to the cluster's strongest compute node at its LKGL and stream results back.
 - **6-Point Reporting & Fleet Contract:**
   1. `wtf_is_going_on` before starting work (discover peer activity).
   2. `check_in` working/blocked/done at task boundaries; `log_event` for milestones and receipts.
@@ -71,7 +81,7 @@ The **wtf observability hub** is the cross-machine coordination layer. All agent
   4. Encrypted agent-to-agent channels (`session_*`, ML-KEM-768 sealed) for confidential coordination.
   5. COMMS ledger channels (`comms_post`/`comms_read` on `local-router-ops`) for live distributed sync.
   6. Sub-agent fleet execution (`chat_run`, `chat_sessions`, `chat_session_lifecycle`) powered by loopback proxy `http://127.0.0.1:11434` (`local-router/fallback-models`).
-- **Division of Labor:** COMMS ledger = repo-local git history. WTF events/bins = live operator observability. WTF COMMS channels = live cross-machine messaging. WTF Chat = live headless task execution.
+- **Division of Labor:** COMMS ledger = repo-local git history. WTF events/bins = live operator observability. WTF COMMS channels = live cross-machine messaging. WTF Chat & Federated Shell = live cross-architecture task execution.
 </AGENT_HUB>
 
 ---
@@ -336,7 +346,7 @@ PQC for every API key. Respect the codebase's native language. One task = one wo
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wtf-is-going-on-mcp** (1305 symbols, 4519 relationships, 114 execution flows).
+This project is indexed by GitNexus as **wtf-is-going-on-mcp** (1389 symbols, 4782 relationships, 122 execution flows).
 
 > Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
 
