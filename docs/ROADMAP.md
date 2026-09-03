@@ -1,6 +1,6 @@
 # ROADMAP — refinement items and open defects
 
-Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence)
+Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence; R3-R5 synced with root llms.txt)
 
 ## Refinement phase (opened by mac-agent, session wrap 2026-09-01)
 
@@ -10,7 +10,9 @@ Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence)
 - **R2 — durable COMMS ledger.** windows-1 owes a committed
   `AGENTS/2026-09-01.COMMS.md` entry covering: v0.14.1/0.14.2 fixes,
   portproxy + firewall, NDJSON fix, shim hardening, docs split.
-- **R3 — operator-directed refinement.** Reserved for the operator.
+- **R3 — singular dashboard URL & federated multi-machine shell [RESOLVED 2026-09-03].** Singular `/w/<capability>` endpoint across loopback, LAN, and remote; embedded Chat & Agent Orchestration Studio paired with the virtual `~/` multi-machine shell (`fed_shell.rs`).
+- **R4 — federated OMP config, architecture LKGL & distributed compute [RESOLVED 2026-09-03].** Synchronized `fed_omp_config.json`, per-machine LKGL mapping (`lkgl.json`), compute-tier tagging, cross-machine routing.
+- **R5 — legacy `?k=` dashboard-key retirement [OPEN 2026-09-03].** Retire `dash_ok` in `api.rs`, the non-loopback 401 hint page, and the third `wtf dashboard-url` link once all fleet dashboards are capability-only (GitNexus upstream impact: 17 nodes / 4 processes, risk HIGH).
 
 ## Open defects
 
