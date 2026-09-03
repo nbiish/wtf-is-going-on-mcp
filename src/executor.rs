@@ -170,11 +170,7 @@ pub fn run_in_tmux_with_options(
         pre: String,
     }
 
-    let trae_pre = if fleet_enabled {
-        "run --console-type simple --fleet -p".to_string()
-    } else {
-        "run --console-type simple -p".to_string()
-    };
+    let trae_pre = "run -p openai -m local-router/fallback-models --model-base-url http://127.0.0.1:11434/v1 -k local-router --console-type simple --max-steps 30".to_string();
 
     let all_candidates = [
         Candidate {
@@ -212,9 +208,15 @@ pub fn run_in_tmux_with_options(
         "mini" | "mini-live" => {
             all_candidates.iter().filter(|c| c.id == "mini").collect()
         }
+        "fleet" | "swe-bench" => {
+            vec![&all_candidates[2], &all_candidates[3]]
+        }
         _ => {
-            // "auto" fallback chain: free-claude-code -> omp -> trae-cli
-            vec![&all_candidates[0], &all_candidates[1], &all_candidates[2]]
+            if fleet_enabled {
+                vec![&all_candidates[0], &all_candidates[1], &all_candidates[2], &all_candidates[3]]
+            } else {
+                vec![&all_candidates[0], &all_candidates[1]]
+            }
         }
     };
 

@@ -619,6 +619,51 @@ fn issue_and_respond_sealed(hub: &Arc<Hub>, name: &str, ek: &str, cfg: &HubConfi
 
 // ---------- identity registry ----------
 
+/// Load persisted identities from $WTF_HOME/identities.json (0600) and rehydrate
+/// any session members whose encapsulation keys are known.
+pub fn load_identities(sessions: &crate::sessions::Sessions) -> Vec<(String, String)> {
+    let path = crate::config::identities_path();
+    let mut list = Vec::new();
+    if let Ok(Some(val)) = crate::config::load_json(&path) {
+        if let Some(arr) = val.as_arr() {
+            for item in arr {
+                if let (Some(d), Some(ek)) = (
+                    item.get("device").and_then(|v| v.as_str()),
+                    item.get("ek").and_then(|v| v.as_str()),
+                ) {
+                    list.push((d.to_string(), ek.to_string()));
+                }
+            }
+        }
+    }
+    // Rehydrate from session members if not already recorded.
+    for s in sessions.list() {
+        for m in s.members {
+            if !m.ek.is_empty() && !list.iter().any(|(d, _)| *d == m.device) {
+                list.push((m.device, m.ek));
+            }
+        }
+    }
+    list
+}
+
+/// Persist the identity registry atomically to $WTF_HOME/identities.json (0600).
+pub fn save_identities(identities: &[(String, String)]) {
+    let path = crate::config::identities_path();
+    let arr = Value::arr(
+        identities
+            .iter()
+            .map(|(d, ek)| {
+                Value::obj(vec![
+                    ("device", Value::from(d.as_str())),
+                    ("ek", Value::from(ek.as_str())),
+                ])
+            })
+            .collect(),
+    );
+    let _ = crate::config::save_json(&path, &arr, 0o600);
+}
+
 /// POST /api/v1/identity { ek } — device registers its own ML-KEM-768
 /// encapsulation key. Re-registering overwrites (key rotation support).
 fn identity_register(hub: &Arc<Hub>, req: &Request) -> Response {
@@ -643,6 +688,7 @@ fn identity_register(hub: &Arc<Hub>, req: &Request) -> Response {
             Some(slot) => slot.1 = ek.to_string(),
             None => reg.push((device.clone(), ek.to_string())),
         }
+        save_identities(&reg);
     }
     let _ = hub
         .store
@@ -799,6 +845,7 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
                     Some(slot) => slot.1 = ek.to_string(),
                     None => reg.push((device.to_string(), ek.to_string())),
                 }
+                save_identities(&reg);
             }
             let join_result = if pairing_ok {
                 // Pairing-validated join: tolerate duplicate membership
@@ -1468,5 +1515,23 @@ mod tests {
         // Entries age out after 600 s (the upstream ±300 s skew guard would
         // reject the stale ts of a genuine replay anyway).
         assert!(enroll_nonce_fresh(&mut cache, "aaaa", 1_000_000 + 600));
+    }
+
+    #[test]
+    fn identity_persistence_and_rehydration() {
+        let tmp = format!("/tmp/wtf-test-identities-{}", crate::rand::nonce_hex());
+        std::env::set_var("WTF_HOME", &tmp);
+
+        let sessions = crate::sessions::Sessions::load();
+        let list1 = vec![
+            ("device-a".to_string(), "01020304".to_string()),
+            ("device-b".to_string(), "05060708".to_string()),
+        ];
+        save_identities(&list1);
+        let loaded = load_identities(&sessions);
+        assert_eq!(loaded, list1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::remove_var("WTF_HOME");
     }
 }
