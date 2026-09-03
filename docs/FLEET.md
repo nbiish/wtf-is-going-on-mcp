@@ -18,6 +18,7 @@ Verified: 2026-09-03 (mac and windows fleet re-verified)
 ## Model system (singular)
 
 - ALL harnesses on BOTH machines → `local-router/fallback-models` @ :11434.
+- Dynamic routing: `local-router` evaluates required context ($T_{\text{input}} + T_{\text{output}}$) and multimodal images for every inference call, bypassing models lacking context or vision capability, and retries through the eligible chain for 3 full rounds before terminal failure.
 - mac chain: 21 steps (mac catalog). windows chain: 16/21 resolvable (5
   catalog ids absent); key-gated steps verified.
 - ollama CLI: hardened shim (`fix/shim-always-route`) probes the router on
