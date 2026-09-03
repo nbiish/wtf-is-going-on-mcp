@@ -1,13 +1,12 @@
 # ROADMAP — refinement items and open defects
 
-Verified: 2026-09-01 (items re-anchored after v0.15.1)
+Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence)
 
 ## Refinement phase (opened by mac-agent, session wrap 2026-09-01)
 
-- **R1 — identity-registry persistence.** Hub restarts clear the in-memory
-  identity registry; every chat member must re-`session_join` before
-  auto-seals route again. Fix: persist to `identities.json` (0600) on
-  register, or rehydrate from session members on load.
+- **R1 — identity-registry persistence [RESOLVED 2026-09-03].** Hub persists
+  identities to `identities.json` (0600) on registration and session join,
+  and rehydrates on load from persistence + session members.
 - **R2 — durable COMMS ledger.** windows-1 owes a committed
   `AGENTS/2026-09-01.COMMS.md` entry covering: v0.14.1/0.14.2 fixes,
   portproxy + firewall, NDJSON fix, shim hardening, docs split.
@@ -15,10 +14,8 @@ Verified: 2026-09-01 (items re-anchored after v0.15.1)
 
 ## Open defects
 
-- **Router NDJSON newline** (local-router `src/index.ts`
-  `createOllamaStreamTransform`): literal `'\\n'` pushed instead of `'\n'`
-  — breaks real-ollama NDJSON streams. Fixed locally on windows (running
-  binary); NOT yet merged upstream on mac.
+- **Router NDJSON newline [RESOLVED].** Verified upstream in local-router
+  `src/index.ts` `createOllamaStreamTransform`: proper newline streaming active.
 - **`pqc-secrets pack` is replace-only** (py engine `cmd_pack`): runbook
   claims merge-safe; it is not. Bundles must be repacked wholesale.
 - **Federation log echo** — v0.13.2 quieted heartbeats on windows side;

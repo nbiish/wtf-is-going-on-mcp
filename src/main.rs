@@ -197,6 +197,9 @@ fn cmd_serve(args: &[String]) -> i32 {
         wtf::replicate::spawn(rep_store, fed_name_for_rep, rep_fed);
     }
 
+    let sessions = wtf::sessions::Sessions::load();
+    let identities = Mutex::new(wtf::api::load_identities(&sessions));
+
     let hub = Arc::new(wtf::api::Hub {
         store,
         bins,
@@ -204,8 +207,8 @@ fn cmd_serve(args: &[String]) -> i32 {
         nonces: Mutex::new(wtf::auth::NonceCache::new()),
         dashboard_key: cfg.dashboard_key.clone(),
         started_at: util::now_secs(),
-        identities: Mutex::new(Vec::new()),
-        sessions: wtf::sessions::Sessions::load(),
+        identities,
+        sessions,
         enroll_hits: Mutex::new(Vec::new()),
         enroll_nonces: Mutex::new(Vec::new()),
         fed_name: fed.name.clone(),

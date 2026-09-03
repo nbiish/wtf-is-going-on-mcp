@@ -50,6 +50,10 @@ pub fn enroll_tokens_path() -> PathBuf {
     home().join("enroll_tokens.json")
 }
 
+pub fn identities_path() -> PathBuf {
+    home().join("identities.json")
+}
+
 /// Ensure the home dir exists with 0700.
 pub fn ensure_home() -> std::io::Result<PathBuf> {
     let h = home();
