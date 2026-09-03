@@ -73,4 +73,56 @@ keys together, never "merge" by packing one key.
 2. Architecture LKGL (Last Known Good Location): `$WTF_HOME/lkgl.json` persists each machine's active repository directory across sessions. Commands executed in `~/mac` or `~/windows` automatically anchor to that architecture's native LKGL unless explicitly redirected.
 3. Multi-Architecture Execution: The federated terminal resolves the target machine and executes commands at its LKGL. Compound pipelines allow operators on any device to orchestrate cross-architecture builds, tests, and ACP fleet operations in a single prompt.
 
+## 9. Three-Pillar Graph Intelligence Operations
+
+1. **GitNexus (AST & Code Symbol Integrity):**
+   - Index the codebase: `gitnexus analyze --index-only`.
+   - Active repository metrics: 1,389 nodes, 4,782 edges, 55 clusters, 122 call processes.
+   - Pre-flight blast radius assessment: query `gitnexus_context` and `gitnexus_impact` before modifying exported contracts.
+   - Post-edit verification: `gitnexus_detect_changes` confirms zero unintended call-site regressions.
+2. **Graphify (Multimodal & Cross-Artifact Synthesis):**
+   - Synthesizes code (`src/*.rs`), PRD contracts (`llms.txt`), runbooks (`docs/*.md`), and tasks (`.agents/tasks/`).
+   - Leiden community clustering maps module boundaries and multi-agent interaction topologies.
+3. **Semantica (Context & Governance Layer):**
+   - Records immutable agent decision trees with W3C PROV-O provenance in `AGENTS/{date}.COMMS.md`.
+   - Enforces cryptographic compliance: FIPS 203 ML-KEM-768 for secrets encapsulation, FIPS 204 ML-DSA-65 for signatures, and AES-256-GCM payloads.
+
+## 10. Universal Single-Config AI Tooling Source (Ollama :11434) & Convergence
+
+1. **Universal Endpoint Contract:**
+   - Pre-configured standard endpoint `http://127.0.0.1:11434` proxies the backend daemon on `127.0.0.1:11435`.
+   - Acts as the universal, PQC-secure single-configuration source for all AI tools and agent harnesses (Cursor, Warp, VS Code, Codex, Trae, Mini-SWE, OhMyPy, FreeClaudeCode, and edge devices).
+   - Unifies three protocols under one loopback port:
+     - **Ollama API:** `/api/generate`, `/api/chat`, `/api/tags`
+     - **OpenAI-compatible API:** `/v1/chat/completions`, `/v1/models`
+     - **Anthropic-compatible API:** `/v1/messages`
+2. **Federated Agent "Brains" (`local-router/fallback-models`):**
+   - Evaluates token context requirements ($T_{\text{input}} + T_{\text{output}}$) and multimodal visual inputs for every inference call.
+   - Dynamically bypasses models lacking sufficient context or vision capabilities across 3 retry passes before terminal failure.
+3. **Long-Term Convergence:**
+   - Harmonizes `local-router` inference and `wtf` multi-agent observability into a singular sovereign application runtime.
+   - `local-router` handles local inference and PQC key protection for both WTF federated workflows and standalone non-WTF applications; `wtf` handles observability, paste-bins, cluster coordination, and the federated shell.
+
+## 11. Windows Fleet Node Synchronization Runbook
+
+1. **Pull Latest Release Commits (WSL2):**
+   ```bash
+   cd /mnt/d/Code/wtf-is-going-on-mcp
+   git pull origin main
+   cargo build --release
+   target/release/wtf serve --bind 0.0.0.0:7800 --no-open
+   ```
+2. **Verify Portproxy (Windows PowerShell as Admin):**
+   ```powershell
+   netsh interface portproxy show v4tov4
+   # If WSL2 IP has rotated upon reboot:
+   $wsl_ip = (wsl hostname -I).Trim().Split()[0]
+   netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=7800 connectaddress=$wsl_ip connectport=7800
+   ```
+3. **Verify Federated Shell Link:**
+   - On Mac dashboard `/w/<capability>` or terminal:
+     `cd ~/windows && cargo test`
+   - Confirms bidirectional replication and cross-architecture compound execution.
+
+
 
