@@ -256,21 +256,14 @@ fn cmd_serve(args: &[String]) -> i32 {
         ip.to_string()
     };
     println!("wtf-hub v{VERSION} listening at http://{local}");
-    if ip.is_loopback() {
-        println!(
-            "dashboard: http://localhost:{}/w/{}",
-            local.port(),
-            capability
-        );
-        println!("(loopback-only: the capability path is the gate; LAN cannot reach this hub)");
+    let cap_url = if let Some(ref adv) = cfg.advertised_url {
+        format!("{}/w/{}", adv.trim_end_matches('/'), capability)
+    } else if ip.is_loopback() {
+        format!("http://localhost:{}/w/{}", local.port(), capability)
     } else {
-        println!(
-            "dashboard: http://{display_ip}:{}/?k={}",
-            local.port(),
-            cfg.dashboard_key
-        );
-        println!("(LAN-visible: legacy dashboard-key gate; `wtf dashboard-url` prints the local capability link)");
-    }
+        format!("http://{}:{}/w/{}", display_ip, local.port(), capability)
+    };
+    println!("dashboard: {cap_url}");
     println!("press Ctrl-C to stop");
     {
         use std::io::Write as _;
@@ -1373,14 +1366,15 @@ fn cmd_dashboard_url() -> i32 {
             return 1;
         }
     };
-    let loopback = bind.is_loopback();
-    if loopback {
-        println!("dashboard: http://localhost:{}/w/{cap}", cfg.port);
-        println!("(loopback-only hub — this link opens ONLY on this machine)");
+    if let Some(ref adv) = cfg.advertised_url {
+        println!("dashboard: {}/w/{cap}", adv.trim_end_matches('/'));
     } else {
         println!("dashboard: http://localhost:{}/w/{cap}", cfg.port);
+    }
+    if !bind.is_loopback() {
+        println!("LAN capability link: http://{}:{}/w/{cap}", util::lan_ip(), cfg.port);
         println!(
-            "from other hosts: http://{}:{}/?k={} (LAN path uses the dashboard key)",
+            "from other hosts: http://{}:{}/?k={} (legacy dashboard key)",
             util::lan_ip(),
             cfg.port,
             cfg.dashboard_key

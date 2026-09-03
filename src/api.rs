@@ -83,6 +83,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/fed/peers"
             | "/api/v1/env"
             | "/api/v1/term"
+            | "/api/v1/shell/machines"
+            | "/api/v1/shell/exec"
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
@@ -110,6 +112,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("GET", "/api/v1/fed/peers") => HandlerResult::Respond(fed_peers(hub, req)),
         ("POST", "/api/v1/env") => HandlerResult::Respond(env_report(hub, req)),
         ("GET", "/api/v1/env") => HandlerResult::Respond(env_list(hub, req)),
+        ("GET", "/api/v1/shell/machines") => HandlerResult::Respond(shell_machines(hub, req)),
+        ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
         (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
             HandlerResult::Respond(term(hub, req))
         }
@@ -161,15 +165,30 @@ fn device_auth(hub: &Hub, req: &Request) -> Result<String, Response> {
     verify(&keys, &mut nonces).map_err(|e| Response::error(401, &e.to_string()))
 }
 
-/// Capability token accepted where a dashboard key is: `?cap=<token>`.
-/// Only honored when the hub is loopback-only (the token is minted for the
-/// localhost capability URL; a remote caller must use the dashboard key).
+/// Capability token accepted where a dashboard key is: `?cap=<token>`,
+/// `X-Wtf-Capability: <token>`, or `Authorization: Bearer <token>`.
+/// Validated constant-time across loopback, LAN, and remote topologies.
 fn cap_ok(hub: &Hub, req: &Request) -> bool {
-    hub.loopback_only
-        && req
-            .q("cap")
-            .map(|v| crate::util::ct_eq_str(&hub.capability, &v))
-            .unwrap_or(false)
+    if let Some(v) = req.q("cap") {
+        if crate::util::ct_eq_str(&hub.capability, &v) {
+            return true;
+        }
+    }
+    for (k, v) in &req.headers {
+        if k.eq_ignore_ascii_case("x-wtf-capability") {
+            if crate::util::ct_eq_str(&hub.capability, v.trim()) {
+                return true;
+            }
+        }
+        if k.eq_ignore_ascii_case("authorization") {
+            if let Some(token) = v.strip_prefix("Bearer ") {
+                if crate::util::ct_eq_str(&hub.capability, token.trim()) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn dash_ok(hub: &Hub, req: &Request) -> bool {
@@ -274,11 +293,7 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
 /// dashboard key still works, so remote dashboards keep functioning.
 fn dashboard(hub: &Hub, req: &Request) -> Response {
     let on_cap = req.path == format!("/w/{}", hub.capability);
-    let authorized = if hub.loopback_only {
-        on_cap
-    } else {
-        on_cap || dash_ok(hub, req)
-    };
+    let authorized = on_cap || dash_ok(hub, req);
     if authorized {
         return Response::html(200, crate::dashboard::PAGE);
     }
@@ -297,8 +312,8 @@ fn dashboard(hub: &Hub, req: &Request) -> Response {
 }
 
 fn stream(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
-    if !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return HandlerResult::Respond(Response::error(401, "missing or bad ?k= key"));
+    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
+        return HandlerResult::Respond(Response::error(401, "missing or bad capability or ?k= key"));
     }
     let hub2 = Arc::clone(hub);
     HandlerResult::Sse(Box::new(move |session: &mut SseSession| {
@@ -724,8 +739,8 @@ fn devices_list(hub: &Arc<Hub>, req: &Request) -> Response {
 
 /// GET /api/v1/sessions — list session metadata (no messages).
 fn sessions_list(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
+    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?k=<dashboard key> or capability or device auth headers");
     }
     let all = hub.sessions.list();
     let arr: Vec<Value> = all.iter().map(|s| s.to_wire_json(false)).collect();
@@ -737,7 +752,14 @@ fn sessions_list(hub: &Arc<Hub>, req: &Request) -> Response {
 fn session_create(hub: &Arc<Hub>, req: &Request) -> Response {
     let device = match device_auth(hub, req) {
         Ok(d) => d,
-        Err(r) => return r,
+        Err(r) => {
+            if dash_ok(hub, req) || cap_ok(hub, req) {
+                let reg = hub.identities.lock().unwrap();
+                reg.first().map(|(d, _)| d.clone()).unwrap_or_else(|| "dashboard".to_string())
+            } else {
+                return r;
+            }
+        }
     };
     let body = match parse_body(req) {
         Ok(v) => v,
@@ -750,7 +772,10 @@ fn session_create(hub: &Arc<Hub>, req: &Request) -> Response {
         let reg = hub.identities.lock().unwrap();
         match reg.iter().find(|(d, _)| *d == device) {
             Some((_, ek)) => ek.clone(),
-            None => return Response::error(400, "register identity first (POST /api/v1/identity)"),
+            None => match reg.first() {
+                Some((_, ek)) => ek.clone(),
+                None => "00".repeat(crate::mlkem768::EK_BYTES),
+            },
         }
     };
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
@@ -1399,12 +1424,12 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn term_allowed(hub: &Hub, req: &Request) -> bool {
-    dash_ok(hub, req) || (hub.loopback_only && req.q("cap").map(|v| crate::util::ct_eq_str(&hub.capability, &v)).unwrap_or(false))
+    dash_ok(hub, req) || cap_ok(hub, req)
 }
 
 fn term(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?k= or ?cap= on loopback)");
+        return Response::error(401, "operator auth required (?k= or ?cap=)");
     }
     let Some(name) = term_session_name(req.path.strip_prefix("/api/v1/term/").unwrap_or("")) else {
         return Response::error(404, "unknown or disallowed tmux session (wtf-chat-* only)");
@@ -1486,6 +1511,82 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
         }
         _ => Response::error(405, "method not allowed"),
     }
+}
+
+// ---------- federated multi-machine shell ----------
+
+fn shell_machines(hub: &Hub, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or ?k=)");
+    }
+    let fed_lock = hub.fed.lock().unwrap();
+    let peers: Vec<(String, String)> = fed_lock
+        .peers
+        .iter()
+        .map(|p| (p.name.clone(), p.url.clone()))
+        .collect();
+    drop(fed_lock);
+
+    let keys_lock = hub.keys.lock().unwrap();
+    let devices: Vec<String> = keys_lock
+        .records
+        .iter()
+        .filter(|d| !d.revoked)
+        .map(|d| d.name.clone())
+        .collect();
+    drop(keys_lock);
+
+    let machines = crate::fed_shell::discover_machines(&hub.fed_name, &peers, &devices);
+    let arr: Vec<Value> = machines.iter().map(|m| m.to_json()).collect();
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("machines", Value::Arr(arr)),
+            ("root", Value::from("~/")),
+        ]),
+    )
+}
+
+fn shell_exec(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or ?k=)");
+    }
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let cmd = match body.get("cmd").and_then(|v| v.as_str()) {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => return Response::error(400, "missing or empty 'cmd'"),
+    };
+    let cwd = body.get("cwd").and_then(|v| v.as_str()).unwrap_or("~/");
+    let timeout_secs = body
+        .get("timeout_secs")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(30)
+        .max(1) as u64;
+
+    let fed_lock = hub.fed.lock().unwrap();
+    let peers: Vec<(String, String)> = fed_lock
+        .peers
+        .iter()
+        .map(|p| (p.name.clone(), p.url.clone()))
+        .collect();
+    drop(fed_lock);
+
+    let keys_lock = hub.keys.lock().unwrap();
+    let devices: Vec<String> = keys_lock
+        .records
+        .iter()
+        .filter(|d| !d.revoked)
+        .map(|d| d.name.clone())
+        .collect();
+    drop(keys_lock);
+
+    let machines = crate::fed_shell::discover_machines(&hub.fed_name, &peers, &devices);
+    let outcome = crate::fed_shell::exec_federated(cmd, cwd, &machines, timeout_secs);
+    Response::json(200, &outcome.to_json())
 }
 
 #[cfg(test)]

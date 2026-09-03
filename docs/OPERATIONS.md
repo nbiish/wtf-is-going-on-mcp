@@ -59,3 +59,11 @@ keys together, never "merge" by packing one key.
   open on work start, close/delete when done, reconnect on hung pane.
 - Chat viewer (dashboard click) is opener-driven: the dashboard page owns
   poll/send/scope; the viewer window is a pure display (no inline scripts).
+
+## 7. Singular dashboard URL & Federated Multi-Machine Shell
+
+1. Access URL: Run `wtf dashboard-url` on the hub machine to print the authoritative singular capability link (`http://<host>:<port>/w/<capability>`). Opens universally across loopback and LAN without query-string secret leakage.
+2. Embedded Chat Studio: Manage lanes and prompt SWE-bench coding fleet agents (`trae-cli`, `mini`, `omp`, `fcc`) directly from the dashboard. Dispatches execute inside isolated tmux sessions routing through `local-router:11434`.
+3. Federated Shell: Virtual cluster root (`~/`) maps to connected machines (`~/mac`, `~/windows`, `~/creeper-pi`). Execute cross-machine release orchestration in a single compound command:
+   `cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test`
+

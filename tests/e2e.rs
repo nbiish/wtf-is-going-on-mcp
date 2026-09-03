@@ -2542,3 +2542,99 @@ fn bin_operator_courier_end_to_end() {
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&op);
 }
+
+#[test]
+fn federated_shell_and_singular_capability_dashboard_end_to_end() {
+    let home = temp_home("fed-shell-e2e");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url in listening line")
+        .to_string();
+
+    // 1. Verify capability file exists and load token
+    let cap_path = home.join("dashboard_capability");
+    assert!(cap_path.exists(), "dashboard_capability must be generated");
+    let cap = std::fs::read_to_string(&cap_path).unwrap().trim().to_string();
+    assert_eq!(cap.len(), 64, "capability must be 64-hex");
+
+    // 2. Test singular dashboard-url CLI output
+    let du = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["dashboard-url"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("run dashboard-url");
+    assert!(du.status.success());
+    let dutext = String::from_utf8_lossy(&du.stdout);
+    assert!(
+        dutext.contains(&format!("/w/{cap}")),
+        "dashboard-url output must carry the singular capability link: {dutext}"
+    );
+
+    // 3. GET /w/<cap> serves embedded page with Chat Studio and Federated Shell
+    let page = wtf::client::request(&format!("{url}/w/{cap}"), "GET", &[], b"").unwrap();
+    assert_eq!(page.status, 200);
+    let html = page.text();
+    assert!(html.contains("WTF IS GOING ON"));
+    assert!(html.contains("FEDERATED SHELL"));
+    assert!(html.contains("CHAT &amp; AGENT ORCHESTRATION"));
+
+    // 4. GET /api/v1/shell/machines with capability auth
+    let machs = wtf::client::request(
+        &format!("{url}/api/v1/shell/machines?cap={cap}"),
+        "GET",
+        &[],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(machs.status, 200);
+    assert!(machs.text().contains("\"machines\""));
+    assert!(machs.text().contains("\"root\":\"~/\""));
+
+    // 5. POST /api/v1/shell/exec with capability auth
+    let exec_body = br#"{"cmd":"echo 'WTF_FED_E2E_VERIFIED'","cwd":"~/"}"#;
+    let exec_res = wtf::client::request(
+        &format!("{url}/api/v1/shell/exec?cap={cap}"),
+        "POST",
+        &[("Content-Type".to_string(), "application/json".to_string())],
+        exec_body,
+    )
+    .unwrap();
+    assert_eq!(exec_res.status, 200);
+    assert!(exec_res.text().contains("WTF_FED_E2E_VERIFIED"));
+
+    // 6. Security negative: unauthorized shell request without cap
+    let unauth = wtf::client::request(&format!("{url}/api/v1/shell/machines"), "GET", &[], b"").unwrap();
+    assert_eq!(unauth.status, 401, "unauthorized shell request must be 401");
+
+    // 7. Security negative: wrong capability token on /w/ returns uniform 404
+    let fake_cap = "a".repeat(64);
+    let wrong_page = wtf::client::request(&format!("{url}/w/{fake_cap}"), "GET", &[], b"").unwrap();
+    assert_eq!(wrong_page.status, 404, "wrong capability path must return 404");
+
+    // Cleanup
+    let _ = hub.kill();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
