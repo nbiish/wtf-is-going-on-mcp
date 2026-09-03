@@ -2599,7 +2599,7 @@ fn federated_shell_and_singular_capability_dashboard_end_to_end() {
     assert!(html.contains("FEDERATED SHELL"));
     assert!(html.contains("CHAT &amp; AGENT ORCHESTRATION"));
 
-    // 4. GET /api/v1/shell/machines with capability auth
+    // 4. GET /api/v1/shell/machines with capability auth (includes LKGL, compute_tier, arch)
     let machs = wtf::client::request(
         &format!("{url}/api/v1/shell/machines?cap={cap}"),
         "GET",
@@ -2608,10 +2608,37 @@ fn federated_shell_and_singular_capability_dashboard_end_to_end() {
     )
     .unwrap();
     assert_eq!(machs.status, 200);
-    assert!(machs.text().contains("\"machines\""));
-    assert!(machs.text().contains("\"root\":\"~/\""));
+    let mtext = machs.text();
+    assert!(mtext.contains("\"machines\""));
+    assert!(mtext.contains("\"root\":\"~/\""));
+    assert!(mtext.contains("\"compute_tier\""));
+    assert!(mtext.contains("\"arch\""));
+    assert!(mtext.contains("\"lkgl\""));
 
-    // 5. POST /api/v1/shell/exec with capability auth
+    // 5. GET /api/v1/shell/config and POST /api/v1/shell/config for federated OMP
+    let cfg_res = wtf::client::request(
+        &format!("{url}/api/v1/shell/config?cap={cap}"),
+        "GET",
+        &[],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(cfg_res.status, 200);
+    assert!(cfg_res.text().contains("local-router/fallback-models"));
+    assert!(cfg_res.text().contains("fallback_chain"));
+
+    let update_cfg = br#"{"config":{"model":"local-router/fallback-models","proxy_url":"http://127.0.0.1:11434/v1","fallback_chain":["free-claude-code","omp","trae-cli","mini"],"fleet_mode":true}}"#;
+    let post_cfg = wtf::client::request(
+        &format!("{url}/api/v1/shell/config?cap={cap}"),
+        "POST",
+        &[("Content-Type".to_string(), "application/json".to_string())],
+        update_cfg,
+    )
+    .unwrap();
+    assert_eq!(post_cfg.status, 200);
+    assert!(post_cfg.text().contains("\"ok\":true"));
+
+    // 6. POST /api/v1/shell/exec with capability auth
     let exec_body = br#"{"cmd":"echo 'WTF_FED_E2E_VERIFIED'","cwd":"~/"}"#;
     let exec_res = wtf::client::request(
         &format!("{url}/api/v1/shell/exec?cap={cap}"),
@@ -2623,11 +2650,11 @@ fn federated_shell_and_singular_capability_dashboard_end_to_end() {
     assert_eq!(exec_res.status, 200);
     assert!(exec_res.text().contains("WTF_FED_E2E_VERIFIED"));
 
-    // 6. Security negative: unauthorized shell request without cap
+    // 7. Security negative: unauthorized shell request without cap
     let unauth = wtf::client::request(&format!("{url}/api/v1/shell/machines"), "GET", &[], b"").unwrap();
     assert_eq!(unauth.status, 401, "unauthorized shell request must be 401");
 
-    // 7. Security negative: wrong capability token on /w/ returns uniform 404
+    // 8. Security negative: wrong capability token on /w/ returns uniform 404
     let fake_cap = "a".repeat(64);
     let wrong_page = wtf::client::request(&format!("{url}/w/{fake_cap}"), "GET", &[], b"").unwrap();
     assert_eq!(wrong_page.status, 404, "wrong capability path must return 404");

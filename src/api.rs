@@ -84,6 +84,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/env"
             | "/api/v1/term"
             | "/api/v1/shell/machines"
+            | "/api/v1/shell/config"
             | "/api/v1/shell/exec"
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
@@ -113,6 +114,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/env") => HandlerResult::Respond(env_report(hub, req)),
         ("GET", "/api/v1/env") => HandlerResult::Respond(env_list(hub, req)),
         ("GET", "/api/v1/shell/machines") => HandlerResult::Respond(shell_machines(hub, req)),
+        ("GET", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_get(hub, req)),
+        ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
         ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
         (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
             HandlerResult::Respond(term(hub, req))
@@ -1587,6 +1590,35 @@ fn shell_exec(hub: &Arc<Hub>, req: &Request) -> Response {
     let machines = crate::fed_shell::discover_machines(&hub.fed_name, &peers, &devices);
     let outcome = crate::fed_shell::exec_federated(cmd, cwd, &machines, timeout_secs);
     Response::json(200, &outcome.to_json())
+}
+
+fn shell_config_get(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or ?k=)");
+    }
+    let cfg = crate::fed_shell::load_fed_omp_config();
+    Response::json(
+        200,
+        &Value::obj(vec![("ok", Value::from(true)), ("config", cfg)]),
+    )
+}
+
+fn shell_config_post(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or ?k=)");
+    }
+    let val = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let cfg = match val.get("config") {
+        Some(c) => c,
+        None => &val,
+    };
+    if let Err(e) = crate::fed_shell::save_fed_omp_config(cfg) {
+        return Response::error(500, &e);
+    }
+    Response::json(200, &Value::obj(vec![("ok", Value::from(true))]))
 }
 
 #[cfg(test)]

@@ -138,14 +138,15 @@ button.primary:hover{opacity:.9}
         <span class="dim" style="font-size:11px">Root: <b style="color:var(--accent)">~/</b> (cluster machines)</span>
         <span id="shell-cwd-badge" class="pill working" style="margin-left:auto">~/</span>
       </div>
+      <div id="shell-lkgl-info" class="dim" style="font-size:10px;margin:2px 0 4px 0">Cluster Root · Cross-Architecture Compound Terminal</div>
       <div class="bar" id="machine-chips-bar" style="font-size:11px">
         <span class="dim">Quick Jump:</span>
         <button class="mach-chip" data-dir="~/" style="padding:1px 8px;font-size:11px">~/ (all)</button>
       </div>
-      <div id="shell-out">=== WTF FEDERATED SHELL ===
-Virtual cluster root (~/) contains folders for every machine.
-Commands in ~/mac run locally; commands in ~/windows run via SSH / remote hub.
-Supports cross-machine compound orchestration in one prompt:
+      <div id="shell-out">=== WTF FEDERATED SHELL & DISTRIBUTED OMP ===
+Virtual cluster root (~/) anchors to connected machines with persistent architecture LKGL.
+Dispatched tasks & 'omp' inherit synchronized local-router proxy (:11434) and fallback cascades.
+Supports cross-architecture compound orchestration in one prompt:
   cd ~/mac && echo "mac ok" && cd ~/windows && echo "win ok"
 Type 'ls ~' or 'cd <machine>' to navigate.</div>
       <div class="bar" style="margin-top:2px">
@@ -435,10 +436,12 @@ function renderMachineChips(machines){
 
   for(const m of machines){
     const btn = document.createElement("button");
-    btn.textContent = "~/" + m.name + (m.is_local ? " [LOCAL]" : "");
+    const tier = m.compute_tier ? (" [" + m.compute_tier.toUpperCase() + "]") : "";
+    btn.textContent = "~/" + m.name + tier + (m.is_local ? " *" : "");
     btn.style.padding = "2px 8px";
     btn.style.fontSize = "11px";
     if(m.is_local) btn.style.borderColor = "var(--ok)";
+    if(m.lkgl) btn.title = "Arch: " + (m.arch||"unknown") + " | LKGL: " + m.lkgl;
     btn.addEventListener("click", ()=>switchCwd("~/" + m.name));
     bar.appendChild(btn);
   }
@@ -448,6 +451,16 @@ function switchCwd(newCwd){
   currentCwd = newCwd;
   document.getElementById("shell-cwd-badge").textContent = currentCwd;
   document.getElementById("shell-prompt-tag").textContent = "["+currentCwd+"]$";
+  const machName = currentCwd.replace(/^~\/?/, "").split("/")[0];
+  const found = machinesList.find(m => m.name === machName || (m.aliases && m.aliases.includes(machName)));
+  const infoEl = document.getElementById("shell-lkgl-info");
+  if(infoEl){
+    if(found && found.lkgl){
+      infoEl.textContent = "Arch: " + (found.arch||"unknown") + " · Tier: " + (found.compute_tier||"standard") + " · LKGL: " + found.lkgl;
+    } else {
+      infoEl.textContent = "Cluster Root · Cross-Architecture Compound Terminal";
+    }
+  }
 }
 
 async function execShell(){

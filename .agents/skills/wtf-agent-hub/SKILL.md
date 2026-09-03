@@ -1,6 +1,6 @@
 ---
 name: wtf-agent-hub
-description: Connect any agent, on any machine or harness, to the wtf multi-agent observability hub. Use when an agent needs to report status to the team hub, wire up the wtf MCP server, receive work from a paste-bin ("work from bin N"), publish findings/context for other agents or machines via bins, orchestrate multi-machine release commands in the federated shell, or check what other agents are doing. Covers env/PQC credential delivery, MCP registration, reporting etiquette, bin-based cross-agent collaboration, the v0.15.1 SWE-bench coding fleet executor (chat_run: per-chat tmux sessions running the fcc-omp-trae-mini fallback cascade via local-router:11434), singular capability dashboard URL (/w/<capability>), and the paired Federated Multi-Machine Shell.
+description: Connect any agent, on any machine or harness, to the wtf multi-agent observability hub. Use when an agent needs to report status to the team hub, wire up the wtf MCP server, receive work from a paste-bin ("work from bin N"), publish findings/context for other agents or machines via bins, orchestrate multi-machine release commands in the federated shell, or check what other agents are doing. Covers env/PQC credential delivery, MCP registration, reporting etiquette, bin-based cross-agent collaboration, the v0.15.2 SWE-bench coding fleet executor (chat_run: per-chat tmux sessions running the fcc-omp-trae-mini fallback cascade via local-router:11434), singular capability dashboard URL (/w/<capability>), architecture LKGL tracking, and the paired Federated Multi-Machine Shell.
 ---
 
 # wtf-agent-hub — connect any agent to the team hub
@@ -206,10 +206,20 @@ machines. The rules are mechanical — follow them on every task:
    (`free-claude-code → omp → trae-cli → mini` or explicit `fleet`).
    `chat_sessions` lists active executor sessions; `chat_session_lifecycle`
    manages pane lifecycle (open/close/reconnect/delete).
-4. **Paired Federated Multi-Machine Shell**:
-   The dashboard integrates a paired Federated Shell (`src/fed_shell.rs`):
+4. **Paired Federated Multi-Machine Shell & Intelligent Distributed Compute**:
+   The dashboard integrates a paired Federated Shell and distributed compute engine (`src/fed_shell.rs`):
    - **Virtual Root (`~/`)**: Contains directories for every connected machine
      (`~/mac`, `~/windows`, `~/creeper-pi`).
+   - **Architecture LKGL Tracking**: Each architecture (`mac`, `windows`, `pi`, `linux`)
+     persists its Last Known Good Location across sessions (`$WTF_HOME/lkgl.json`),
+     ensuring commands and dispatched tasks automatically execute in their native project workspaces.
+   - **Federated OMP Configuration (`fed_omp_config.json`)**: Synchronized shared
+     model parameters (`local-router/fallback-models`), proxy endpoint (`127.0.0.1:11434`),
+     and fallback cascade (`free-claude-code → omp → trae-cli → mini` or `fleet`).
+   - **Intelligent Distributed Compute**: `chat_run` accepts `machine: "<name>"`. Any
+     connected node (including low-power edge devices like a Raspberry Pi) can utilize the
+     WTF MCP tools to dispatch heavy compilation, testing, or model synthesis workloads to
+     the cluster's strongest compute node and stream results back.
    - **Cross-Architecture Multi-Prompt Orchestration**: Operators can execute
      chained multi-machine build/test pipelines in a single compound command:
      ```bash
@@ -217,7 +227,7 @@ machines. The rules are mechanical — follow them on every task:
      ```
    - **Attributed Output**: Interleaves machine badge chips (`[mac]`, `[windows]`)
      directly in the terminal feed.
-   - Backend routes: `GET /api/v1/shell/machines` and `POST /api/v1/shell/exec`.
+   - Backend routes: `GET /api/v1/shell/machines`, `GET/POST /api/v1/shell/config`, and `POST /api/v1/shell/exec`.
 5. **Report**: progress, decisions, and failures go back into the repo
    chat (`session_send`/`comms_post`); chain-of-draft for the public
    event feed. Post-quantum posture is automatic: FIPS 203 key sealing,

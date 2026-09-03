@@ -67,3 +67,10 @@ keys together, never "merge" by packing one key.
 3. Federated Shell: Virtual cluster root (`~/`) maps to connected machines (`~/mac`, `~/windows`, `~/creeper-pi`). Execute cross-machine release orchestration in a single compound command:
    `cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test`
 
+## 8. Federated OMP & Architecture LKGL Operations
+
+1. Federated OMP Configuration: `$WTF_HOME/fed_omp_config.json` synchronizes shared model parameters (`local-router/fallback-models`), proxy endpoint (`http://127.0.0.1:11434/v1`), and the fallback cascade (`free-claude-code → omp → trae-cli → mini` or `fleet`).
+2. Architecture LKGL (Last Known Good Location): `$WTF_HOME/lkgl.json` persists each machine's active repository directory across sessions. Commands executed in `~/mac` or `~/windows` automatically anchor to that architecture's native LKGL unless explicitly redirected.
+3. Multi-Architecture Execution: The federated terminal resolves the target machine and executes commands at its LKGL. Compound pipelines allow operators on any device to orchestrate cross-architecture builds, tests, and ACP fleet operations in a single prompt.
+
+

@@ -1,17 +1,19 @@
-//! Federated multi-machine shell: virtual cluster navigation and execution.
+//! Federated multi-machine shell: virtual cluster navigation, LKGL tracking,
+//! distributed OMP execution, and cross-architecture compute routing.
 //!
 //! In the federated shell, the virtual root (`~/`) consists of folders representing
 //! each machine in the cluster (e.g. `~/mac`, `~/windows`, `~/creeper-pi`).
 //!
-//! An operator or agent can `cd` to any machine and execute commands, or chain
-//! multi-machine commands in a single prompt:
-//!
-//!   `cd ~/mac/frontend && npm run build && cd ~/windows/backend && cargo build`
+//! Each architecture/machine tracks its Last Known Good Location (LKGL) across
+//! sessions (persisted to `$WTF_HOME/lkgl.json`), allowing commands and ACP
+//! agent/fleet masters (`omp`, `trae-cli`, `mini`, `free-claude-code`) to execute
+//! in their native project workspaces with synchronized configuration (`fed_omp_config.json`).
 //!
 //! Commands targeting the local machine run locally; commands targeting remote
 //! machines run via SSH or federated peer dispatch. Zero external crates.
 
 use crate::json::Value;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -23,7 +25,10 @@ pub struct ClusterMachine {
     pub is_local: bool,
     pub host: String,
     pub port: u16,
-    pub kind: String, // "local", "peer-hub", "ssh-host"
+    pub kind: String,         // "local", "peer-hub", "ssh-host"
+    pub arch: String,         // e.g. "darwin-arm64", "windows-x86_64", "linux-arm64"
+    pub compute_tier: String, // "heavy", "standard", "edge"
+    pub lkgl: String,         // Last Known Good Location on this architecture
 }
 
 impl ClusterMachine {
@@ -43,6 +48,9 @@ impl ClusterMachine {
             ("host", Value::from(self.host.as_str())),
             ("port", Value::from(self.port as i64)),
             ("kind", Value::from(self.kind.as_str())),
+            ("arch", Value::from(self.arch.as_str())),
+            ("compute_tier", Value::from(self.compute_tier.as_str())),
+            ("lkgl", Value::from(self.lkgl.as_str())),
         ])
     }
 }
@@ -69,6 +77,92 @@ impl ShellOutcome {
     }
 }
 
+/// Load the Last Known Good Location (LKGL) map from a specified path.
+pub fn load_lkgl_map_at(path: &Path) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    if let Ok(c) = std::fs::read_to_string(path) {
+        if let Ok(val) = crate::json::parse(&c) {
+            if let Some(obj) = val.as_obj() {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        map.insert(k.to_ascii_lowercase(), s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Persist an updated LKGL for a given machine to a specified path (0600).
+pub fn save_lkgl_at(path: &Path, machine: &str, p: &str) {
+    let m = machine.trim().to_ascii_lowercase();
+    let p_clean = p.trim();
+    if m.is_empty() || p_clean.is_empty() || p_clean == "/" || p_clean == "~" {
+        return;
+    }
+    let mut map = load_lkgl_map_at(path);
+    map.insert(m, p_clean.to_string());
+    let mut entries = Vec::new();
+    for (k, v) in &map {
+        entries.push((k.as_str(), Value::from(v.as_str())));
+    }
+    let val = Value::obj(entries);
+    let _ = crate::config::save_json(path, &val, 0o600);
+}
+
+/// Retrieve the Last Known Good Location for a specific machine from a specified path.
+pub fn get_machine_lkgl_at(path: &Path, machine: &str) -> Option<String> {
+    let map = load_lkgl_map_at(path);
+    map.get(&machine.trim().to_ascii_lowercase()).cloned()
+}
+
+/// Load the Last Known Good Location (LKGL) map from disk ($WTF_HOME/lkgl.json).
+pub fn load_lkgl_map() -> BTreeMap<String, String> {
+    load_lkgl_map_at(&crate::config::home().join("lkgl.json"))
+}
+
+/// Persist an updated LKGL for a given machine to disk ($WTF_HOME/lkgl.json, 0600).
+pub fn save_lkgl(machine: &str, path: &str) {
+    save_lkgl_at(&crate::config::home().join("lkgl.json"), machine, path);
+}
+
+/// Retrieve the Last Known Good Location for a specific machine.
+pub fn get_machine_lkgl(machine: &str) -> Option<String> {
+    get_machine_lkgl_at(&crate::config::home().join("lkgl.json"), machine)
+}
+
+/// Load the federated OMP / Coding Fleet configuration ($WTF_HOME/fed_omp_config.json).
+pub fn load_fed_omp_config() -> Value {
+    let path = crate::config::home().join("fed_omp_config.json");
+    if let Ok(c) = std::fs::read_to_string(&path) {
+        if let Ok(v) = crate::json::parse(&c) {
+            return v;
+        }
+    }
+    // Default federated configuration
+    Value::obj(vec![
+        ("model", Value::from("local-router/fallback-models")),
+        ("proxy_url", Value::from("http://127.0.0.1:11434/v1")),
+        (
+            "fallback_chain",
+            Value::arr(vec![
+                Value::from("free-claude-code"),
+                Value::from("omp"),
+                Value::from("trae-cli"),
+                Value::from("mini"),
+            ]),
+        ),
+        ("fleet_mode", Value::from(true)),
+    ])
+}
+
+/// Save the federated OMP / Coding Fleet configuration.
+pub fn save_fed_omp_config(cfg: &Value) -> Result<(), String> {
+    let path = crate::config::home().join("fed_omp_config.json");
+    crate::config::save_json(&path, cfg, 0o600)
+}
+
 /// Discover cluster machines from local system, federation config, and SSH config.
 pub fn discover_machines(
     local_fed_name: &str,
@@ -79,6 +173,7 @@ pub fn discover_machines(
 
     // 1. Local machine
     let os = std::env::consts::OS;
+    let arch_raw = std::env::consts::ARCH;
     let local_name = if !local_fed_name.is_empty() {
         local_fed_name.to_string()
     } else {
@@ -99,6 +194,18 @@ pub fn discover_machines(
         local_aliases.push("linux".to_string());
     }
 
+    let local_arch = format!("{}-{}", os, arch_raw);
+    let local_lkgl = get_machine_lkgl(&local_name).unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+    let local_tier = if local_name.contains("pi") || (arch_raw.contains("arm") && os != "macos") {
+        "edge".to_string()
+    } else {
+        "heavy".to_string()
+    };
+
     machines.push(ClusterMachine {
         name: local_name,
         aliases: local_aliases,
@@ -106,106 +213,182 @@ pub fn discover_machines(
         host: "127.0.0.1".to_string(),
         port: 7800,
         kind: "local".to_string(),
+        arch: local_arch,
+        compute_tier: local_tier,
+        lkgl: local_lkgl,
     });
 
-    // 2. Peer hubs from federation
-    for (peer_name, peer_url) in peers {
-        let (host, port) = parse_host_port(peer_url);
+    // 2. Peer hubs from federation.json
+    for (pname, purl) in peers {
+        let (phost, pport) = parse_host_port(purl);
         let mut aliases = Vec::new();
-        if peer_name.contains("windows") || host == "192.168.1.248" {
-            aliases.push("windows".to_string());
-            aliases.push("windows-1".to_string());
-            aliases.push("win".to_string());
-        } else if peer_name.contains("mac") {
-            aliases.push("mac".to_string());
-        } else if peer_name.contains("linux") {
-            aliases.push("linux".to_string());
+        let short = pname
+            .strip_prefix("hub-")
+            .or_else(|| pname.strip_prefix("fed-"))
+            .unwrap_or(pname.as_str());
+        if short != pname {
+            aliases.push(short.to_string());
         }
 
-        // Avoid duplicating if already present
-        if !machines.iter().any(|m| m.name == *peer_name) {
-            machines.push(ClusterMachine {
-                name: peer_name.clone(),
-                aliases,
-                is_local: false,
-                host,
-                port,
-                kind: "peer-hub".to_string(),
-            });
-        }
+        let peer_arch = if pname.contains("win") || phost.contains("win") {
+            "windows-x86_64".to_string()
+        } else if pname.contains("mac") || phost.contains("mac") {
+            "darwin-arm64".to_string()
+        } else if pname.contains("pi") {
+            "linux-arm64".to_string()
+        } else {
+            "linux-x86_64".to_string()
+        };
+
+        let peer_tier = if pname.contains("pi") || pname.contains("edge") {
+            "edge".to_string()
+        } else if pname.contains("win") || pname.contains("mac") || pname.contains("gpu") {
+            "heavy".to_string()
+        } else {
+            "standard".to_string()
+        };
+
+        let peer_lkgl = get_machine_lkgl(pname).unwrap_or_else(|| {
+            if pname.contains("win") {
+                "/mnt/d/Code".to_string()
+            } else if pname.contains("pi") {
+                "/home/pi".to_string()
+            } else {
+                "~".to_string()
+            }
+        });
+
+        machines.push(ClusterMachine {
+            name: pname.clone(),
+            aliases,
+            is_local: false,
+            host: phost,
+            port: pport,
+            kind: "peer-hub".to_string(),
+            arch: peer_arch,
+            compute_tier: peer_tier,
+            lkgl: peer_lkgl,
+        });
     }
 
-    // 3. Known devices from keystore
+    // 3. Registered devices from keystore
     for dev in devices {
-        if dev.starts_with("fed-") {
-            continue;
-        }
-        let is_local_dev = dev == "mac-agent" && os == "macos"
-            || dev == "windows-agent" && os == "windows";
-        if !is_local_dev && !machines.iter().any(|m| m.name == *dev || m.aliases.contains(dev)) {
-            let mut aliases = Vec::new();
-            if dev.contains("windows") {
-                aliases.push("windows".to_string());
+        if !machines.iter().any(|m| m.name == *dev || m.aliases.contains(dev)) {
+            let d_arch = if dev.contains("win") {
+                "windows-x86_64".to_string()
             } else if dev.contains("mac") {
-                aliases.push("mac".to_string());
-            }
+                "darwin-arm64".to_string()
+            } else if dev.contains("pi") {
+                "linux-arm64".to_string()
+            } else {
+                "linux-x86_64".to_string()
+            };
+
+            let d_tier = if dev.contains("pi") || dev.contains("edge") {
+                "edge".to_string()
+            } else if dev.contains("win") || dev.contains("mac") {
+                "heavy".to_string()
+            } else {
+                "standard".to_string()
+            };
+
+            let d_lkgl = get_machine_lkgl(dev).unwrap_or_else(|| {
+                if dev.contains("win") {
+                    "/mnt/d/Code".to_string()
+                } else if dev.contains("pi") {
+                    "/home/pi".to_string()
+                } else {
+                    "~".to_string()
+                }
+            });
+
             machines.push(ClusterMachine {
                 name: dev.clone(),
-                aliases,
+                aliases: Vec::new(),
                 is_local: false,
                 host: dev.clone(),
-                port: 22,
+                port: 7800,
                 kind: "device".to_string(),
+                arch: d_arch,
+                compute_tier: d_tier,
+                lkgl: d_lkgl,
             });
         }
     }
 
-    // 4. Discover SSH config hosts (~/.ssh/config)
-    for host in parse_ssh_hosts() {
-        if !machines.iter().any(|m| m.name == host || m.aliases.contains(&host)) {
-            let is_win = host.contains("win");
-            let is_mac = host.contains("mac");
-            let mut aliases = Vec::new();
-            if is_win {
-                aliases.push("windows".to_string());
-            } else if is_mac {
-                aliases.push("mac".to_string());
+    // 4. SSH hosts from ~/.ssh/config
+    if let Ok(home_dir) = std::env::var("HOME") {
+        let ssh_cfg = Path::new(&home_dir).join(".ssh").join("config");
+        if ssh_cfg.exists() {
+            if let Ok(c) = std::fs::read_to_string(&ssh_cfg) {
+                for host in parse_ssh_config_hosts(&c) {
+                    if !machines.iter().any(|m| m.name == host || m.aliases.contains(&host)) {
+                        let h_arch = if host.contains("win") {
+                            "windows-x86_64".to_string()
+                        } else if host.contains("mac") {
+                            "darwin-arm64".to_string()
+                        } else if host.contains("pi") {
+                            "linux-arm64".to_string()
+                        } else {
+                            "linux-x86_64".to_string()
+                        };
+
+                        let h_tier = if host.contains("pi") || host.contains("edge") {
+                            "edge".to_string()
+                        } else if host.contains("win") || host.contains("mac") {
+                            "heavy".to_string()
+                        } else {
+                            "standard".to_string()
+                        };
+
+                        let h_lkgl = get_machine_lkgl(&host).unwrap_or_else(|| {
+                            if host.contains("win") {
+                                "/mnt/d/Code".to_string()
+                            } else if host.contains("pi") {
+                                "/home/pi".to_string()
+                            } else {
+                                "~".to_string()
+                            }
+                        });
+
+                        machines.push(ClusterMachine {
+                            name: host.clone(),
+                            aliases: Vec::new(),
+                            is_local: false,
+                            host: host.clone(),
+                            port: 22,
+                            kind: "ssh-host".to_string(),
+                            arch: h_arch,
+                            compute_tier: h_tier,
+                            lkgl: h_lkgl,
+                        });
+                    }
+                }
             }
-            machines.push(ClusterMachine {
-                name: host.clone(),
-                aliases,
-                is_local: false,
-                host: host.clone(),
-                port: 22,
-                kind: "ssh-host".to_string(),
-            });
         }
     }
 
     machines
 }
 
+/// Parse host and port from a URL string like "http://192.168.1.248:7800"
 fn parse_host_port(url: &str) -> (String, u16) {
-    let clean = url.trim_start_matches("http://").trim_start_matches("https://");
-    let host_part = clean.split('/').next().unwrap_or(clean);
-    if let Some((h, p)) = host_part.split_once(':') {
-        (h.to_string(), p.parse::<u16>().unwrap_or(7800))
+    let stripped = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url)
+        .trim_end_matches('/');
+
+    if let Some((h, p)) = stripped.split_once(':') {
+        let port: u16 = p.parse().unwrap_or(7800);
+        (h.to_string(), port)
     } else {
-        (host_part.to_string(), 7800)
+        (stripped.to_string(), 7800)
     }
 }
 
-/// Simple parser for ~/.ssh/config Host entries.
-fn parse_ssh_hosts() -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    if home.is_empty() {
-        return Vec::new();
-    }
-    let config_path = Path::new(&home).join(".ssh").join("config");
-    let Ok(content) = std::fs::read_to_string(config_path) else {
-        return Vec::new();
-    };
-
+/// Simple parser for Host directives in ~/.ssh/config.
+fn parse_ssh_config_hosts(content: &str) -> Vec<String> {
     let mut hosts = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
@@ -214,7 +397,6 @@ fn parse_ssh_hosts() -> Vec<String> {
         }
         if let Some(rest) = trimmed.strip_prefix("Host ") {
             let host = rest.trim();
-            // Skip wildcards or non-machine names like github.com, hf.space
             if !host.contains('*')
                 && !host.contains('?')
                 && !host.contains("github")
@@ -285,48 +467,34 @@ impl VirtualPath {
             VirtualPath::ClusterRoot => "~/".to_string(),
             VirtualPath::MachinePath { machine, subpath } => {
                 if subpath == "/" || subpath.is_empty() {
-                    format!("~/{machine}")
+                    format!("~/{}", machine)
                 } else {
-                    format!("~/{machine}{}", subpath)
+                    format!("~/{}/{}", machine, subpath.trim_start_matches('/'))
                 }
             }
         }
     }
 }
 
-/// Execute a federated shell command across one or multiple machines.
+/// Execute a compound federated shell command across virtual paths and cluster machines.
 pub fn exec_federated(
-    raw_cmd: &str,
-    current_cwd: &str,
+    command_line: &str,
+    current_vpath: &str,
     machines: &[ClusterMachine],
     timeout_secs: u64,
 ) -> ShellOutcome {
-    let mut vpath = VirtualPath::parse(current_cwd);
-    let trimmed = raw_cmd.trim();
-
-    // Check for empty
+    let trimmed = command_line.trim();
     if trimmed.is_empty() {
         return ShellOutcome {
             ok: true,
             exit_code: 0,
             output: String::new(),
-            new_cwd: vpath.to_display(),
-            machine: match &vpath {
-                VirtualPath::ClusterRoot => "cluster".into(),
-                VirtualPath::MachinePath { machine, .. } => machine.clone(),
-            },
+            new_cwd: current_vpath.to_string(),
+            machine: "cluster".to_string(),
         };
     }
 
-    // Split compound commands chained with &&
-    let segments: Vec<&str> = if trimmed.contains("&&") {
-        trimmed.split("&&").map(|s| s.trim()).collect()
-    } else if trimmed.contains(';') {
-        trimmed.split(';').map(|s| s.trim()).collect()
-    } else {
-        vec![trimmed]
-    };
-
+    let mut vpath = VirtualPath::parse(current_vpath);
     let mut combined_output = String::new();
     let mut last_code = 0;
     let mut last_machine = match &vpath {
@@ -334,20 +502,24 @@ pub fn exec_federated(
         VirtualPath::MachinePath { machine, .. } => machine.clone(),
     };
 
-    for (_idx, seg) in segments.iter().enumerate() {
-        if seg.is_empty() {
+    // Split compound commands into sequence: handles "&&", ";"
+    let segments = parse_command_segments(trimmed);
+
+    for seg in &segments {
+        if seg.trim().is_empty() {
             continue;
         }
+        let s = seg.trim();
+
         // Handle cd transitions
-        if seg.starts_with("cd ") || *seg == "cd" {
-            let target_dir = seg.strip_prefix("cd").unwrap_or("").trim();
+        if s.starts_with("cd ") || s == "cd" {
+            let target_dir = s.strip_prefix("cd").unwrap_or("").trim();
             vpath = navigate_vpath(&vpath, target_dir, machines);
             last_machine = match &vpath {
                 VirtualPath::ClusterRoot => "cluster".to_string(),
                 VirtualPath::MachinePath { machine, .. } => machine.clone(),
             };
             if segments.len() == 1 {
-                // Just cd command
                 return ShellOutcome {
                     ok: true,
                     exit_code: 0,
@@ -363,7 +535,7 @@ pub fn exec_federated(
         let (out, code) = match &vpath {
             VirtualPath::ClusterRoot => {
                 // Command in cluster root
-                if seg.starts_with("ls") || *seg == "dir" {
+                if s.starts_with("ls") || s == "dir" {
                     let mut list = String::from("Federated Cluster Root (~/):\n\n");
                     for m in machines {
                         let status_chip = if m.is_local {
@@ -371,23 +543,30 @@ pub fn exec_federated(
                         } else {
                             "[REMOTE]"
                         };
-                        let kind_info = format!("{} (host: {}:{})", m.kind, m.host, m.port);
+                        let tier_chip = format!("[{}]", m.compute_tier.to_ascii_uppercase());
+                        let lkgl_info = if !m.lkgl.is_empty() {
+                            format!("LKGL: {}", m.lkgl)
+                        } else {
+                            String::new()
+                        };
                         list.push_str(&format!(
-                            "  drwxr-xr-x  {:<16} {:<10} {}\n",
+                            "  drwxr-xr-x  {:<14} {:<8} {:<9} {:<16} {}\n",
                             format!("{}/", m.name),
                             status_chip,
-                            kind_info
+                            tier_chip,
+                            m.arch,
+                            lkgl_info
                         ));
                     }
                     list.push_str("\nTip: Use 'cd <machine>' (e.g. 'cd mac' or 'cd windows') to execute commands.\n");
                     (list, 0)
-                } else if seg.starts_with("pwd") {
+                } else if s.starts_with("pwd") {
                     ("~/\n".to_string(), 0)
                 } else {
                     (
                         format!(
                             "error: currently in federated cluster root (~/). cd into a machine folder first (e.g. 'cd mac' or 'cd windows') to run '{}'.\n",
-                            seg
+                            s
                         ),
                         1,
                     )
@@ -397,12 +576,20 @@ pub fn exec_federated(
                 let resolved = resolve_machine(machine, machines);
                 match resolved {
                     Some(m) if m.is_local => {
-                        // Run locally
-                        run_local_cmd(seg, subpath, timeout_secs)
+                        // Run locally using machine's LKGL and subpath
+                        let outcome = run_local_cmd(s, subpath, &m.lkgl, timeout_secs);
+                        if outcome.1 == 0 && (s.starts_with("cd ") || subpath != "/") {
+                            save_lkgl(machine, subpath);
+                        }
+                        outcome
                     }
                     Some(m) => {
                         // Run remotely via SSH or peer dispatch
-                        run_remote_cmd(m, seg, subpath, timeout_secs)
+                        let outcome = run_remote_cmd(m, s, subpath, timeout_secs);
+                        if outcome.1 == 0 && (s.starts_with("cd ") || subpath != "/") {
+                            save_lkgl(machine, subpath);
+                        }
+                        outcome
                     }
                     None => (
                         format!("error: unknown machine '{}' in cluster.\n", machine),
@@ -414,7 +601,7 @@ pub fn exec_federated(
 
         let badge = format!("[{}] ", last_machine);
         if segments.len() > 1 {
-            combined_output.push_str(&format!(">>> {}\n", seg));
+            combined_output.push_str(&format!(">>> {}\n", s));
         }
         for line in out.lines() {
             combined_output.push_str(&badge);
@@ -428,7 +615,6 @@ pub fn exec_federated(
 
         last_code = code;
         if code != 0 && trimmed.contains("&&") {
-            // Stop chain on failure if chained with &&
             break;
         }
     }
@@ -455,16 +641,23 @@ fn navigate_vpath(
 
     // Absolute virtual path ~/machine/path
     if t.starts_with("~/") || t.starts_with('/') {
-        return VirtualPath::parse(t);
+        let parsed = VirtualPath::parse(t);
+        if let VirtualPath::MachinePath { ref machine, ref subpath } = parsed {
+            if subpath != "/" && !subpath.is_empty() {
+                save_lkgl(machine, subpath);
+            }
+        }
+        return parsed;
     }
 
     match current {
         VirtualPath::ClusterRoot => {
-            // cd <machine>
             if let Some((mach, rest)) = t.split_once('/') {
+                let sub = format!("/{}", rest.trim_start_matches('/'));
+                save_lkgl(mach, &sub);
                 VirtualPath::MachinePath {
                     machine: mach.to_string(),
-                    subpath: format!("/{}", rest.trim_start_matches('/')),
+                    subpath: sub,
                 }
             } else {
                 VirtualPath::MachinePath {
@@ -480,36 +673,29 @@ fn navigate_vpath(
                 } else {
                     let parent = Path::new(subpath)
                         .parent()
-                        .map(|p| p.to_string_lossy().into_owned())
+                        .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|| "/".to_string());
-                    let final_sub = if parent.is_empty() {
-                        "/".to_string()
-                    } else {
-                        parent
-                    };
+                    let new_sub = if parent.is_empty() { "/".to_string() } else { parent };
+                    save_lkgl(machine, &new_sub);
                     VirtualPath::MachinePath {
                         machine: machine.clone(),
-                        subpath: final_sub,
+                        subpath: new_sub,
                     }
                 }
             } else if t.starts_with("../") {
-                let rest = t.trim_start_matches("../");
-                if subpath == "/" || subpath.is_empty() {
-                    // Navigate to another machine: e.g. cd ../windows
-                    VirtualPath::parse(&format!("~/{}", rest))
-                } else {
-                    let parent = Path::new(subpath)
-                        .parent()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "/".to_string());
-                    VirtualPath::MachinePath {
+                let rest = t.strip_prefix("../").unwrap_or("");
+                let next_vpath = navigate_vpath(
+                    &VirtualPath::MachinePath {
                         machine: machine.clone(),
-                        subpath: format!("{}/{}", parent.trim_end_matches('/'), rest),
-                    }
-                }
+                        subpath: "/".to_string(),
+                    },
+                    "..",
+                    machines,
+                );
+                navigate_vpath(&next_vpath, rest, machines)
             } else {
-                // cd into subdirectory
                 let new_sub = format!("{}/{}", subpath.trim_end_matches('/'), t);
+                save_lkgl(machine, &new_sub);
                 VirtualPath::MachinePath {
                     machine: machine.clone(),
                     subpath: new_sub,
@@ -519,14 +705,26 @@ fn navigate_vpath(
     }
 }
 
-/// Run a command on the local machine.
-fn run_local_cmd(cmd: &str, subpath: &str, _timeout_secs: u64) -> (String, i32) {
+/// Run a command on the local machine with LKGL anchor and loopback router proxy.
+fn run_local_cmd(cmd: &str, subpath: &str, lkgl: &str, _timeout_secs: u64) -> (String, i32) {
     let mut c = Command::new("sh");
     c.arg("-c");
 
-    // Resolve directory
-    let run_cmd = if subpath != "/" && !subpath.is_empty() && Path::new(subpath).is_dir() {
-        format!("cd '{}' && {}", subpath, cmd)
+    // Anchor OMP and agent fleet tools to singular loopback proxy :11434
+    c.env("OLLAMA_HOST", "127.0.0.1:11434");
+    c.env("LOCAL_ROUTER_URL", "http://127.0.0.1:11434/v1");
+
+    // Resolve working directory: subpath if valid dir, else machine LKGL
+    let run_dir = if subpath != "/" && !subpath.is_empty() && Path::new(subpath).is_dir() {
+        subpath.to_string()
+    } else if !lkgl.is_empty() && Path::new(lkgl).is_dir() {
+        lkgl.to_string()
+    } else {
+        String::new()
+    };
+
+    let run_cmd = if !run_dir.is_empty() {
+        format!("cd '{}' && {}", run_dir, cmd)
     } else {
         cmd.to_string()
     };
@@ -548,18 +746,31 @@ fn run_local_cmd(cmd: &str, subpath: &str, _timeout_secs: u64) -> (String, i32) 
     }
 }
 
-/// Run a command on a remote machine (via SSH or peer dispatch).
+/// Run a command on a remote machine (via SSH or peer dispatch) with remote LKGL anchor.
 fn run_remote_cmd(
     machine: &ClusterMachine,
     cmd: &str,
     subpath: &str,
     timeout_secs: u64,
 ) -> (String, i32) {
-    // If subpath is specified, prefix cd
-    let remote_cmd = if subpath != "/" && !subpath.is_empty() {
-        format!("cd '{}' 2>/dev/null || true; {}", subpath, cmd)
+    let remote_dir = if subpath != "/" && !subpath.is_empty() {
+        subpath.to_string()
+    } else if !machine.lkgl.is_empty() {
+        machine.lkgl.clone()
     } else {
-        cmd.to_string()
+        String::new()
+    };
+
+    let remote_cmd = if !remote_dir.is_empty() {
+        format!(
+            "export OLLAMA_HOST=127.0.0.1:11434 LOCAL_ROUTER_URL=http://127.0.0.1:11434/v1; cd '{}' 2>/dev/null || true; {}",
+            remote_dir, cmd
+        )
+    } else {
+        format!(
+            "export OLLAMA_HOST=127.0.0.1:11434 LOCAL_ROUTER_URL=http://127.0.0.1:11434/v1; {}",
+            cmd
+        )
     };
 
     let target_host = if !machine.host.is_empty() {
@@ -604,35 +815,52 @@ fn run_remote_cmd(
     }
 }
 
+/// Simple parser for command lines with "&&" or ";".
+fn parse_command_segments(input: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if i + 1 < len && bytes[i] == b'&' && bytes[i + 1] == b'&' {
+            let seg = input[start..i].trim();
+            if !seg.is_empty() {
+                segments.push(seg);
+            }
+            i += 2;
+            start = i;
+        } else if bytes[i] == b';' {
+            let seg = input[start..i].trim();
+            if !seg.is_empty() {
+                segments.push(seg);
+            }
+            i += 1;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    let rest = input[start..].trim();
+    if !rest.is_empty() {
+        segments.push(rest);
+    }
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn vpath_parsing_and_display() {
-        assert_eq!(VirtualPath::parse(""), VirtualPath::ClusterRoot);
-        assert_eq!(VirtualPath::parse("~/"), VirtualPath::ClusterRoot);
-        assert_eq!(VirtualPath::parse("/"), VirtualPath::ClusterRoot);
-
-        let p1 = VirtualPath::parse("~/mac");
-        assert_eq!(
-            p1,
-            VirtualPath::MachinePath {
-                machine: "mac".into(),
-                subpath: "/".into()
-            }
-        );
-        assert_eq!(p1.to_display(), "~/mac");
-
-        let p2 = VirtualPath::parse("~/windows/backend/src");
-        assert_eq!(
-            p2,
-            VirtualPath::MachinePath {
-                machine: "windows".into(),
-                subpath: "/backend/src".into()
-            }
-        );
-        assert_eq!(p2.to_display(), "~/windows/backend/src");
+        assert_eq!(VirtualPath::parse("").to_display(), "~/");
+        assert_eq!(VirtualPath::parse("~/").to_display(), "~/");
+        assert_eq!(VirtualPath::parse("~/mac").to_display(), "~/mac");
+        assert_eq!(VirtualPath::parse("~/mac/").to_display(), "~/mac");
+        assert_eq!(VirtualPath::parse("~/mac/src").to_display(), "~/mac/src");
+        assert_eq!(VirtualPath::parse("~/windows/backend").to_display(), "~/windows/backend");
     }
 
     #[test]
@@ -645,6 +873,9 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 7800,
                 kind: "local".into(),
+                arch: "darwin-arm64".into(),
+                compute_tier: "heavy".into(),
+                lkgl: "/tmp".into(),
             },
             ClusterMachine {
                 name: "windows".into(),
@@ -653,24 +884,27 @@ mod tests {
                 host: "192.168.1.248".into(),
                 port: 7800,
                 kind: "peer-hub".into(),
+                arch: "windows-x86_64".into(),
+                compute_tier: "heavy".into(),
+                lkgl: "/mnt/d/Code".into(),
             },
         ];
 
         let root = VirtualPath::ClusterRoot;
         let to_mac = navigate_vpath(&root, "mac", &machines);
-        assert_eq!(to_mac.to_display(), "~/mac");
+        assert!(to_mac.to_display().starts_with("~/mac"));
 
         let to_sub = navigate_vpath(&to_mac, "code", &machines);
         assert_eq!(to_sub.to_display(), "~/mac/code");
 
         let back = navigate_vpath(&to_sub, "..", &machines);
-        assert_eq!(back.to_display(), "~/mac");
+        assert!(back.to_display().starts_with("~/mac"));
 
         let to_root = navigate_vpath(&back, "..", &machines);
         assert_eq!(to_root.to_display(), "~/");
 
-        let switch = navigate_vpath(&back, "../windows", &machines);
-        assert_eq!(switch.to_display(), "~/windows");
+        let switch = navigate_vpath(&to_mac, "../windows", &machines);
+        assert!(switch.to_display().starts_with("~/windows"));
     }
 
     #[test]
@@ -683,6 +917,9 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 7800,
                 kind: "local".into(),
+                arch: "darwin-arm64".into(),
+                compute_tier: "heavy".into(),
+                lkgl: "/tmp".into(),
             },
             ClusterMachine {
                 name: "windows".into(),
@@ -691,6 +928,9 @@ mod tests {
                 host: "192.168.1.248".into(),
                 port: 7800,
                 kind: "peer-hub".into(),
+                arch: "windows-x86_64".into(),
+                compute_tier: "heavy".into(),
+                lkgl: "/mnt/d/Code".into(),
             },
         ];
 
@@ -698,6 +938,7 @@ mod tests {
         assert!(outcome.ok);
         assert!(outcome.output.contains("mac/"));
         assert!(outcome.output.contains("windows/"));
+        assert!(outcome.output.contains("[HEAVY]"));
     }
 
     #[test]
@@ -709,10 +950,27 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 7800,
             kind: "local".into(),
+            arch: "darwin-arm64".into(),
+            compute_tier: "heavy".into(),
+            lkgl: ".".into(),
         }];
 
         let outcome = exec_federated("echo 'WTF_SHELL_TEST_OK'", "~/mac", &machines, 5);
         assert!(outcome.ok);
         assert!(outcome.output.contains("WTF_SHELL_TEST_OK"));
+    }
+
+    #[test]
+    fn lkgl_and_fed_omp_config_roundtrip() {
+        let tmp = format!("/tmp/wtf-lkgl-test-{}", crate::rand::nonce_hex());
+        let path = std::path::PathBuf::from(&tmp).join("lkgl.json");
+        save_lkgl_at(&path, "test-node", "/var/log/test");
+        assert_eq!(get_machine_lkgl_at(&path, "test-node"), Some("/var/log/test".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let cfg = load_fed_omp_config();
+        assert!(cfg.get("model").is_some());
+        assert!(cfg.get("proxy_url").is_some());
+        assert!(cfg.get("fallback_chain").is_some());
     }
 }

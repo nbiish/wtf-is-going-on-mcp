@@ -174,15 +174,18 @@ wtf_call GET  /api/v1/shell/machines        # discover federated shell cluster m
    - Dispatches SWE-bench dual-engine coding fleet tasks (`trae-cli`, `mini`, `omp`, `fcc`) into isolated tmux sessions.
    - All engines route through `local-router/fallback-models` on `127.0.0.1:11434`.
 
-3. **Paired Federated Multi-Machine Shell**:
+3. **Paired Federated Multi-Machine Shell & Intelligent Distributed Compute**:
    - Integrated into the right pane of `/w/<capability>`.
    - Virtual root (`~/`) maps to connected cluster machines (`~/mac`, `~/windows`, `~/creeper-pi`).
+   - Persistent per-architecture LKGL (`$WTF_HOME/lkgl.json`) automatically anchors commands and dispatched tasks to native workspace directories.
+   - Synchronized federated OMP config (`$WTF_HOME/fed_omp_config.json`) coordinates model parameters (`local-router/fallback-models`), proxy endpoint (`127.0.0.1:11434`), and fallback cascades.
+   - Intelligent Distributed Compute: Agents on any connected machine (including edge devices like a Raspberry Pi) can dispatch tasks to remote nodes via `chat_run(machine="<name>")` or the shell API.
    - Run multi-machine compound commands in a single prompt:
      ```bash
      cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test
      ```
    - Shows colored machine badge output (`[mac]`, `[windows]`) in the terminal log.
-   - Backend APIs: `GET /api/v1/shell/machines`, `POST /api/v1/shell/exec`.
+   - Backend APIs: `GET /api/v1/shell/machines`, `GET/POST /api/v1/shell/config`, `POST /api/v1/shell/exec`.
 
 ## 6. Operator Reference (hub side)
 

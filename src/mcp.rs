@@ -879,11 +879,12 @@ impl Bridge {
                             "properties",
                             Value::obj(vec![
                                 ("prompt", Self::prop("the task prompt to execute headlessly")),
+                                ("machine", Self::prop("optional target cluster machine name or alias (e.g. 'windows', 'mac', 'pi') for intelligent distributed compute; anchors to machine LKGL")),
                                 ("agent", Self::prop("optional agent choice: auto (default), free-claude-code, omp, trae-cli, mini")),
                                 ("fleet_enabled", Self::prop("optional boolean: enable Trae/Mini agent fleet (default true)")),
                                 ("repo", Self::prop("optional repo label for the session slug (default: device name)")),
                                 ("label", Self::prop("optional task label refining the tmux session name")),
-                                ("workdir", Self::prop("optional working directory (default: bridge cwd)")),
+                                ("workdir", Self::prop("optional working directory (default: bridge cwd or machine LKGL)")),
                                 (
                                     "timeout_secs",
                                     int_prop("max seconds to wait for the CLI to finish (default 600, clamp 10..3600)"),
@@ -2105,11 +2106,53 @@ impl Bridge {
             .and_then(|v| v.as_i64())
             .unwrap_or(600)
             .clamp(10, 3600) as u64;
+
+        // Intelligent distributed compute: route to remote cluster node if requested
+        if let Some(target_mach) = arg_str(args, "machine") {
+            let machines = crate::fed_shell::discover_machines(&self.cfg.device_name, &[], &[]);
+            if let Some(m) = crate::fed_shell::resolve_machine(target_mach, &machines) {
+                if !m.is_local {
+                    let agent_sel = arg_str(args, "agent").unwrap_or("auto");
+                    let cmd_to_run = if agent_sel == "omp" {
+                        format!("omp '{}'", prompt)
+                    } else {
+                        prompt.to_string()
+                    };
+                    let outcome = crate::fed_shell::exec_federated(
+                        &cmd_to_run,
+                        &format!("~/{}", m.name),
+                        &machines,
+                        timeout,
+                    );
+                    let mut out = format!(
+                        "distributed lane: {} ({}) on machine: {} [tier: {}]\narch: {} · lkgl: {}\n---\n{}",
+                        m.kind,
+                        if outcome.ok { "OK" } else { "FAILED" },
+                        m.name,
+                        m.compute_tier,
+                        m.arch,
+                        m.lkgl,
+                        outcome.output.trim()
+                    );
+                    if out.len() > 8000 {
+                        out.truncate(8000);
+                        out.push_str("\n…[truncated]");
+                    }
+                    return (out, !outcome.ok);
+                }
+            }
+        }
+
+        // Local execution anchored to LKGL if not explicitly overridden
         let workdir = match arg_str(args, "workdir") {
             Some(d) if !d.trim().is_empty() => d.to_string(),
-            _ => std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "/tmp".into()),
+            _ => crate::fed_shell::get_machine_lkgl(repo)
+                .or_else(|| crate::fed_shell::get_machine_lkgl(&self.cfg.device_name))
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "/tmp".into())
+                }),
         };
         let name = crate::executor::session_name(&format!(
             "{repo}-{}",
