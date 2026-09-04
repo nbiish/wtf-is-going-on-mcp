@@ -761,6 +761,48 @@ fn run_remote_cmd(
         String::new()
     };
 
+    // 1. Try peer-hub HTTP dispatch if machine is a federated peer
+    if machine.kind == "peer-hub" {
+        let fed = crate::federation::FedConfig::load();
+        let peer_opt = fed.peers.iter().find(|p| {
+            p.name == machine.name
+                || machine.aliases.contains(&p.name)
+                || machine.aliases.iter().any(|a| p.name.contains(a))
+                || p.url.contains(&machine.host)
+        });
+        if let Some(peer) = peer_opt {
+            let path_and_query = "/api/v1/shell/exec";
+            let body_val = Value::obj(vec![
+                ("cmd", Value::from(cmd)),
+                ("cwd", Value::from(if remote_dir.is_empty() { "~/" } else { &remote_dir })),
+                ("timeout_secs", Value::from(timeout_secs as i64)),
+            ]);
+            let body_bytes = body_val.to_json();
+            let ts = crate::util::now_secs();
+            let nonce = crate::rand::nonce_hex();
+            if let Some(sig) = crate::auth::sign(&peer.device_key, "POST", path_and_query, ts, &nonce, body_bytes.as_bytes()) {
+                let headers = vec![
+                    ("Content-Type".to_string(), "application/json".to_string()),
+                    ("X-Wtf-Device".to_string(), peer.device.clone()),
+                    ("X-Wtf-Timestamp".to_string(), ts.to_string()),
+                    ("X-Wtf-Nonce".to_string(), nonce),
+                    ("X-Wtf-Signature".to_string(), sig),
+                ];
+                let endpoint = format!("{}{}", peer.url.trim_end_matches('/'), path_and_query);
+                if let Ok(resp) = crate::client::request(&endpoint, "POST", &headers, body_bytes.as_bytes()) {
+                    if resp.status == 200 {
+                        if let Ok(json_res) = crate::json::parse(&resp.text()) {
+                            let out = json_res.get("output").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let code = json_res.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                            return (out, code);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to SSH dispatch
     let remote_cmd = if !remote_dir.is_empty() {
         format!(
             "export OLLAMA_HOST=127.0.0.1:11434 LOCAL_ROUTER_URL=http://127.0.0.1:11434/v1; cd '{}' 2>/dev/null || true; {}",
@@ -807,7 +849,7 @@ fn run_remote_cmd(
         }
         Err(e) => (
             format!(
-                "remote execution on {} failed: {}\n(ensure SSH key access is configured for {})\n",
+                "remote execution on {} failed: {}\n(ensure peer hub is running on port 7800 or SSH key access is configured for {})\n",
                 machine.name, e, target_host
             ),
             1,

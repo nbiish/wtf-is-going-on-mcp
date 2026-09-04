@@ -1416,7 +1416,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn term_allowed(hub: &Hub, req: &Request) -> bool {
-    cap_ok(hub, req)
+    cap_ok(hub, req) || device_auth(hub, req).is_ok()
 }
 
 fn agents_available(hub: &Arc<Hub>, req: &Request) -> Response {

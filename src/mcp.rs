@@ -2109,36 +2109,64 @@ impl Bridge {
 
         // Intelligent distributed compute: route to remote cluster node if requested
         if let Some(target_mach) = arg_str(args, "machine") {
-            let machines = crate::fed_shell::discover_machines(&self.cfg.device_name, &[], &[]);
-            if let Some(m) = crate::fed_shell::resolve_machine(target_mach, &machines) {
-                if !m.is_local {
-                    let agent_sel = arg_str(args, "agent").unwrap_or("auto");
-                    let cmd_to_run = if agent_sel == "omp" {
-                        format!("omp '{}'", prompt)
-                    } else {
-                        prompt.to_string()
-                    };
-                    let outcome = crate::fed_shell::exec_federated(
-                        &cmd_to_run,
-                        &format!("~/{}", m.name),
-                        &machines,
-                        timeout,
+            let target_clean = target_mach.trim();
+            if !target_clean.is_empty() && target_clean != "local" && target_clean != self.cfg.device_name {
+                let agent_sel = arg_str(args, "agent").unwrap_or("auto");
+                let cmd_to_run = if agent_sel == "omp" {
+                    format!("omp '{}'", prompt)
+                } else {
+                    prompt.to_string()
+                };
+
+                // 1. Try hub /api/v1/shell/exec dispatch via device auth
+                let exec_body = Value::obj(vec![
+                    ("cmd", Value::from(cmd_to_run.as_str())),
+                    ("cwd", Value::from(format!("~/{}", target_clean).as_str())),
+                    ("timeout_secs", Value::from(timeout as i64)),
+                ]);
+                if let Ok(res) = self.api_post("/api/v1/shell/exec", &exec_body) {
+                    let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let out = res.get("output").and_then(|v| v.as_str()).unwrap_or("");
+                    let mach = res.get("machine").and_then(|v| v.as_str()).unwrap_or(target_clean);
+                    let mut text = format!(
+                        "distributed lane: federated hub ({}) on machine: {}\n---\n{}",
+                        if ok { "OK" } else { "FAILED" },
+                        mach,
+                        out.trim()
                     );
-                    let mut out = format!(
-                        "distributed lane: {} ({}) on machine: {} [tier: {}]\narch: {} · lkgl: {}\n---\n{}",
-                        m.kind,
-                        if outcome.ok { "OK" } else { "FAILED" },
-                        m.name,
-                        m.compute_tier,
-                        m.arch,
-                        m.lkgl,
-                        outcome.output.trim()
-                    );
-                    if out.len() > 8000 {
-                        out.truncate(8000);
-                        out.push_str("\n…[truncated]");
+                    if text.len() > 8000 {
+                        text.truncate(8000);
+                        text.push_str("\n…[truncated]");
                     }
-                    return (out, !outcome.ok);
+                    return (text, !ok);
+                }
+
+                // 2. Fallback to local federated shell execution (e.g. direct SSH if configured)
+                let machines = crate::fed_shell::discover_machines(&self.cfg.device_name, &[], &[]);
+                if let Some(m) = crate::fed_shell::resolve_machine(target_clean, &machines) {
+                    if !m.is_local {
+                        let outcome = crate::fed_shell::exec_federated(
+                            &cmd_to_run,
+                            &format!("~/{}", m.name),
+                            &machines,
+                            timeout,
+                        );
+                        let mut out = format!(
+                            "distributed lane: {} ({}) on machine: {} [tier: {}]\narch: {} · lkgl: {}\n---\n{}",
+                            m.kind,
+                            if outcome.ok { "OK" } else { "FAILED" },
+                            m.name,
+                            m.compute_tier,
+                            m.arch,
+                            m.lkgl,
+                            outcome.output.trim()
+                        );
+                        if out.len() > 8000 {
+                            out.truncate(8000);
+                            out.push_str("\n…[truncated]");
+                        }
+                        return (out, !outcome.ok);
+                    }
                 }
             }
         }
