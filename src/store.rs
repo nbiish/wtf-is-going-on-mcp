@@ -566,6 +566,15 @@ impl Store {
             ("agents", Value::Arr(agents_v)),
             ("events", Value::Arr(events_v)),
             ("bins", bins.to_state_json()),
+            (
+                "bin_scopes",
+                Value::Arr(
+                    bins.scopes()
+                        .iter()
+                        .map(|s| Value::from(s.as_str()))
+                        .collect(),
+                ),
+            ),
             ("sessions", self.sessions_v()),
         ])
     }

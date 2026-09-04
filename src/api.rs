@@ -229,7 +229,23 @@ fn bins_list(hub: &Hub, req: &Request) -> Response {
     if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
         return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
-    Response::json(200, &Value::obj(vec![("bins", hub.bins.to_state_json())]))
+    let scope = req.q("scope").unwrap_or_else(|| "user".to_string());
+    let bins = hub.bins.list_scope(&scope);
+    let scopes = hub.bins.scopes();
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("scope", Value::from(scope.as_str())),
+            (
+                "bins",
+                Value::Arr(bins.iter().map(|b| b.to_state_json()).collect()),
+            ),
+            (
+                "scopes",
+                Value::Arr(scopes.iter().map(|s| Value::from(s.as_str())).collect()),
+            ),
+        ]),
+    )
 }
 
 /// `/api/v1/bins/N` — GET reads one bin; PUT writes it. The actor recorded on
@@ -248,10 +264,13 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
         }
     };
     match req.method.as_str() {
-        "GET" => match hub.bins.get(id) {
-            Some(b) => Response::json(200, &b.to_state_json()),
-            None => Response::error(404, "bin not found"), // unreachable: ids fixed 1..=3
-        },
+        "GET" => {
+            let scope = req.q("scope").unwrap_or_else(|| "user".to_string());
+            match hub.bins.get_scoped(&scope, id) {
+                Some(b) => Response::json(200, &b.to_state_json()),
+                None => Response::error(404, "bin not found"),
+            }
+        }
         "PUT" => {
             let body = match parse_body(req) {
                 Ok(v) => v,
@@ -261,16 +280,27 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
                 Some(c) => c,
                 None => return Response::error(400, "missing 'content'"),
             };
-            let bin = match hub.bins.set(id, content, &actor) {
+            let scope_str = req
+                .q("scope")
+                .or_else(|| body.get("scope").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| "user".to_string());
+            let bin = match hub.bins.set_scoped(&scope_str, id, content, &actor) {
                 Ok(b) => b,
                 Err(e) => return Response::error(400, &e),
             };
-            // Feeds the dashboard event log and bumps the SSE generation.
+            let scope_tag = if bin.scope == "user" {
+                String::new()
+            } else {
+                format!(" [{}]", bin.scope)
+            };
             let ev = hub.store.log_event(
                 &actor,
                 &actor,
                 "info",
-                &format!("bin {id} updated; {} chars", bin.content.chars().count()),
+                &format!(
+                    "bin {id}{scope_tag} updated; {} chars",
+                    bin.content.chars().count()
+                ),
                 "",
             );
             Response::json(
@@ -278,6 +308,7 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
                 &Value::obj(vec![
                     ("ok", Value::from(true)),
                     ("id", Value::from(bin.id as i64)),
+                    ("scope", Value::from(bin.scope.as_str())),
                     ("event", Value::from(ev.id as i64)),
                 ]),
             )

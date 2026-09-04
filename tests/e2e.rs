@@ -512,6 +512,62 @@ fn hub_bridge_end_to_end() {
         "device write must be attributed to the device"
     );
 
+    // 8c. Scoped bins: chat and machine bins isolation, MCP read/write with scope.
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"write_bin","arguments":{"bin":1,"scope":"chat:e2e-session-1","content":"chat secret key: e2e test"}}}"#,
+    );
+    let wb_scoped = rpc_read(&mut reader);
+    let wb_scoped_res = wb_scoped.get("result").unwrap();
+    assert_eq!(wb_scoped_res.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let wb_scoped_text = wb_scoped_res.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(wb_scoped_text.contains("chat:e2e-session-1"), "scoped write response: {wb_scoped_text}");
+
+    // Read back via MCP read_bin with scope
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":1,"scope":"chat:e2e-session-1"}}}"#,
+    );
+    let rb_scoped = rpc_read(&mut reader);
+    let rb_scoped_res = rb_scoped.get("result").unwrap();
+    assert_eq!(rb_scoped_res.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let rb_scoped_text = rb_scoped_res.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(rb_scoped_text.contains("chat secret key: e2e test"), "scoped read: {rb_scoped_text}");
+
+    // Verify isolation: user bin 1 is unaffected
+    let user_bin1 = wtf::client::request(&format!("{url}/api/v1/bins/1?cap={cap}"), "GET", &[], b"").unwrap();
+    assert_eq!(user_bin1.status, 200);
+    assert!(user_bin1.text().contains("work from this bin: e2e spec"));
+    assert!(!user_bin1.text().contains("chat secret key"));
+
+    // Verify API scoped GET
+    let api_scoped = wtf::client::request(&format!("{url}/api/v1/bins/1?cap={cap}&scope=chat:e2e-session-1"), "GET", &[], b"").unwrap();
+    assert_eq!(api_scoped.status, 200);
+    assert!(api_scoped.text().contains("chat secret key: e2e test"));
+
+    // Verify list_bins with scope
+    rpc_write(
+        &mut agent,
+        r#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"list_bins","arguments":{"scope":"chat:e2e-session-1"}}}"#,
+    );
+    let lb_scoped = rpc_read(&mut reader);
+    let lb_scoped_res = lb_scoped.get("result").unwrap();
+    assert_eq!(lb_scoped_res.get("isError").and_then(|v| v.as_bool()), Some(false));
+    let lb_scoped_text = lb_scoped_res.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(lb_scoped_text.contains("chat:e2e-session-1"), "list_bins scoped text: {lb_scoped_text}");
+
     // `wtf dashboard-url` on the hub machine prints the clickable link
     // (localhost + LAN) — the operator-side counterpart to hub_info.
     let du = Command::new(env!("CARGO_BIN_EXE_wtf"))

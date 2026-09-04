@@ -1117,7 +1117,7 @@ fn cmd_federate(args: &[String]) -> i32 {
 /// --k, $WTF_DASHBOARD_KEY, or the local hub config. Prefer the env var:
 /// a key passed as --k can leak through shell history.
 fn cmd_bin(args: &[String]) -> i32 {
-    let usage = "usage:\n  wtf bin ls [--url U] [--k K] [--json]\n  wtf bin get N [-o FILE] [--url U] [--k K]\n  wtf bin put N (TEXT | --file F | -) [--url U] [--k K] [--json]";
+    let usage = "usage:\n  wtf bin ls [--scope S] [--url U] [--cap K] [--json]\n  wtf bin get N [--scope S] [-o FILE] [--url U] [--cap K]\n  wtf bin put N (TEXT | --file F | -) [--scope S] [--url U] [--cap K] [--json]";
     let Some(op) = args.first().map(|s| s.as_str()) else {
         eprintln!("{usage}");
         return 2;
@@ -1131,6 +1131,8 @@ fn cmd_bin(args: &[String]) -> i32 {
     let k_flag = flag_value(rest, "--cap").or_else(|| flag_value(rest, "--k"));
     let out_flag = flag_value(rest, "-o");
     let file_flag = flag_value(rest, "--file");
+    let scope_flag = flag_value(rest, "--scope");
+    let scope = scope_flag.as_deref().unwrap_or("user");
     let as_json = rest.iter().any(|a| a == "--json");
 
     let home = config::home();
@@ -1183,8 +1185,13 @@ fn cmd_bin(args: &[String]) -> i32 {
 
     match op {
         "ls" => {
+            let scope_query = if scope == "user" {
+                String::new()
+            } else {
+                format!("&scope={}", util::percent_encode(scope))
+            };
             let resp =
-                match client::request(&format!("{hub_url}/api/v1/bins?cap={key}"), "GET", &[], b"") {
+                match client::request(&format!("{hub_url}/api/v1/bins?cap={key}{scope_query}"), "GET", &[], b"") {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("error: cannot reach hub: {e}");
@@ -1208,11 +1215,29 @@ fn cmd_bin(args: &[String]) -> i32 {
                 return 0;
             }
             let bins = v.get("bins").and_then(|x| x.as_arr()).unwrap_or(&[]);
+            if scope != "user" {
+                println!("bins for scope '{scope}':");
+            }
             for b in bins {
                 let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
                 let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
                 let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
-                println!("bin {id}: {size} chars, by {by}");
+                let sc = b.get("scope").and_then(|x| x.as_str()).unwrap_or(scope);
+                if sc == "user" {
+                    println!("bin {id}: {size} chars, by {by}");
+                } else {
+                    println!("bin {id} [{sc}]: {size} chars, by {by}");
+                }
+            }
+            if let Some(scopes) = v.get("scopes").and_then(|x| x.as_arr()) {
+                let other_scopes: Vec<&str> = scopes
+                    .iter()
+                    .filter_map(|s| s.as_str())
+                    .filter(|s| *s != scope)
+                    .collect();
+                if !other_scopes.is_empty() {
+                    println!("other active scopes: {}", other_scopes.join(", "));
+                }
             }
             0
         }
@@ -1221,8 +1246,13 @@ fn cmd_bin(args: &[String]) -> i32 {
                 eprintln!("{usage}");
                 return 2;
             };
+            let scope_query = if scope == "user" {
+                String::new()
+            } else {
+                format!("&scope={}", util::percent_encode(scope))
+            };
             let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins/{id}?cap={key}"),
+                &format!("{hub_url}/api/v1/bins/{id}?cap={key}{scope_query}"),
                 "GET",
                 &[],
                 b"",
@@ -1295,9 +1325,17 @@ fn cmd_bin(args: &[String]) -> i32 {
                 );
                 return 1;
             }
-            let body = json::Value::obj(vec![("content", json::Value::from(content.as_str()))]);
+            let scope_query = if scope == "user" {
+                String::new()
+            } else {
+                format!("&scope={}", util::percent_encode(scope))
+            };
+            let body = json::Value::obj(vec![
+                ("content", json::Value::from(content.as_str())),
+                ("scope", json::Value::from(scope)),
+            ]);
             let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins/{id}?cap={key}"),
+                &format!("{hub_url}/api/v1/bins/{id}?cap={key}{scope_query}"),
                 "PUT",
                 &[],
                 body.to_json().as_bytes(),
@@ -1319,8 +1357,13 @@ fn cmd_bin(args: &[String]) -> i32 {
             if as_json {
                 println!("{}", resp.text().trim());
             } else {
+                let scope_label = if scope == "user" {
+                    String::new()
+                } else {
+                    format!(" [{scope}]")
+                };
                 println!(
-                    "bin {id} updated ({} chars, by dashboard)",
+                    "bin {id}{scope_label} updated ({} chars, by dashboard)",
                     content.chars().count()
                 );
             }

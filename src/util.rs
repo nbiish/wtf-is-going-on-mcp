@@ -69,6 +69,22 @@ pub fn now_millis() -> u64 {
 
 /// Percent-decode a URL path or query component. '+' is NOT treated as a
 /// space (the query encoder we use emits %20). Invalid escapes are literal.
+/// RFC 3986 percent-encode a string.
+pub fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
 pub fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());

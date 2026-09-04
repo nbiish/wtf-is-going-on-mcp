@@ -471,7 +471,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Read a shared paste-bin (BIN 1-3): prompts, notes, or knowledge placed there by the user or other agents/machines. When the user or a peer says 'work from bin N', fetch it with this tool before starting.",
+                        "Read a paste-bin (BIN 1-3) in the specified scope (defaults to 'user'): prompts, notes, secrets, or knowledge placed there by the user or other agents/machines. When the user or a peer says 'work from bin N', fetch it with this tool before starting.",
                     ),
                 ),
                 (
@@ -480,10 +480,16 @@ impl Bridge {
                         ("type", Value::from("object")),
                         (
                             "properties",
-                            Value::obj(vec![(
-                                "bin",
-                                int_prop("bin number: 1, 2, or 3"),
-                            )]),
+                            Value::obj(vec![
+                                (
+                                    "bin",
+                                    int_prop("bin number: 1, 2, or 3"),
+                                ),
+                                (
+                                    "scope",
+                                    Self::prop("optional bin scope (defaults to 'user'; or e.g. 'chat:<session_id>', 'machine:<device_name>')"),
+                                ),
+                            ]),
                         ),
                         ("required", Value::arr(vec![Value::from("bin")])),
                         ("additionalProperties", Value::from(false)),
@@ -495,7 +501,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Write your content to a shared paste-bin (BIN 1-3) so other agents on other machines/harnesses can read it with read_bin — cross-agent handoff of prompts, findings, and knowledge. Replaces the whole bin (last writer wins); read it first, keep writes purposeful, never put secrets in a bin.",
+                        "Write content to a paste-bin (BIN 1-3) in the specified scope (defaults to 'user') so other agents on other machines/harnesses can read it with read_bin — cross-agent/cross-machine handoff of prompts, findings, and credentials. Replaces the whole bin (last writer wins); read it first, keep writes purposeful.",
                     ),
                 ),
                 (
@@ -509,6 +515,10 @@ impl Bridge {
                                 (
                                     "content",
                                     Self::prop("full text to place in the bin (replaces existing content; max 65,536 chars)"),
+                                ),
+                                (
+                                    "scope",
+                                    Self::prop("optional bin scope (defaults to 'user'; or e.g. 'chat:<session_id>', 'machine:<device_name>')"),
                                 ),
                             ]),
                         ),
@@ -525,14 +535,20 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "List the shared paste-bins (sizes, last writer, age) without full content; fetch a specific bin with read_bin.",
+                        "List paste-bins (sizes, last writer, age) for a given scope (defaults to 'user') without full content; fetch a specific bin with read_bin.",
                     ),
                 ),
                 (
                     "inputSchema",
                     Value::obj(vec![
                         ("type", Value::from("object")),
-                        ("properties", Value::obj(vec![])),
+                        (
+                            "properties",
+                            Value::obj(vec![(
+                                "scope",
+                                Self::prop("optional bin scope filter (defaults to 'user'; e.g. 'chat:<session_id>', 'machine:<device_name>')"),
+                            )]),
+                        ),
                         ("additionalProperties", Value::from(false)),
                     ]),
                 ),
@@ -964,7 +980,7 @@ impl Bridge {
             "wtf_is_going_on" => self.tool_state(args),
             "read_bin" => self.tool_read_bin(args),
             "write_bin" => self.tool_write_bin(args),
-            "list_bins" => self.tool_list_bins(),
+            "list_bins" => self.tool_list_bins(args),
             "ping" => self.tool_ping(),
             "hub_info" => self.tool_hub_info(),
             "env_report" => self.tool_env_report(),
@@ -1091,18 +1107,29 @@ impl Bridge {
             Some(other) => return (format!("invalid bin {other}; must be 1, 2, or 3"), true),
             None => return ("missing required argument: bin".into(), true),
         };
-        match self.api_get(&format!("/api/v1/bins/{id}")) {
+        let scope = arg_str(args, "scope").unwrap_or("user");
+        let query_scope = if scope == "user" {
+            String::new()
+        } else {
+            format!("?scope={}", crate::util::percent_encode(scope))
+        };
+        match self.api_get(&format!("/api/v1/bins/{id}{query_scope}")) {
             Ok(v) => {
                 let size = v.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
+                let scope_label = if scope == "user" {
+                    String::new()
+                } else {
+                    format!(" [{scope}]")
+                };
                 if size == 0 {
-                    return (format!("BIN {id} is empty"), false);
+                    return (format!("BIN {id}{scope_label} is empty"), false);
                 }
                 let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
                 let by = v.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
                 let at = v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
                 (
                     format!(
-                        "BIN {id} — {size} chars — updated {} ago by {by}\n\n{content}",
+                        "BIN {id}{scope_label} — {size} chars — updated {} ago by {by}\n\n{content}",
                         rel_age(now_secs(), at)
                     ),
                     false,
@@ -1112,7 +1139,7 @@ impl Bridge {
         }
     }
 
-    /// Agents publish to shared bins with a device-signed PUT; the hub
+    /// Agents publish to paste-bins with a device-signed PUT; the hub
     /// records the device as `updated_by`, so cross-machine writes are
     /// attributable in the dashboard.
     fn tool_write_bin(&self, args: &Value) -> (String, bool) {
@@ -1140,14 +1167,28 @@ impl Bridge {
                 true,
             );
         }
-        let body = Value::obj(vec![("content", Value::from(content.as_str()))]);
-        match self.api_put(&format!("/api/v1/bins/{id}"), &body) {
+        let scope = arg_str(args, "scope").unwrap_or("user");
+        let body = Value::obj(vec![
+            ("content", Value::from(content.as_str())),
+            ("scope", Value::from(scope)),
+        ]);
+        let query_scope = if scope == "user" {
+            String::new()
+        } else {
+            format!("?scope={}", crate::util::percent_encode(scope))
+        };
+        match self.api_put(&format!("/api/v1/bins/{id}{query_scope}"), &body) {
             Ok(v) => {
                 let bid = v.get("id").and_then(|x| x.as_i64()).unwrap_or(id as i64);
                 let ev = v.get("event").and_then(|x| x.as_i64()).unwrap_or(0);
+                let scope_label = if scope == "user" {
+                    String::new()
+                } else {
+                    format!(" [{scope}]")
+                };
                 (
                     format!(
-                        "BIN {bid} updated ({} chars, by {}) — event #{ev}; peers can fetch it with read_bin",
+                        "BIN {bid}{scope_label} updated ({} chars, by {}) — event #{ev}; peers can fetch it with read_bin",
                         content.chars().count(),
                         self.cfg.device_name
                     ),
@@ -1158,16 +1199,27 @@ impl Bridge {
         }
     }
 
-    fn tool_list_bins(&self) -> (String, bool) {
-        match self.api_get("/api/v1/bins") {
+    fn tool_list_bins(&self, args: &Value) -> (String, bool) {
+        let scope = arg_str(args, "scope").unwrap_or("user");
+        let query_scope = if scope == "user" {
+            String::new()
+        } else {
+            format!("?scope={}", crate::util::percent_encode(scope))
+        };
+        match self.api_get(&format!("/api/v1/bins{query_scope}")) {
             Ok(v) => {
                 let bins = v
                     .get("bins")
                     .and_then(|x| x.as_arr())
                     .unwrap_or(&[])
                     .to_vec();
+                let scope_label = if scope == "user" {
+                    "user (global)"
+                } else {
+                    scope
+                };
                 let mut out =
-                    String::from("shared paste-bins (read_bin to fetch, write_bin to publish):\n");
+                    format!("paste-bins for scope '{scope_label}' (read_bin to fetch, write_bin to publish):\n");
                 for b in &bins {
                     let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
                     let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -1185,6 +1237,16 @@ impl Bridge {
                             "  BIN {id}: {size} chars, updated {} ago by {by} — {preview}\n",
                             rel_age(now_secs(), at)
                         ));
+                    }
+                }
+                if let Some(scopes) = v.get("scopes").and_then(|x| x.as_arr()) {
+                    let other_scopes: Vec<&str> = scopes
+                        .iter()
+                        .filter_map(|s| s.as_str())
+                        .filter(|s| *s != scope)
+                        .collect();
+                    if !other_scopes.is_empty() {
+                        out.push_str(&format!("\nother active scopes: {}\n", other_scopes.join(", ")));
                     }
                 }
                 (out, false)
