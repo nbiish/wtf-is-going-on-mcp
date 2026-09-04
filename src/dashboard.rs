@@ -93,7 +93,7 @@ button.primary:hover{opacity:.9}
   <h1>WTF IS GOING ON</h1>
   <span id="meta" class="dim">connecting…</span>
   <span id="cap-url-chip" class="cap-badge" title="Click to copy singular dashboard URL">📋 copy url</span>
-  <span class="pill" style="border-color:var(--accent);color:var(--accent)" title="Loopback router proxy">proxy: 11434</span>
+  <span id="router-status-pill" class="pill ok" style="cursor:pointer" title="Local Router Proxy: http://localhost:11434/v1 (click to test/reconnect)">● router :11434</span>
   <span id="conn" class="dot" title="live stream"></span>
 </header>
 
@@ -105,6 +105,11 @@ button.primary:hover{opacity:.9}
       <div class="bar">
         <h2>CHAT &amp; AGENT ORCHESTRATION</h2>
         <span id="chat-stat" class="dim" style="margin-left:auto;font-size:11px">idle</span>
+      </div>
+      <div class="bar" id="router-status-bar" style="align-items:center;margin:2px 0 6px 0;font-size:11px;background:rgba(88,166,255,0.06);padding:3px 8px;border-radius:4px;border:1px solid var(--edge)">
+        <span id="router-status-indicator" class="pill ok" style="font-size:10px">● local-router :11434</span>
+        <span id="router-model-info" class="dim" style="margin-left:8px;font-size:10px">http://localhost:11434/v1 · fallback-models</span>
+        <button id="btn-router-restart" class="sess-bin-btn" style="margin-left:auto" title="Trigger supervisor ensure / restart">🔄 Restart Router</button>
       </div>
       <div class="bar">
         <label class="dim" style="font-size:11px">Lane:</label>
@@ -285,6 +290,37 @@ function render(s){
   renderSessionsList(currentSessions, now);
   if(s.bin_scopes) updateScopeDropdown(s.bin_scopes);
   if(currentBinScope === "user") renderBins(s.bins, now);
+
+  // Local Router Status Supervision
+  if(s.router){
+    const alive = !!s.router.alive;
+    const rp = document.getElementById("router-status-pill");
+    const ri = document.getElementById("router-status-indicator");
+    const rm = document.getElementById("router-model-info");
+    const count = s.router.models_count || 0;
+    const pillText = alive ? ("● router :11434 (" + count + " models)") : "○ router :11434 (offline)";
+    const pillCls = "pill " + (alive ? "ok" : "stale");
+    if(rp){
+      rp.className = pillCls;
+      rp.textContent = pillText;
+      rp.title = "Local Router: " + (alive ? ("Connected to " + (s.router.endpoint || "11434") + " (" + count + " models)") : "Disconnected — click to reconnect");
+    }
+    if(ri){
+      ri.className = pillCls;
+      ri.textContent = alive ? ("● connected (" + count + " models)") : "○ offline (reconnecting)";
+    }
+    if(rm){
+      rm.textContent = alive ? ("http://localhost:11434/v1 · " + (s.router.target_model || "local-router/fallback-models")) : "offline — attempting supervisor restart…";
+    }
+    // Auto-reconnect if offline
+    if(!alive && !window._routerReconnecting){
+      window._routerReconnecting = true;
+      fetch("/api/v1/router/status?"+AUTH).then(r=>r.json()).then(r=>{
+        window._routerReconnecting = false;
+        if(r && r.alive) fetch("/api/v1/state?"+AUTH).then(res=>res.json()).then(render);
+      }).catch(()=>{ window._routerReconnecting = false; });
+    }
+  }
 }
 
 function renderLaneSelector(sessions){
@@ -425,6 +461,37 @@ async function runAgent(){
 }
 
 document.getElementById("btn-run-agent").addEventListener("click", runAgent);
+
+const btnRouterRestart = document.getElementById("btn-router-restart");
+if(btnRouterRestart){
+  btnRouterRestart.addEventListener("click", async ()=>{
+    btnRouterRestart.textContent = "⏳ Restarting…";
+    try {
+      const res = await fetch("/api/v1/router/restart?"+AUTH, {method:"POST"});
+      const data = await res.json();
+      btnRouterRestart.textContent = data.alive ? "✅ Connected" : "⚠️ Offline";
+      setTimeout(()=>{ btnRouterRestart.textContent = "🔄 Restart Router"; }, 2000);
+      const stateRes = await fetch("/api/v1/state?"+AUTH);
+      render(await stateRes.json());
+    } catch(e) {
+      btnRouterRestart.textContent = "❌ Failed";
+      setTimeout(()=>{ btnRouterRestart.textContent = "🔄 Restart Router"; }, 2000);
+    }
+  });
+}
+
+const routerPill = document.getElementById("router-status-pill");
+if(routerPill){
+  routerPill.addEventListener("click", async ()=>{
+    routerPill.textContent = "⏳ Testing…";
+    try {
+      const res = await fetch("/api/v1/router/status?"+AUTH);
+      const data = await res.json();
+      const stateRes = await fetch("/api/v1/state?"+AUTH);
+      render(await stateRes.json());
+    } catch(e){}
+  });
+}
 
 document.getElementById("btn-post-msg").addEventListener("click", async ()=>{
   const input = document.getElementById("chat-input");

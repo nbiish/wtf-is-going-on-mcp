@@ -90,6 +90,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/shell/machines"
             | "/api/v1/shell/config"
             | "/api/v1/shell/exec"
+            | "/api/v1/router/status"
+            | "/api/v1/router/restart"
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
@@ -122,6 +124,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("GET", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_get(hub, req)),
         ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
         ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
+        ("GET", "/api/v1/router/status") => HandlerResult::Respond(router_status(hub, req)),
+        ("POST", "/api/v1/router/restart") => HandlerResult::Respond(router_restart(hub, req)),
         ("GET", "/api/v1/agents/available") => HandlerResult::Respond(agents_available(hub, req)),
         (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
             HandlerResult::Respond(term(hub, req))
@@ -1462,6 +1466,48 @@ fn agents_available(hub: &Arc<Hub>, req: &Request) -> Response {
         ("router_model", Value::from("local-router/fallback-models")),
         ("agents", Value::arr(agents)),
     ]))
+}
+
+fn router_status(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
+    }
+    let mut state = crate::executor::router_state_json();
+    let alive = state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !alive {
+        let _ = crate::executor::router_ensure();
+        state = crate::executor::router_state_json();
+    }
+    Response::json(200, &state)
+}
+
+fn router_restart(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
+    }
+    let res = crate::executor::router_restart();
+    let ok = res.is_ok();
+    let d_auth = device_auth(hub, req);
+    let actor = if cap_ok(hub, req) {
+        "operator"
+    } else if let Ok(ref d) = d_auth {
+        d.as_str()
+    } else {
+        "unknown"
+    };
+    let dev = if hub.fed_name.is_empty() { "hub" } else { &hub.fed_name };
+    hub.store.log_event(
+        dev,
+        "wtf-hub",
+        if ok { "info" } else { "warn" },
+        &format!("local-router restart triggered by {actor}: {}", match &res {
+            Ok(msg) => msg.as_str(),
+            Err(e) => e.as_str(),
+        }),
+        "",
+    );
+    let state = crate::executor::router_state_json();
+    Response::json(200, &state)
 }
 
 fn term(hub: &Arc<Hub>, req: &Request) -> Response {

@@ -957,6 +957,22 @@ impl Bridge {
                     ("additionalProperties", Value::from(false)),
                 ])),
             ]),
+            Value::obj(vec![
+                ("name", Value::from("router_status")),
+                ("description", Value::from(
+                    "Check health of the machine's local-router proxy (http://127.0.0.1:11434/v1). If disconnected, automatically attempts restart and reconnection to ensure all agent inference paths are active.",
+                )),
+                ("inputSchema", Value::obj(vec![
+                    ("type", Value::from("object")),
+                    ("properties", Value::obj(vec![
+                        ("restart", Value::obj(vec![
+                            ("type", Value::from("boolean")),
+                            ("description", Value::from("force a restart of local-router even if alive")),
+                        ])),
+                    ])),
+                    ("additionalProperties", Value::from(false)),
+                ])),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -996,6 +1012,7 @@ impl Bridge {
             "chat_run" => self.tool_chat_run(args),
             "chat_sessions" => self.tool_chat_sessions(),
             "chat_session_lifecycle" => self.tool_chat_session_lifecycle(args),
+            "router_status" => self.tool_router_status(args),
             other => (format!("unknown tool: {other}"), true),
         }
     }
@@ -2234,6 +2251,9 @@ impl Bridge {
         }
 
         // Local execution anchored to LKGL if not explicitly overridden
+        if !crate::executor::router_alive() {
+            let _ = crate::executor::router_ensure();
+        }
         let workdir = match arg_str(args, "workdir") {
             Some(d) if !d.trim().is_empty() => d.to_string(),
             _ => crate::fed_shell::get_machine_lkgl(repo)
@@ -2290,6 +2310,29 @@ impl Bridge {
     /// reconnect / delete an executor tmux session (wtf-chat-* only). The
     /// lifecycle contract for every agent connection: open on work start,
     /// close/delete when done, reconnect on a hung pane.
+    fn tool_router_status(&self, args: &Value) -> (String, bool) {
+        let force_restart = args.get("restart").and_then(|v| v.as_bool()).unwrap_or(false);
+        if force_restart {
+            let _ = crate::executor::router_restart();
+        } else if !crate::executor::router_alive() {
+            let _ = crate::executor::router_ensure();
+        }
+        let state = crate::executor::router_state_json();
+        let alive = state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let endpoint = state.get("endpoint").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:11434/v1");
+        let model = state.get("target_model").and_then(|v| v.as_str()).unwrap_or("local-router/fallback-models");
+        let count = state.get("models_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let text = format!(
+            "local-router: {}\nendpoint: {}\ntarget model: {}\nconfigured models: {}\n---\n{}",
+            if alive { "connected (OK)" } else { "offline (failed to connect)" },
+            endpoint,
+            model,
+            count,
+            state.to_json()
+        );
+        (text, !alive)
+    }
+
     fn tool_chat_session_lifecycle(&self, args: &Value) -> (String, bool) {
         let Some(session) = arg_str(args, "session") else {
             return ("missing required argument: session".into(), true);

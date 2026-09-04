@@ -159,7 +159,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 21); // +chat_session_lifecycle (v0.15.0)
+    assert_eq!(tools.len(), 22); // +router_status
 
     rpc_write(
         &mut agent,
@@ -2696,6 +2696,39 @@ fn federated_shell_and_singular_capability_dashboard_end_to_end() {
     let fake_cap = "a".repeat(64);
     let wrong_page = wtf::client::request(&format!("{url}/w/{fake_cap}"), "GET", &[], b"").unwrap();
     assert_eq!(wrong_page.status, 404, "wrong capability path must return 404");
+
+    // 9. Local router status & supervision endpoints
+    let router_res = wtf::client::request(
+        &format!("{url}/api/v1/router/status?cap={cap}"),
+        "GET",
+        &[],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(router_res.status, 200);
+    let r_text = router_res.text();
+    assert!(r_text.contains("http://127.0.0.1:11434/v1"));
+    assert!(r_text.contains("local-router/fallback-models"));
+    assert!(r_text.contains("\"alive\":"));
+
+    // Verify /api/v1/state includes router object
+    let state_res = wtf::client::request(
+        &format!("{url}/api/v1/state?cap={cap}"),
+        "GET",
+        &[],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(state_res.status, 200);
+    assert!(state_res.text().contains("\"router\":"));
+
+    // Security negative: unauthorized router status request without cap
+    let unauth_router = wtf::client::request(&format!("{url}/api/v1/router/status"), "GET", &[], b"").unwrap();
+    assert_eq!(unauth_router.status, 401, "unauthorized router status must be 401");
+
+    // Security negative: unauthorized router restart request without cap
+    let unauth_restart = wtf::client::request(&format!("{url}/api/v1/router/restart"), "POST", &[], b"").unwrap();
+    assert_eq!(unauth_restart.status, 401, "unauthorized router restart must be 401");
 
     // Cleanup
     let _ = hub.kill();

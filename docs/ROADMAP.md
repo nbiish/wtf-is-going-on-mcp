@@ -13,6 +13,7 @@ Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence; R3
 - **R3 — singular dashboard URL & federated multi-machine shell [RESOLVED 2026-09-03].** Singular `/w/<capability>` endpoint across loopback, LAN, and remote; embedded Chat & Agent Orchestration Studio paired with the virtual `~/` multi-machine shell (`fed_shell.rs`).
 - **R4 — federated OMP config, architecture LKGL & distributed compute [RESOLVED 2026-09-03].** Synchronized `fed_omp_config.json`, per-machine LKGL mapping (`lkgl.json`), compute-tier tagging, cross-machine routing.
 - **R5 — legacy `?k=` dashboard-key retirement [RESOLVED 2026-09-04].** Retired `dash_ok` in `api.rs`, removed non-loopback 401 hint page for uniform-404 security, deleted the third `wtf dashboard-url` link, and enforced singular capability routing (`/w/<capability>`).
+- **R6 — local-router status indicator, single-config reservation & automated supervisor reconnect [RESOLVED 2026-09-04].** Reserved `127.0.0.1:11434` strictly for `local-router/fallback-models` inference; added live status badge and studio controls; background supervision loop (15s), dashboard auto-reconnect, on-demand API endpoints (`/api/v1/router/status`, `/api/v1/router/restart`), and MCP tool `router_status` ensuring continuous agent inference connectivity.
 
 ## Open defects
 

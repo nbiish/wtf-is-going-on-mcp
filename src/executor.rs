@@ -20,6 +20,8 @@
 
 use crate::json::Value;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::Duration;
 
 /// tmux session prefix: `wtf-chat-<slug>` (<= 48 chars total).
 pub const SESSION_PREFIX: &str = "wtf-chat";
@@ -282,22 +284,148 @@ pub fn available_agents() -> Vec<Value> {
     out
 }
 
+static ROUTER_CACHE: Mutex<Option<(u64, Value)>> = Mutex::new(None);
+
+pub fn invalidate_router_cache() {
+    if let Ok(mut guard) = ROUTER_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+pub fn probe_router_info() -> Value {
+    let mut alive = false;
+    let mut version = String::new();
+    let mut models_count = 0usize;
+    let mut models_vec = Vec::new();
+
+    // 1. Probe version
+    if let Ok(resp) = crate::client::request_with_timeout(
+        "http://127.0.0.1:11434/api/version",
+        "GET",
+        &[],
+        b"",
+        Duration::from_millis(500),
+        Duration::from_millis(800),
+    ) {
+        if resp.status == 200 {
+            alive = true;
+            if let Some(json) = resp.json() {
+                if let Some(v) = json.get("version").and_then(|x| x.as_str()) {
+                    version = v.to_string();
+                }
+            }
+        }
+    }
+
+    // 2. Probe models catalog
+    if let Ok(resp) = crate::client::request_with_timeout(
+        "http://127.0.0.1:11434/v1/models",
+        "GET",
+        &[],
+        b"",
+        Duration::from_millis(500),
+        Duration::from_millis(1500),
+    ) {
+        if resp.status == 200 {
+            alive = true;
+            if let Some(json) = resp.json() {
+                if let Some(Value::Arr(data)) = json.get("data") {
+                    models_count = data.len();
+                    for item in data {
+                        if let Some(Value::Str(id)) = item.get("id") {
+                            models_vec.push(Value::from(id.as_str()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Value::obj(vec![
+        ("alive", Value::from(alive)),
+        ("endpoint", Value::from("http://127.0.0.1:11434/v1")),
+        ("target_model", Value::from("local-router/fallback-models")),
+        ("version", Value::from(version.as_str())),
+        ("models_count", Value::from(models_count as i64)),
+        ("models", Value::Arr(models_vec)),
+        ("backend", Value::from(detect_backend_str())),
+        ("last_checked", Value::from(crate::util::now_secs() as i64)),
+    ])
+}
+
+pub fn router_state_json() -> Value {
+    let now = crate::util::now_secs();
+    if let Ok(guard) = ROUTER_CACHE.lock() {
+        if let Some((ts, ref val)) = *guard {
+            if now.saturating_sub(ts) < 2 {
+                return val.clone();
+            }
+        }
+    }
+    let fresh = probe_router_info();
+    if let Ok(mut guard) = ROUTER_CACHE.lock() {
+        *guard = Some((now, fresh.clone()));
+    }
+    fresh
+}
+
 pub fn router_alive() -> bool {
-    let check = "curl -s -m 3 http://127.0.0.1:11434/api/version >/dev/null 2>&1";
+    let state = router_state_json();
+    state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+pub fn run_host_cmd(cmd: &str) -> std::io::Result<std::process::Output> {
     if cfg!(windows) && detect_backend() == TerminalBackend::WslTmux {
         Command::new("wsl")
-            .args(["-d", "Ubuntu", "-e", "sh", "-c", check])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .args(["-d", "Ubuntu", "-e", "bash", "-c", cmd])
+            .output()
+    } else if cfg!(windows) {
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", cmd])
+            .output()
     } else {
         Command::new("sh")
             .arg("-c")
-            .arg(check)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .arg(cmd)
+            .output()
     }
+}
+
+pub fn router_ensure() -> Result<String, String> {
+    invalidate_router_cache();
+    if router_alive() {
+        return Ok("running".into());
+    }
+    let cmd = "export PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\"; if command -v local-router >/dev/null 2>&1; then local-router ensure; elif [ -f /mnt/d/Code/local-router/bin/local-router.js ]; then node /mnt/d/Code/local-router/bin/local-router.js ensure; fi";
+    let res = run_host_cmd(cmd);
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_millis(500));
+        invalidate_router_cache();
+        if router_alive() {
+            return Ok("started_and_connected".into());
+        }
+    }
+    match res {
+        Ok(out) => {
+            let out_str = String::from_utf8_lossy(&out.stdout);
+            let err_str = String::from_utf8_lossy(&out.stderr);
+            Err(format!(
+                "local-router ensure executed (exit={}) but port 11434 not responding: {} {}",
+                out.status,
+                out_str.trim(),
+                err_str.trim()
+            ))
+        }
+        Err(e) => Err(format!("failed to execute local-router ensure: {e}")),
+    }
+}
+
+pub fn router_restart() -> Result<String, String> {
+    invalidate_router_cache();
+    let stop_cmd = "export PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\"; if command -v local-router >/dev/null 2>&1; then local-router stop 2>&1 || true; elif [ -f /mnt/d/Code/local-router/bin/local-router.js ]; then node /mnt/d/Code/local-router/bin/local-router.js stop 2>&1 || true; fi";
+    let _ = run_host_cmd(stop_cmd);
+    std::thread::sleep(Duration::from_millis(300));
+    router_ensure()
 }
 
 pub fn tmux_has_session(name: &str) -> bool {
@@ -411,7 +539,11 @@ pub fn run_in_tmux_with_options(
     fleet_enabled: bool,
 ) -> ChainOutcome {
     let mut trace = Vec::new();
-    let router = router_alive();
+    let mut router = router_alive();
+    if !router {
+        let _ = router_ensure();
+        router = router_alive();
+    }
     trace.push(format!(
         "router:{}",
         if router {

@@ -117,3 +117,15 @@ What would this governance / sovereignty master suggest? Record the platform sup
 What would this cross-platform packaging / distribution master suggest? Exercise the PowerShell wrapper on native windows once before declaring windows support verified.
 What would this operator-experience / onboarding master suggest? Print one clear recovery line with the repair command whenever any engine check fails.
 What would this federation / multi-machine consistency master suggest? Sync the same pinned skill digest to mac, windows, and the coming pi edge node in one pass.
+
+## 2026-09-04T22:50:00Z
+Merge feat/router-status-supervision into main and rebuild live wtf-hub.
+What would this adversarial / security master suggest? Strictly isolate the local-router proxy to 127.0.0.1:11434 with dummy bearer token so external traffic cannot touch local provider keys.
+What would this privacy / data-protection regulatory master suggest? Ensure probe payloads and status responses report model inventories and counts without exposing underlying provider API keys or secret envs.
+What would this supply-chain / third-party-risk master suggest? Preserve zero external crates in Cargo.toml by handling router health probes and supervision completely in-tree.
+What would this systems-architecture / devops / infrastructure master suggest? Ensure the 15-second background supervisor and dashboard auto-reconnect continuously guarantee that port 11434 remains bound to local-router.
+What would this reliability / verification master suggest? Verify that all 112 unit tests and 14 end-to-end integration tests pass with 100 percent success before merging.
+What would this governance / sovereignty master suggest? Record all worktree branch transitions, intent-merges, and checkout receipts in the dated COMMS ledger.
+What would this terminal-orchestration / swe-bench master suggest? Guarantee that all 11 agent lanes and subagents headlessly execute against local-router/fallback-models with pre-flight supervisor verification.
+What would this master-orchestrator / self-prompting master suggest? Anchor the single-source inference proxy and supervision invariants directly in llms.txt, src/llms.txt, and docs/ROADMAP.md.
+What would this developer-experience / ergonomics master suggest? Provide an intuitive live status pill and one-click restart button on the dashboard so operators instantly see router health.

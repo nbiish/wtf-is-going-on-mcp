@@ -265,6 +265,20 @@ fn cmd_serve(args: &[String]) -> i32 {
     };
     println!("dashboard: {cap_url}");
     println!("press Ctrl-C to stop");
+
+    // Local-router supervision: verify connectivity and spawn background supervisor
+    if !wtf::executor::router_alive() {
+        println!("local-router not detected on 127.0.0.1:11434; attempting restart & connect...");
+        let _ = wtf::executor::router_ensure();
+    }
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            if !wtf::executor::router_alive() {
+                let _ = wtf::executor::router_ensure();
+            }
+        }
+    });
     {
         use std::io::Write as _;
         let _ = std::io::stdout().flush();

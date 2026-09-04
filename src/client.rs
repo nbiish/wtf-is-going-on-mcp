@@ -49,12 +49,14 @@ fn chunked_decode(data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Perform an http:// request. Returns Err with a human-readable message.
-pub fn request(
+/// Perform an http:// request with configurable timeouts.
+pub fn request_with_timeout(
     url: &str,
     method: &str,
     headers: &[(String, String)],
     body: &[u8],
+    connect_timeout: Duration,
+    rw_timeout: Duration,
 ) -> Result<ClientResponse, String> {
     let rest = url
         .strip_prefix("http://")
@@ -81,14 +83,14 @@ pub fn request(
         .collect();
     let mut conn: Option<TcpStream> = None;
     for a in addrs {
-        if let Ok(s) = TcpStream::connect_timeout(&a, Duration::from_secs(3)) {
+        if let Ok(s) = TcpStream::connect_timeout(&a, connect_timeout) {
             conn = Some(s);
             break;
         }
     }
     let mut stream = conn.ok_or_else(|| format!("connect to {hostport} failed"))?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_read_timeout(Some(rw_timeout));
+    let _ = stream.set_write_timeout(Some(rw_timeout));
 
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {hostport}\r\n");
     for (k, v) in headers {
@@ -141,6 +143,23 @@ pub fn request(
         headers: resp_headers,
         body: body_bytes,
     })
+}
+
+/// Perform an http:// request. Returns Err with a human-readable message.
+pub fn request(
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<ClientResponse, String> {
+    request_with_timeout(
+        url,
+        method,
+        headers,
+        body,
+        Duration::from_secs(3),
+        Duration::from_secs(10),
+    )
 }
 
 /// GET returning (status, text) — convenience for probes.
