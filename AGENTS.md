@@ -1,5 +1,5 @@
 ---
-description: Universal AGENTS.md rules standard for AI coding assistants. PQC secrets for all API keys. Worktree per task — branch from main, merge back to main after verification, then clean up. Polyglot (Rust, TS, Py, etc). Chain-of-Draft: ≤5 words per step, output after ####. llms.txt is the PRD anchor — read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops; standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Branch naming `<type>/<scope>-<slug>`. Ask before merging. Output full production code. Concurrent agents coordinate via AGENTS/{date}.COMMS.md. Cross-machine reporting goes through the wtf hub (live; mandatory; chain-of-draft; see .agents/skills/wtf-agent-hub/SKILL.md). Terminal sub-agents orchestrate via trae-mini-fleet under local-router/fallback-models.
+description: Universal AGENTS.md rules standard for AI coding assistants. PQC secrets for all API keys. Worktree per task — branch from main, merge back to main after verification, then clean up. Polyglot (Rust, TS, Py, etc). Chain-of-Draft: ≤5 words per step, output after ####. llms.txt is the PRD anchor — read it. No secrets in tasks or PRD. FIPS 203/204/205 for secrets ops; standard crypto for transport. Audit for banned algorithms and secrets every cycle. Never work directly on main. Branch naming `<type>/<scope>-<slug>`. Ask before merging. Output full production code. Concurrent agents coordinate via AGENTS/{date}.COMMS.md. Cross-machine reporting goes through the wtf hub (live; mandatory; chain-of-draft; see .agents/skills/wtf-agent-hub/SKILL.md). Graph-intelligence recon (GitNexus core) scopes every code edit (see .agents/skills/graph-intelligence/SKILL.md). Tear down stale servers and rebuild fresh main after every merge; verify worktree ownership (git+time) before removing any worktree. Terminal sub-agents orchestrate via trae-mini-fleet under local-router/fallback-models.
 ---
 
 # 🚧 WORKTREE GATE — MANDATORY CHECKPOINT
@@ -34,11 +34,23 @@ Conflict → fail closed, explain, ask.
 
 ---
 
+<DOCUMENT_MODEL>
+## DOCUMENT MODEL — ONE AGENTS.md, llms.txt AS PRD
+
+- **This AGENTS.md is the singular, repository-agnostic governing contract.** The exact same file runs in this repository AND is deployed to every target project by `ainish-coder --rules` / `--agents` as the target's single `AGENTS.md`. Keep it free of repo-specific detail; it encodes the universal standard only.
+- **`llms.txt` is the PRD and guiding document of each repository.** Project purpose, scope, contracts, structure, per-repo rules, and the Child DOX Index live in its DOX chain — never in AGENTS.md. Read the llms.txt chain (root → child → target path) before editing anything.
+- **Division of labor:** AGENTS.md = general standard (worktree isolation, PQC secrets, COMMS coordination, fleet orchestration, quality gates) + wiring for the custom tooling (`pqc-secrets`, wtf hub, `cli-tts`, trae-mini-fleet, GitNexus/Graphify/Semantica, `security_gate.py`). llms.txt = what THIS project is and how THIS project works.
+- **Drift rule:** repo-specific guidance discovered while working belongs in the nearest owning `llms.txt`, never in AGENTS.md. If AGENTS.md and llms.txt conflict, llms.txt wins for repo-local detail; AGENTS.md wins for the universal standard.
+</DOCUMENT_MODEL>
+
+---
+
 <TASK_PRIMER>
 ## TASK COORDINATION & CHAIN-OF-DRAFT
 
 - **Fast Orientation (`git context`):** Dumps latest COMMS entries, task-file gists (`.agents/tasks/`), `llms.txt` PRD version, worktrees, stashes, and timeline. Run first in any repo.
 - **PRD Anchor:** `llms.txt` is the authoritative PRD. Read unconditionally; overrides conflicting sources per P2.
+- **Graph Recon:** `.agents/skills/graph-intelligence/SKILL.md` routes every task through the `<GRAPH>` pillar table — GitNexus core for code, Graphify/Semantica on escalation.
 - **Artifact Hygiene:** Task files and PRD inherit all security rules. Audit per cycle. Default classification: Confidential.
 - **Modular Skills:** Modular capabilities live in `.agents/skills/<skill>/SKILL.md`. Read before proceeding. Preserve byte-identity on shared skills.
 </TASK_PRIMER>
@@ -104,21 +116,68 @@ The **wtf observability hub** is the cross-machine coordination layer. All agent
 ```
 1. Isolate   → git worktree add -b <type>/<scope>-<slug> ../<slug> main
 2. Coordinate → Append checkin to AGENTS/{date}.COMMS.md
-3. Iterate   → Frequent atomic commits in worktree with descriptive messages
-4. Audit     → Scan code, tasks, llms.txt for banned crypto and raw secrets
-5. Gates     → Pass native gates (cargo clippy, tsc, ruff) + test suites
-6. Verify    → Non-default port smoke test in worktree (PQC loaded, endpoints responsive)
-7. Merge     → Post intent-merge. Ask operator: "Ready to merge <branch> → main? [diff summary]. Confirm?"
-8. Cleanup   → Remove worktree, delete branch, append checkout to COMMS ledger
+3. Recon     → Graph pass per <GRAPH>: gitnexus analyze once, then impact on edit targets
+4. Iterate   → Frequent atomic commits in worktree with descriptive messages
+5. Audit     → Scan code, tasks, llms.txt for banned crypto and raw secrets
+6. Gates     → Pass native gates (cargo clippy, tsc, ruff) + test suites
+7. Verify    → Non-default port smoke test in worktree (PQC loaded, endpoints responsive); gitnexus detect-changes scope proof on code edits
+8. Merge     → Post intent-merge. Ask operator: "Ready to merge <branch> → main? [diff summary]. Confirm?"
+9. Rebuild   → <SERVERS>: ownership-verify worktrees (merged+unclaimed+idle); tear down stale servers; rebuild main server from fresh main; smoke test
+10. Cleanup  → Remove worktree, delete branch, append checkout to COMMS ledger
 ```
 
 ### Mandatory Cleanup Commands (Post-Merge):
 ```bash
+# BEFORE any removal (yours or a stale peer's): pass <SERVERS> ownership
+# verification — merged into main, unclaimed in COMMS, idle beyond quiet window.
 git worktree remove <worktree-path>
 cd <main-repo-path> && git branch -d <type>/<scope>-<slug>
 git worktree list && git branch --show-current  # Verify clean on main
 ```
 </WORKFLOW>
+
+---
+
+<SERVERS>
+## SERVER LIFECYCLE & WORKTREE OWNERSHIP — TEARDOWN, REBUILD, TIMING (ALL REPOS)
+
+Servers are disposable runtime, never durable state; worktrees hold peers' in-flight work. Every merge to `main` ends with the orchestrator refreshing the runtime: verify peers → tear down stale → rebuild fresh `main` → smoke test.
+
+### Worktree Ownership Verification (before removing ANY worktree — yours or a peer's)
+Remove only when ALL three checks pass; any single miss → leave it untouched and flag the owner in `AGENTS/{date}.COMMS.md`:
+1. **Merged:** branch is in `git branch --merged main` (zero unmerged commits). Unmerged peer work is NEVER deleted — only flagged.
+2. **Unclaimed:** no open `checkin`/`intent-merge` without a matching `checkout` for that branch in `AGENTS/*COMMS.md`; `git worktree list` shows it unlocked (`lock` column = owned).
+3. **Idle:** last branch commit AND last ledger mention older than the quiet window (default 24h); with the wtf hub live, `wtf_is_going_on` confirms no active agent on that path — hub down → checks 1–2 + COMMS gap note.
+
+### Rebuild Window Orchestration (master-timed, never racing peers)
+- Rebuild only inside a **quiet window**: `main` at HEAD (fast-forward origin when present), zero in-progress `intent-merge`, no `checkin` younger than the quiet window, latest lifecycle entries closed. Post `intent-rebuild` before teardown; close it after the green smoke test.
+- One rebuild at a time per repo. Peer checks in mid-rebuild → finish or roll back before yielding; never leave a torn-down state.
+
+### Teardown → Rebuild (every merge touching server code/config)
+1. **Locate** the running instance by its contract port (repo `llms.txt`; non-default only) or PID file.
+2. **Kill exactly that process tree** — port/PID-targeted, never a blanket pkill.
+3. **Rebuild from fresh `main`** and restart on the same port.
+4. **Smoke test** endpoints: green → `log_event` + COMMS receipt; red → restore previous build, report blocked. Docs-only merges log `no-rebuild-needed`.
+</SERVERS>
+
+---
+
+<GRAPH>
+## GRAPH INTELLIGENCE — THREE-PILLAR RECONNAISSANCE (ALL REPOS)
+
+Load `.agents/skills/graph-intelligence/SKILL.md` before the first edit in any repo. One mandatory core pillar, two conditional escalations — route by question, never run all three reflexively:
+
+| Priority | Pillar | Trigger | Minimal invocations (always `--help` before new flags) |
+|---|---|---|---|
+| **Core — mandatory** | **GitNexus** (AST call-graphs) | Every code read, edit, rename, or bug trace | `gitnexus analyze --skip-agents-md --no-stats` (once per repo; re-index after structural upgrades) → `gitnexus context <symbol>` · `gitnexus impact <symbol>` · `gitnexus detect-changes` (MCP: `gitnexus_context` / `gitnexus_impact` / `gitnexus_detect_changes`) |
+| Escalate | **Graphify** (multimodal synthesis) | Questions spanning code + docs/RFCs/PDFs, PR triage, architecture clustering | install on demand (`pip install graphifyy`) → `graphify extract <src> <docs>` → `graphify query "<q>"`; source `.agents/skills/graph-intelligence/scripts/graphify-env.sh` for PQC-wrapped provider keys |
+| Escalate | **Semantica** (decision & governance) | Consequential decisions, SHACL policy checks, PROV-O audit trails | install on demand (`pip install semantica`) → `semantica decision record` → `semantica provenance trace --id <id>` |
+
+- **Pair with agent actions:** `gitnexus impact` (upstream, $d \le 2$) output IS the file allowlist for fleet `SCOPE & TARGET FILES` (<FLEET>); a green `gitnexus detect-changes` (only intended symbols touched) is a merge precondition for code changes; `semantica decision record` logs gate-green merges when installed. Deep audits triangulate all three (skill Master D).
+- **Guard the governing contract:** `--skip-agents-md` is non-optional in this fleet — GitNexus otherwise rewrites its section inside `AGENTS.md`/`CLAUDE.md`, drifting the deployed universal file. `.gitnexus/`, `.claude/`, and auto-generated `.agents/skills/gitnexus-*/` community packs are local artifacts; never commit them.
+- **Graceful degradation:** tool missing or index stale → attempt `gitnexus analyze` once; still unavailable → fall back to grep + manual diff scoping and note the gap in `AGENTS/{date}.COMMS.md`. Docs-only edits never block on graph recon.
+- **Deep manuals:** `.agents/skills/graph-intelligence/references/` (CLI, exploring, debugging, impact analysis, refactoring).
+</GRAPH>
 
 ---
 
@@ -134,6 +193,7 @@ The calling agent commands an integrated **Three-Tier Triad**:
    - **GitNexus (AST & Code Symbols):** Computes exact caller/callee graphs (`context`) and upstream/downstream blast radius (`impact`) to designate bounded target files before editing. Verifies post-edit call-chain safety (`detect_changes`).
    - **Graphify (Multimodal Synthesis):** Extracts cross-document context (code + markdown + RFCs + PDFs) and Leiden community clusters to orient fleet agents within large repositories.
    - **Semantica (Context & Governance):** Records decision nodes (`record_decision`), verifies policy compliance (SHACL), and maintains immutable W3C PROV-O audit trails.
+   *Routing, minimal invocations, and contract-protection flags: `<GRAPH>` section + `.agents/skills/graph-intelligence/SKILL.md` (deep GitNexus manuals in its `references/`).*
 3. **Tier 3: The Coding Fleet Masters (`trae-cli` & `mini`):** The surgical hands. Headless SWE-bench engines invoked via direct shell tool calls in dedicated worktrees under loopback proxy `11434`:
    - **`trae-cli` (AST Refactoring Master):** Executes multi-file structural edits, cross-module refactoring, and patch generation (`-f /tmp/task.md`).
    - **`mini` (TDD Reproduction Engineer):** Synthesizes minimal failing tests, reproduces bugs, and runs iterative fix loops with zero-config (`--yolo --exit-immediately`).
@@ -143,8 +203,8 @@ $$\text{Reconnaissance (Graph)} \longrightarrow \text{Formulation (Orchestrator)
 
 1. **Phase 1: Pre-Flight Graph Reconnaissance:** Before formulating any task file or modifying code, the Orchestrator queries GitNexus (`gitnexus_impact`, `gitnexus_context`) to map exact call hierarchies and blast radius ($d=1, d=2$). Consults Graphify for doc/RFC context and Semantica for past decision precedents.
 2. **Phase 2: Scoped Master Prompt Formulation:** The Orchestrator injects the discovered AST targets into the strict `SCOPE & TARGET FILES` block of canonical templates (`TPL_TRAE_AST_V2` or `TPL_MINI_TDD_REPRO_V1`). No blind edits; zero unindexed files passed to subagents.
-3. **Phase 3: Autonomous Fleet Tool Dispatch:** Dispatch `trae-cli` or `mini` in dedicated sibling worktrees (`../<slug>`). Intermediate task files and trajectory JSONs are scrubbed in-place via `scrub_task.py`.
-4. **Phase 4: Post-Edit Verification & Provenance:** Run GitNexus `detect_changes` to verify that ONLY the target symbols were modified and no caller contracts broke. Run native compiler/test gates. Semantica records the decision node (`record_decision`) with PROV-O lineage.
+3. **Phase 3: Autonomous Fleet Tool Dispatch:** Dispatch `trae-cli` or `mini` in dedicated sibling worktrees (`../<slug>`) through `fleet_dispatch.py` (Dispatch Protocol v2 below) after `fleet_doctor.py` reports GO; block on gate-critical dispatches and collect the `fleet.receipt/v1`. Intermediate task files and trajectory JSONs are scrubbed in-place via `scrub_task.py` (fail-closed under the wrapper).
+4. **Phase 4: Post-Edit Verification & Provenance:** Run GitNexus `detect_changes` to verify that ONLY the target symbols were modified and no caller contracts broke. Run native compiler/test gates **plus plugin validators** (ruff/bandit/py_compile — zero bandit medium+ is the floor) and the scope-conformance diff; route C/C++ patches through the compiler-integrity gates and detector-less classes through an LLM pattern audit (see Dispatch Protocol v2 step 6). Semantica records the decision node (`record_decision`) with PROV-O lineage.
 5. **Phase 5: Gate Confirmation & Cleanup:** The Orchestrator registers the complete lifecycle in `AGENTS/{date}.COMMS.md`, posts `intent-merge`, requests operator confirmation with diff summary, merges to `main`, removes the worktree, and speaks via `cli-tts`.
 
 ### Agentic Tool Call Execution Directive (Mandatory for All LLMs)
@@ -175,94 +235,21 @@ Any LLM of any capability or model family reading this contract MUST treat `trae
 - **Probe $\rightarrow$ Fix:** Calling agent (embodying TDD Engineer) dispatches `mini` tool call to isolate the bug with a minimal reproduction test $\rightarrow$ calling agent (embodying AST Master) dispatches `trae-cli` targeting exact files to apply production patch.
 - **Zero Config Mandate:** Neither engine prompts for interactive input; `mini` operates without `--config` using the pre-wired local router proxy.
 
-### Canonical Fleet Master Prompt Templates & Dispatch Calls
+### Canonical Templates & Dispatch Wrapper (Single Source of Truth)
 
-#### 1. `TPL_TRAE_AST_V2` (AST Refactoring Master — `trae-cli`)
-Use for structural changes, multi-file symbol refactoring, interface decoupling, and patch creation:
-```markdown
-# TASK: <Imperative Action Title>
+The four canonical task templates — `TPL_TRAE_AST_V2` (AST Refactoring Master, trae-cli), `TPL_MINI_TDD_REPRO_V1` (TDD Reproduction Engineer, mini), `TPL_SECURITY_AUDIT_V1` (Adversarial Security Auditor), and `TPL_TRAE_SYSTEMS_V1` (Systems Architecture Master) — live in **`.agents/skills/trae-mini-fleet/SKILL.md` §3** and are the ONLY authoritative copies. AGENTS.md deliberately does not inline them (drift prevention).
 
-## ROLE & EXPERT PERSONA
-You are acting as the **AST Refactoring Master**. Your goal is surgical structural refactoring across modules while strictly maintaining AST integrity, exported type contracts, and existing documentation.
+Template invariants (non-negotiable): scoped `SCOPE & TARGET FILES` allowlist; non-interactive flags (`--console-type simple` for trae-cli; `--yolo --exit-immediately` for mini; **never `--config` for mini**); task prompts via `-f <file>`; dispatch only inside dedicated sibling worktrees (`../<slug>`, never `main`); loopback proxy `http://127.0.0.1:11434/v1` (`local-router/fallback-models`).
 
-## SCOPE & TARGET FILES
-You must ONLY explore, inspect, and modify the following files:
-- `<target_file_1>`
-- `<target_file_2>`
+### Dispatch Protocol v2 — Doctor, Wrapper, Receipts, Exit Taxonomy (Binding)
 
-## OBJECTIVE & DIRECTIVES
-1. Inspect AST definitions and symbol references in target files before making edits.
-2. Refactor target functions/interfaces; preserve all comments, docstrings, and typing precision.
-3. Validate signatures cleanly against dependent call sites.
-4. Output atomic unified diffs; never emit unformatted or partial snippets.
+1. **PRE-FLIGHT (`fleet_doctor.py`):** before the first dispatch of a session, verify binaries (+ sha256 pins when supplied), loopback proxy `11434` health, backend `11435`, `scrub_task.py` presence, and worktree isolation. `NO-GO` = fix the environment first; zero fleet steps on a broken env.
+2. **DISPATCH (`fleet_dispatch.py`):** every trae-cli/mini dispatch runs through the wrapper with `--task-file`, `--worktree`, `--scope` allowlist, repeatable `--gate` plugin commands, `--persona`, and bounded `--timeout`. Fixed argument vectors, no shell, kill-on-timeout. Parallel dispatches only for independent scopes; otherwise run synchronously.
+3. **WAITING IS MANDATORY WHEN DEPENDENT:** if the next phase consumes this dispatch's output (patch, repro test, receipt), the orchestrator blocks on completion and collects the receipt before any further action. Fire-and-forget is permitted only for independent scopes.
+4. **RECEIPTS (`fleet.receipt/v1`):** engine, persona, binary sha256, branch, task-file hash, changed files, scope verdict, gate results, probe-loop flag, scrub status, native exit code, normalized code. One `SUBAGENT-DISPATCH` ledger entry per dispatch referencing its receipt, with `parent: <orchestrator>`. **No receipt = the dispatch never happened.**
+5. **EXIT TAXONOMY (automatic handoff):** `0` OK -> proceed · `20` step-exhausted (zero edits) -> hand to sibling · `30` probe-loop (mini >=3 identical probes) -> hand failure signature to trae-cli · `40` engine/gates failed -> fix scope, re-dispatch · `50` scope violation -> revert, tighten allowlist, re-dispatch · `60` preflight failed -> `fleet_doctor.py` · `70` scrub failed -> manual scrub, never skip · `124` timeout -> treat as `20`.
+6. **VERIFY THE ARTIFACT, THEN MERGE:** GitNexus `detect_changes` + native gates + plugin validators (ruff/bandit/py_compile; zero bandit medium+ is the floor) + scope-conformance diff. C/C++ patches additionally require warnings-as-errors, ASan/UBSan, and tests re-run on the **optimized shipping binary** (compiler-integrity, `code-security` §2); detector-less vulnerability classes require an LLM pattern audit (`llm-security` §15). Never merge on anything but `0` + green gates + operator confirmation.
 
-## ACCEPTANCE & QUALITY GATES
-1. Compile / Typecheck: `<native typecheck or build command, e.g. tsc --noEmit>`
-2. Test Suite: `<native test execution command, e.g. npm test>`
-3. Clean Scope: Only designated target files modified, zero syntax or lint regressions.
-```
-*Direct Tool Call Execution:*
-```bash
-cat > /tmp/task_ast.md << 'EOF'
-[task content above]
-EOF
-trae-cli run -f /tmp/task_ast.md --console-type simple --patch-path solution.patch --max-steps 30
-python3 .agents/skills/trae-mini-fleet/scripts/scrub_task.py --in-place /tmp/task_ast.md 2>/dev/null || true
-rm -f /tmp/task_ast.md
-```
-
-#### 2. `TPL_MINI_TDD_REPRO_V1` (TDD Reproduction Engineer — `mini`)
-Use for test-driven bug reproduction, regression isolation, and runtime probe hardening:
-```bash
-mini --task "$(cat << 'EOF'
-[ROLE: TDD Reproduction Engineer]
-OBJECTIVE: Reproduce, isolate, and eliminate <target bug / regression description>.
-
-TDD EXECUTION SEQUENCE:
-1. Write a minimal reproduction test in `tests/<repro_test_file>` demonstrating the failure signature with exit code > 0.
-2. Execute the reproduction test to confirm a clean, isolated failure.
-3. Modify `<target_source_file>` to fix the root cause.
-4. Re-run reproduction test and the full native test suite `<native test command>`.
-5. Confirm 100% tests pass and exit immediately. Do NOT create extraneous helper scripts.
-EOF
-)" --output mini_trajectory.json --yolo --exit-immediately
-python3 .agents/skills/trae-mini-fleet/scripts/scrub_task.py --in-place mini_trajectory.json 2>/dev/null || true
-```
-
-#### 3. `TPL_SECURITY_AUDIT_V1` (Adversarial Security Auditor — `trae-cli` / `mini`)
-Use for zero-trust boundary verification, path traversal prevention, and cryptographic compliance:
-```markdown
-# TASK: Post-Quantum Cryptographic & Input Sanitization Audit
-
-## ROLE & EXPERT PERSONA
-You are acting as the **Adversarial Security Auditor**. You evaluate code under zero-trust assumptions to eliminate classic crypto leaks, path traversal vectors (CWE-22), and SSRF bypasses.
-
-## SCOPE & TARGET FILES
-- `<target_files>`
-
-## DIRECTIVES & GATES
-1. Audit route handlers, file operations, and subprocesses against CWE-22 and SSRF bypass vectors.
-2. Verify secrets operations strictly require FIPS 203 ML-KEM-768 or FIPS 204 ML-DSA-65; reject RSA, ECDSA, AES-CBC, or plaintext tokens.
-3. Validate and enforce strict allowlists on all untrusted inputs.
-4. Pass all security audit tests with zero warnings.
-```
-
-#### 4. `TPL_TRAE_SYSTEMS_V1` (Systems Architecture Master — `trae-cli`)
-Use for loopback proxy contracts, port bindings, daemon failover chains, and process lifecycle management:
-```markdown
-# TASK: Anchor Loopback 11434 Proxy Routing Shim & Daemon Lifecycle
-
-## ROLE & EXPERT PERSONA
-You are acting as the **Systems Architecture Master**. You design deterministic loopback traffic pipelines, robust daemon failover chains, and graceful signal handlers.
-
-## SCOPE & TARGET FILES
-- `<target_files>`
-
-## DIRECTIVES & GATES
-1. Ensure port 11434 cleanly proxies the real backend daemon on port 11435.
-2. Guarantee graceful non-blocking failover when the upstream daemon is initializing or unreachable.
-3. Ensure process signals (SIGTERM/SIGINT) cleanly flush and close connections without hanging.
-```
 </FLEET>
 
 ---
@@ -298,6 +285,9 @@ Run before completing any task:
 4. **Crypto Audit:** FIPS 203/204/205 exclusively for secrets; zero hardcoded credentials or `.env` files.
 5. **Quality Gates:** Code compiles cleanly, typechecks (`tsc`), and native test suites pass (`npm test`).
 6. **Verification & Cleanup:** Smoke tests pass, operator confirms merge, worktree removed, branch deleted.
+7. **Fleet Receipts:** Every fleet dispatch has a `fleet.receipt/v1` with normalized exit code `0`, scope conformance, green gates, and a completed fail-closed scrub — logged in the COMMS ledger.
+8. **Graph Verification:** `gitnexus detect-changes` scope proof (or COMMS-logged fallback) for every code change; `.gitnexus/`/`.claude/` artifacts never committed.
+9. **Server Rebuild & Ownership:** stale servers torn down, `main` rebuilt from fresh HEAD with green smoke test (or `no-rebuild-needed` logged); every worktree removal passed <SERVERS> merged/unclaimed/idle verification.
 </AUDIT>
 
 ---
@@ -330,51 +320,5 @@ EOF
 ---
 
 <REINFORCEMENT>
-PQC for every API key. Respect the codebase's native language. One task = one worktree from `main`, merged back to `main` after verification, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`. Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code. Speak with one `cli-tts --prompt` (1.8×, random voice, one ONNX session, parent returns immediately; see `.agents/skills/tts-cli/SKILL.md`). Always believe in yourself.
+PQC for every API key. Respect the codebase's native language. One task = one worktree from `main`, merged back to `main` after verification, cleaned up immediately. Never self-approve merges — ask every hop. Concurrent agents coordinate via `AGENTS/{date}.COMMS.md`. Graph recon before code edits; `detect-changes` before merge. Servers are disposable — tear down stale, rebuild fresh `main` post-merge; never delete a peer's worktree without merged+unclaimed+idle proof. Chain-of-Draft: ≤5 words/step, `####` then output. Ship full production code. Speak with one `cli-tts --prompt` (1.8×, random voice, one ONNX session, parent returns immediately; see `.agents/skills/tts-cli/SKILL.md`). Always believe in yourself.
 </REINFORCEMENT>
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **wtf-is-going-on-mcp** (1446 symbols, 4863 relationships, 127 execution flows).
-
-> Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing.** Use `impact({target: "symbolName", direction: "upstream"})` (MCP) or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .` (CLI fallback); report callers, processes, and risk. Never substitute grep for graph analysis.
-- **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
-
-## Never Do
-
-- NEVER edit a function, class, or method before MCP/CLI impact analysis.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit before MCP/CLI graph change analysis.
-
-## Resources
-
-| Resource | Use for |
-| --- | --- |
-| `gitnexus://repo/wtf-is-going-on-mcp/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/wtf-is-going-on-mcp/clusters` | All functional areas |
-| `gitnexus://repo/wtf-is-going-on-mcp/processes` | All execution flows |
-| `gitnexus://repo/wtf-is-going-on-mcp/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-| --- | --- |
-| Understand architecture / "How does X work?" | `.agents/skills/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.agents/skills/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.agents/skills/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.agents/skills/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.agents/skills/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.agents/skills/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->

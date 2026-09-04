@@ -3,17 +3,17 @@ name: wtf-observability
 description: Expert operation of the wtf multi-agent observability hub (this repo). Use when instructed to report status to the hub, check what other agents are doing, set up or join the hub on any machine, configure the wtf MCP server in an agent harness, or debug hub connectivity. Covers zero-install binary discovery, MCP client wiring, signed curl fallback for non-MCP agents, operator CLI, singular capability dashboard URL (/w/<capability>), paired Federated Multi-Machine Shell, and multi-machine bring-up over LAN, overlay networks, or cloud.
 ---
 
-> **Status:** operator/CLI reference. Agents should use
+> **Status:** Operator/CLI reference. Agents should use
 > `.agents/skills/wtf-agent-hub/SKILL.md` instead — it carries the current
-> 21-tool surface (v0.15.1: incl. `write_bin`, `hub_info`, `env_report`/`env_probe`,
+> 21-tool surface (v0.15.2+: incl. `write_bin`, `hub_info`, `env_report`/`env_probe`,
 > the encrypted `session_*` channels, COMMS ledger tools, and the executor
 > `chat_run`/`chat_sessions`/`chat_session_lifecycle` — per-chat tmux sessions
-> running the SWE-bench Coding Fleet fcc-omp-trae-mini cascade via local-router:11434),
-> the PQC credential lane, singular capability URL (`/w/<capability>`), and the
-> paired Federated Multi-Machine Shell.
-> This document stays as the hub-operator + signed-curl fallback guide.
+> running the universal 11-agent catalog via local-router:11434),
+> the PQC credential lane with ephemeral handshake burn, singular capability URL (`/w/<capability>`),
+> and the paired Federated Multi-Machine Shell.
+> This document serves as the hub-operator + signed-curl fallback guide.
 
-# wtf-observability — agent skill
+# wtf-observability — Agent & Operator Skill
 
 `wtf` is a zero-dependency Rust pair in this repo: a **hub** (`wtf serve`) that
 keeps the shared truth of what every agent is doing, and a **bridge**
@@ -22,12 +22,11 @@ working on; a browser dashboard answers *what the fuck is going on* across all
 machines. The dashboard houses an embedded **Chat & Agent Orchestration Studio**
 paired side-by-side with the **Federated Multi-Machine Shell** (`~/` virtual root).
 Dispatched tasks run in attachable `wtf-chat-<slug>` tmux sessions via
-the SWE-bench Coding Fleet executor (v0.15.1). Everything is in-tree (SHA-256, HMAC, JSON, HTTP, MCP) —
-no crates, no network installs, no system packages.
+the SWE-bench Coding Fleet executor (v0.15.2+). Everything is in-tree (SHA-256, HMAC, JSON, HTTP, MCP) —
+no external crates, no network installs, no system packages.
 
-Non-negotiables before you touch anything: never log, echo, or commit device
-keys or the dashboard capability token; never port-forward plain HTTP to the public
-internet.
+Non-negotiables: never log, echo, or commit device keys or the dashboard
+capability token; never port-forward plain HTTP to the public internet.
 
 ## 1. Get the binary (no pre-installed tooling required)
 
@@ -39,18 +38,16 @@ cargo build --release --manifest-path /path/to/wtf-is-going-on-mcp/Cargo.toml
 #   binary appears at /path/to/wtf-is-going-on-mcp/target/release/wtf
 ```
 
-- The build needs only a Rust toolchain and **nothing else**: there are zero
-  external crates to download, so it works offline.
+- The build needs only a Rust toolchain and **nothing else**: zero external crates, works completely offline.
 - If there is no toolchain on the machine, you cannot run the bridge — but you
-  can still *read* the team state through a browser or `curl` if the operator
-  gives you the singular capability dashboard URL (`http://HUB:7800/w/<capability>`).
+  can still *read* the team state through a browser or `curl` using the singular capability dashboard URL (`http://HUB:7800/w/<capability>`).
 - Prefer the release binary path in MCP configs; it must be **absolute**.
 
 ## 2. Verify connectivity (30 seconds)
 
 ```bash
 curl -sS http://localhost:7800/healthz
-#   {"ok":true,"service":"wtf-hub","version":"0.15.1",...}
+#   {"ok":true,"service":"wtf-hub","version":"0.15.2",...}
 /path/to/wtf status            # signed read; needs bridge.json or env creds
 ```
 
@@ -59,7 +56,7 @@ An empty table is success — it means nobody has checked in yet.
 
 ## 3. Preferred: report through MCP
 
-Point your harness at the bridge (same `mcpServers` shape used by Claude
+Point your harness at the bridge (standard `mcpServers` shape used by Claude
 Desktop, Cursor, Warp, and most MCP clients):
 
 ```json
@@ -74,10 +71,10 @@ Desktop, Cursor, Warp, and most MCP clients):
 ```
 
 The bridge reads credentials from `$WTF_HOME/bridge.json` (written by `wtf
-setup` or `wtf join`) or, overriding the file, from `WTF_HUB_URL`,
+setup`, `wtf enroll`, or `wtf join`) or, overriding the file, from `WTF_HUB_URL`,
 `WTF_DEVICE_NAME`, `WTF_DEVICE_KEY`.
 
-Tools you will have (21 in v0.15.1):
+Tools you will have (21 in v0.15.2+):
 
 | Tool | Args | When to call |
 |------|------|--------------|
@@ -98,7 +95,7 @@ Tools you will have (21 in v0.15.1):
 | `session_read` | `session`, `after?` | Decrypt and read private messages from an encrypted lane |
 | `comms_post` | `session`, `event`, `note`, `scope?` | Append structured envelope (`checkin`, `update`, `intent-merge`, etc.) |
 | `comms_read` | `session`, `after?`, `event?` | Read and render decoded COMMS ledger lines |
-| `chat_run` | `prompt`, `agent?`, `repo?`, `workdir?`, `timeout_secs?` | Dispatch headless coding task to `wtf-chat-<slug>` tmux session |
+| `chat_run` | `prompt`, `agent?`, `repo?`, `workdir?`, `machine?` | Dispatch headless coding task to `wtf-chat-<slug>` tmux session |
 | `chat_sessions` | — | List active local executor tmux sessions |
 | `chat_session_lifecycle` | `session`, `action` | Open, close, reconnect, or delete headless chat execution panes |
 | `ping` | — | Connectivity probe (unsigned `/healthz`) |
@@ -166,50 +163,53 @@ wtf_call GET  /api/v1/shell/machines        # discover federated shell cluster m
    # Output: dashboard: http://<host>:7800/w/<64-hex-capability>
    ```
    Opens uniformly across loopback, LAN, and reverse proxies without secret leakage in query strings.
-   Any unauthenticated access returns a uniform `404 Not Found`.
+   Any unauthenticated access returns a uniform `404 Not Found` (legacy `?k=` retired under R5).
 
 2. **Embedded Chat & Agent Orchestration Studio**:
    - Integrated into the left pane of `/w/<capability>`.
-   - Allows operators to create lanes (`+ New Lane`), select existing chats, view message feeds, and prompt agents.
-   - Dispatches SWE-bench dual-engine coding fleet tasks (`trae-cli`, `mini`, `omp`, `fcc`) into isolated tmux sessions.
+   - Dispatches SWE-bench coding fleet tasks across the 11-agent CLI catalog (`auto`, `fleet`, `claude`, `omp`, `hermes`, `trae-cli`, `mini`, `codex`, `opencode`, `aider`, `cline`, `pi`).
    - All engines route through `local-router/fallback-models` on `127.0.0.1:11434`.
 
 3. **Paired Federated Multi-Machine Shell & Intelligent Distributed Compute**:
    - Integrated into the right pane of `/w/<capability>`.
    - Virtual root (`~/`) maps to connected cluster machines (`~/mac`, `~/windows`, `~/creeper-pi`).
    - Persistent per-architecture LKGL (`$WTF_HOME/lkgl.json`) automatically anchors commands and dispatched tasks to native workspace directories.
-   - Synchronized federated OMP config (`$WTF_HOME/fed_omp_config.json`) coordinates model parameters (`local-router/fallback-models`), proxy endpoint (`127.0.0.1:11434`), and fallback cascades.
-   - Intelligent Distributed Compute: Agents on any connected machine (including edge devices like a Raspberry Pi) can dispatch tasks to remote nodes via `chat_run(machine="<name>")` or the shell API.
+   - Synchronized federated OMP config (`$WTF_HOME/fed_omp_config.json`) coordinates model parameters and fallback cascades.
+   - Intelligent Distributed Compute: Agents on edge devices (like Raspberry Pi) dispatch tasks to cluster heavies via `chat_run(machine="<target>")` or shell API.
    - Run multi-machine compound commands in a single prompt:
      ```bash
      cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test
      ```
    - Shows colored machine badge output (`[mac]`, `[windows]`) in the terminal log.
-   - Backend APIs: `GET /api/v1/shell/machines`, `GET/POST /api/v1/shell/config`, `POST /api/v1/shell/exec`.
 
 ## 6. Operator Reference (hub side)
 
 ```bash
 wtf serve [--bind IP:PORT] [--no-open]     # run hub; prints singular capability link
-wtf dashboard-url                          # print the singular capability URL
+wtf dashboard-url                          # print the singular capability URL (/w/<cap>)
 wtf url [URL | clear]                      # set advertised URL (e.g. proxy or overlay)
+wtf enroll-token <name> [--ttl SECS]       # mint one-time enrollment token (burns on use)
+wtf enroll-secret                          # display site PSK for signed enrollment
+wtf enroll-secret --rotate                 # rotate site PSK, revoking outstanding copies
 wtf key issue [--json] <name>              # provision device; key printed ONCE
 wtf key list                               # devices + revoked state
 wtf key revoke <name>                      # instant kill switch, no restart
 wtf setup --url URL --name N --key K       # manual local enrollment
 wtf join user@hub-host [--name N] [--url U]# self-enroll over ssh
+wtf federate add <name> --url U --psk S    # join a peer hub to the federation mesh
 ```
 
 State lives in `$WTF_HOME` (default `~/.config/wtf-mcp`): `config.json`,
 `dashboard_capability` (0600), `keys.json`, `bridge.json`, `identities.json` (0600,
-persisted ML-KEM-768 identities), `events.jsonl` (append-only source of truth).
+persisted ML-KEM-768 identities), `enroll_tokens.json` (0600, hashed tokens),
+`events.jsonl` (append-only source of truth).
 
 ## 7. Troubleshooting
 
-| Symptom | Cause → fix |
+| Symptom | Cause -> fix |
 |---------|-------------|
 | HTTP 401 on signed call | key revoked/wrong, clock off by >300 s, or signature input mismatch. |
-| HTTP 404 on `/w/...` | capability token missing or wrong; run `wtf dashboard-url` on the hub machine. |
+| HTTP 404 on `/` or `/w/...` | capability token missing or wrong; run `wtf dashboard-url` on the hub machine. |
 | connection refused | hub not running or wrong port; `curl localhost:7800/healthz`. |
 | "cannot bind" on serve | port taken; `--bind localhost:PORT` or another port. |
 | join exit 127 | `wtf` not in the hub host's PATH — install/symlink it there. |

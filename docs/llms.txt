@@ -11,7 +11,8 @@ layers that were previously interleaved:
 - `OPERATIONS.md` — runbooks: bring-up, federation repair, envelope
   transfer, shim hardening, log hygiene, chat-integration contract.
 - `ROADMAP.md` — refinement items (R1 identity persistence, R2 ledger,
-  R3 operator-directed) and open defects with file/line anchors.
+  R3 singular dashboard URL & federated shell, R4 OMP config & LKGL,
+  R5 legacy ?k= retirement) and open defects with file/line anchors.
 
 ## Ownership
 
