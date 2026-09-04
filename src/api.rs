@@ -9,6 +9,7 @@
 //! - `/api/v1/{checkin,event,heartbeat}` — device auth only
 //! - `/api/v1/identity` — device auth only (register own ML-KEM-768 ek)
 //! - `/api/v1/devices` — dashboard key OR device auth (identity registry read)
+//! - `/api/v1/agents/available` — GET: dashboard key OR capability OR device auth
 //! - `/api/v1/sessions` — GET list: dashboard key OR device; POST create: device only
 //! - `/api/v1/sessions/{id}` — GET: dashboard key OR device
 //! - `/api/v1/sessions/{id}/{join,seal,seals,send,recv}` — device auth only;
@@ -83,6 +84,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/fed/peers"
             | "/api/v1/env"
             | "/api/v1/term"
+            | "/api/v1/agents/available"
             | "/api/v1/shell/machines"
             | "/api/v1/shell/config"
             | "/api/v1/shell/exec"
@@ -90,7 +92,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
         || req.path.starts_with("/api/v1/sessions/")
-        || req.path.starts_with("/api/v1/term/");
+        || req.path.starts_with("/api/v1/term/")
+        || req.path == "/api/v1/agents/available";
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => HandlerResult::Respond(healthz(hub)),
         ("GET", "/") => HandlerResult::Respond(dashboard(hub, req)),
@@ -117,6 +120,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("GET", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_get(hub, req)),
         ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
         ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
+        ("GET", "/api/v1/agents/available") => HandlerResult::Respond(agents_available(hub, req)),
         (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
             HandlerResult::Respond(term(hub, req))
         }
@@ -1430,6 +1434,20 @@ fn term_allowed(hub: &Hub, req: &Request) -> bool {
     dash_ok(hub, req) || cap_ok(hub, req)
 }
 
+fn agents_available(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !dash_ok(hub, req) && !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "operator auth required (?k= or ?cap=)");
+    }
+    let agents = crate::executor::available_agents();
+    Response::json(200, &Value::obj(vec![
+        ("ok", Value::from(true)),
+        ("backend", Value::from(crate::executor::detect_backend_str())),
+        ("router_endpoint", Value::from("http://127.0.0.1:11434/v1")),
+        ("router_model", Value::from("local-router/fallback-models")),
+        ("agents", Value::arr(agents)),
+    ]))
+}
+
 fn term(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
         return Response::error(401, "operator auth required (?k= or ?cap=)");
@@ -1440,16 +1458,12 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
     match req.method.as_str() {
         "GET" => {
             let lines = req.q("lines").and_then(|s| s.parse::<usize>().ok()).unwrap_or(200).min(5000);
-            let out = std::process::Command::new("tmux")
-                .args(["capture-pane", "-t", &name, "-p", "-S", &format!("-{lines}")])
-                .output();
-            match out {
-                Ok(o) if o.status.success() => Response::json(200, &Value::obj(vec![
+            match crate::executor::tmux_capture_pane(&name, lines) {
+                Ok(pane) => Response::json(200, &Value::obj(vec![
                     ("session", Value::from(name.as_str())),
-                    ("pane", Value::from(String::from_utf8_lossy(&o.stdout).into_owned().as_str())),
+                    ("pane", Value::from(pane.as_str())),
                 ])),
-                Ok(_) => Response::error(404, "tmux session not found"),
-                Err(e) => Response::error(500, &format!("tmux failed: {e}")),
+                Err(e) => Response::error(404, &format!("session output not found: {e}")),
             }
         }
         "POST" => {
@@ -1463,19 +1477,9 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
                 _ => None,
             }).unwrap_or(None);
             if let Some(_spawn_cmd) = spawn_req {
-                // Create the session if absent (mirrors executor reuse rule).
-                let exists = std::process::Command::new("tmux")
-                    .args(["has-session", "-t", &name])
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if !exists {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    let created = std::process::Command::new("tmux")
-                        .args(["new-session", "-d", "-s", &name, "-c"])
-                        .arg(cwd)
-                        .status();
-                    if !created.map(|s| s.success()).unwrap_or(false) {
+                if !crate::executor::tmux_has_session(&name) {
+                    let cwd = std::env::current_dir().unwrap_or_default().display().to_string();
+                    if !crate::executor::tmux_new_session(&name, &cwd) {
                         return Response::error(500, "cannot create tmux session");
                     }
                 }
@@ -1500,16 +1504,12 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
             if keys.len() > 8192 {
                 return Response::error(413, "keys payload too large");
             }
-            let sent = std::process::Command::new("tmux")
-                .args(["send-keys", "-t", &name, "--", keys, "Enter"])
-                .output();
-            match sent {
-                Ok(o) if o.status.success() => Response::json(200, &Value::obj(vec![
+            match crate::executor::tmux_send_keys(&name, keys) {
+                Ok(_) => Response::json(200, &Value::obj(vec![
                     ("ok", Value::from(true)),
                     ("session", Value::from(name.as_str())),
                 ])),
-                Ok(_) => Response::error(404, "tmux session not found"),
-                Err(e) => Response::error(500, &format!("tmux failed: {e}")),
+                Err(e) => Response::error(500, &e),
             }
         }
         _ => Response::error(405, "method not allowed"),
@@ -1666,5 +1666,15 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         std::env::remove_var("WTF_HOME");
+    }
+
+    #[test]
+    fn agents_available_endpoint_structure() {
+        let agents = crate::executor::available_agents();
+        assert!(!agents.is_empty());
+        let auto = agents.iter().find(|a| a.get("id").and_then(|x| x.as_str()) == Some("auto"));
+        assert!(auto.is_some());
+        let hermes = agents.iter().find(|a| a.get("id").and_then(|x| x.as_str()) == Some("hermes"));
+        assert!(hermes.is_some());
     }
 }

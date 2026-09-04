@@ -117,14 +117,21 @@ button.primary:hover{opacity:.9}
       </div>
       <div class="bar">
         <select id="agent-select" style="font-size:11px">
-          <option value="auto">⚡ Auto (FCC → OMP → Trae)</option>
+          <option value="auto">⚡ Auto Fallback Cascade</option>
           <option value="fleet">🤖 SWE-bench Fleet (Trae + Mini)</option>
+          <option value="free-claude-code">Claude Code / FCC</option>
+          <option value="omp">OhMyPy (omp)</option>
+          <option value="hermes">Hermes Agent</option>
           <option value="trae-cli">Trae-CLI (AST Refactoring Master)</option>
           <option value="mini">Mini-SWE (TDD Reproduction Engineer)</option>
-          <option value="omp">OhMyPy (omp)</option>
-          <option value="free-claude-code">Free Claude Code</option>
+          <option value="codex">Codex CLI</option>
+          <option value="opencode">OpenCode CLI</option>
+          <option value="aider">Aider CLI</option>
+          <option value="cline">Cline CLI</option>
+          <option value="pi">Pi Coding Agent</option>
         </select>
         <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="fleet-toggle" checked/> Fleet</label>
+        <span class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px" title="Single-source router model via 11434">model: local-router/fallback-models</span>
         <button id="btn-run-agent" class="primary" style="margin-left:auto;font-size:11px">⚡ Run Agent</button>
         <button id="btn-post-msg" style="font-size:11px">💬 Post</button>
       </div>
@@ -379,6 +386,14 @@ async function runAgent(){
     const j = await r.json();
     stat.textContent = j.ok ? ("completed (" + j.cli + ")") : ("failed (" + (j.error || j.cli) + ")");
     input.value = "";
+    if(j.output){
+      const feed = document.getElementById("chat-feed");
+      const msgDiv = document.createElement("div");
+      msgDiv.className = "m agent-msg";
+      msgDiv.innerHTML = '<div class="mtop"><b>'+esc(j.cli)+'</b><span>(exit '+(j.ok?'0':'fail')+')</span><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(j.output)+'</pre>';
+      feed.appendChild(msgDiv);
+      feed.scrollTop = feed.scrollHeight;
+    }
     setTimeout(()=>loadLaneChat(currentLaneId), 600);
   }catch(e){
     stat.textContent = "error: " + e.message;
@@ -587,9 +602,31 @@ function copyBin(id){
   else{ta.select();document.execCommand("copy");done();}
 }
 
+async function loadAvailableAgents(){
+  try{
+    const r = await fetch("/api/v1/agents/available?"+AUTH);
+    if(r.ok){
+      const j = await r.json();
+      const agents = j.agents || [];
+      const sel = document.getElementById("agent-select");
+      for(const opt of sel.options){
+        const found = agents.find(a=>a.id === opt.value);
+        if(found){
+          if(found.installed){
+            opt.textContent = "✓ " + found.name;
+          } else {
+            opt.textContent = "· " + found.name + " (not detected)";
+          }
+        }
+      }
+    }
+  }catch(e){}
+}
+
 function boot(){
   buildBins();
   loadMachines();
+  loadAvailableAgents();
   fetch("/api/v1/state?"+AUTH)
     .then(r=>{if(!r.ok)throw 0;return r.json();})
     .then(render)

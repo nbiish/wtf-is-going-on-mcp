@@ -868,7 +868,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (free-claude-code → omp → trae-cli, first installed + exit-0 wins) with optional agent selection and Trae/Mini fleet toggle. All CLIs route through local-router/fallback-models per operator config. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
+                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (free-claude-code → omp → hermes → trae-cli → mini → aider, first installed + exit-0 wins) with optional agent selection and Trae/Mini fleet toggle. All CLIs route through local-router/fallback-models per operator config. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
                     ),
                 ),
                 (
@@ -880,7 +880,7 @@ impl Bridge {
                             Value::obj(vec![
                                 ("prompt", Self::prop("the task prompt to execute headlessly")),
                                 ("machine", Self::prop("optional target cluster machine name or alias (e.g. 'windows', 'mac', 'pi') for intelligent distributed compute; anchors to machine LKGL")),
-                                ("agent", Self::prop("optional agent choice: auto (default), free-claude-code, omp, trae-cli, mini")),
+                                ("agent", Self::prop("optional agent choice: auto (default), fleet, free-claude-code, omp, hermes, trae-cli, mini, codex, opencode, aider, cline, pi")),
                                 ("fleet_enabled", Self::prop("optional boolean: enable Trae/Mini agent fleet (default true)")),
                                 ("repo", Self::prop("optional repo label for the session slug (default: device name)")),
                                 ("label", Self::prop("optional task label refining the tmux session name")),
