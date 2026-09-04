@@ -105,3 +105,15 @@ What would this governance / sovereignty master suggest? Record all task lifecyc
 What would this terminal-orchestration / swe-bench master suggest? Ensure that trae-cli and mini automatically consume the local-router proxy without per-tool configuration.
 What would this master-orchestrator / self-prompting master suggest? Anchor all distributed agent tasks to the authoritative PRD contracts in llms.txt.
 What would this developer-experience / ergonomics master suggest? Provide the exact three-line sync command for seamless Windows fleet bring-up.
+
+## 2026-09-03T23:55:30Z
+rerun ainish-coder dash rules on the mac and windows nodes so every machine picks up the synced tts-cli skill.
+What would this adversarial / security master suggest? Keep model envs and weights out of repo trees and confirm the sudo-free shim writes only into the user's own bin directory.
+What would this privacy / data-protection regulatory master suggest? TTS synthesis stays fully on device and the comms ledger keeps holding only text the operator already approved.
+What would this supply-chain / third-party risk master suggest? Pin the kittentts wheel digest and onnxruntime version in the environment config before the next fleet-wide rollout.
+What would this systems-architecture / devops / infrastructure master suggest? Add a tiny smoke job that runs cli-tts dash list on each node after join so silent engine gaps surface immediately.
+What would this reliability / verification master suggest? Keep the ninety-second install timeout plus streaming output so stalls fail loudly instead of hanging agents.
+What would this governance / sovereignty master suggest? Record the platform support contract in the DOX as done today and treat any new engine as opt-in until audited.
+What would this cross-platform packaging / distribution master suggest? Exercise the PowerShell wrapper on native windows once before declaring windows support verified.
+What would this operator-experience / onboarding master suggest? Print one clear recovery line with the repair command whenever any engine check fails.
+What would this federation / multi-machine consistency master suggest? Sync the same pinned skill digest to mac, windows, and the coming pi edge node in one pass.
