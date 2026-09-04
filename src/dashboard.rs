@@ -192,11 +192,10 @@ Type 'ls ~' or 'cd <machine>' to navigate.</div>
 <script>
 "use strict";
 const Q = new URLSearchParams(location.search);
-const K = Q.get("k") || "";
 const CAP = Q.get("cap")
   || (location.pathname.match(/^\/w\/([0-9a-f]{64})$/) || [])[1]
   || "";
-const AUTH = CAP ? ("cap="+encodeURIComponent(CAP)) : (K ? ("k="+encodeURIComponent(K)) : "");
+const AUTH = CAP ? ("cap="+encodeURIComponent(CAP)) : "";
 
 function esc(s){return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function ago(ts, now){const d=Math.max(0,now-ts);if(d<60)return d+"s";if(d<3600)return Math.floor(d/60)+"m";if(d<86400)return Math.floor(d/3600)+"h";return Math.floor(d/86400)+"d";}
@@ -210,7 +209,7 @@ let machinesList = [];
 
 // Copy capability URL
 document.getElementById("cap-url-chip").addEventListener("click", ()=>{
-  const url = location.origin + (CAP ? ("/w/" + CAP) : (location.pathname + (K ? ("?k=" + K) : "")));
+  const url = location.origin + (CAP ? ("/w/" + CAP) : location.pathname);
   navigator.clipboard.writeText(url).then(()=>{
     const chip = document.getElementById("cap-url-chip");
     chip.textContent = "✓ copied!";

@@ -272,10 +272,10 @@ fn cmd_serve(args: &[String]) -> i32 {
 
     if !has_flag(args, "--no-open") {
         let url = format!(
-            "http://{}:{}/?k={}",
+            "http://{}:{}/w/{}",
             display_ip,
             local.port(),
-            cfg.dashboard_key
+            capability
         );
         let _ = Command::new("xdg-open").arg(url).spawn();
     }
@@ -792,7 +792,7 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
 fn cmd_sessions(args: &[String]) -> i32 {
     let rest = &args[..];
     let url_flag = flag_value(rest, "--url");
-    let k_flag = flag_value(rest, "--k");
+    let k_flag = flag_value(rest, "--cap").or_else(|| flag_value(rest, "--k"));
     let home = config::home();
     let hub_url = match url_flag {
         Some(u) => Some(u.trim_end_matches('/').to_string()),
@@ -817,12 +817,12 @@ fn cmd_sessions(args: &[String]) -> i32 {
     };
     let key = match k_flag {
         Some(k) => Some(k),
-        None => match std::env::var("WTF_DASHBOARD_KEY") {
+        None => match std::env::var("WTF_CAPABILITY").or_else(|_| std::env::var("WTF_DASHBOARD_KEY")) {
             Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
             _ => {
-                let cfg = home.join("config.json");
-                if cfg.exists() {
-                    read_json_field(&cfg, "dashboard_key")
+                let cap_file = home.join("dashboard_capability");
+                if cap_file.exists() {
+                    std::fs::read_to_string(&cap_file).ok().map(|s| s.trim().to_string())
                 } else {
                     None
                 }
@@ -830,11 +830,11 @@ fn cmd_sessions(args: &[String]) -> i32 {
         },
     };
     let Some(key) = key else {
-        eprintln!("error: no dashboard key: pass --k or set WTF_DASHBOARD_KEY");
+        eprintln!("error: no capability token: pass --cap, --k or set WTF_CAPABILITY");
         return 2;
     };
     let resp = match client::request(
-        &format!("{hub_url}/api/v1/sessions?k={key}"),
+        &format!("{hub_url}/api/v1/sessions?cap={key}"),
         "GET",
         &[],
         b"",
@@ -1128,7 +1128,7 @@ fn cmd_bin(args: &[String]) -> i32 {
     }
     let rest = &args[1..];
     let url_flag = flag_value(rest, "--url");
-    let k_flag = flag_value(rest, "--k");
+    let k_flag = flag_value(rest, "--cap").or_else(|| flag_value(rest, "--k"));
     let out_flag = flag_value(rest, "-o");
     let file_flag = flag_value(rest, "--file");
     let as_json = rest.iter().any(|a| a == "--json");
@@ -1158,12 +1158,12 @@ fn cmd_bin(args: &[String]) -> i32 {
 
     let key = match k_flag {
         Some(k) => Some(k),
-        None => match std::env::var("WTF_DASHBOARD_KEY") {
+        None => match std::env::var("WTF_CAPABILITY").or_else(|_| std::env::var("WTF_DASHBOARD_KEY")) {
             Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
             _ => {
-                let cfg = home.join("config.json");
-                if cfg.exists() {
-                    read_json_field(&cfg, "dashboard_key")
+                let cap_file = home.join("dashboard_capability");
+                if cap_file.exists() {
+                    std::fs::read_to_string(&cap_file).ok().map(|s| s.trim().to_string())
                 } else {
                     None
                 }
@@ -1171,7 +1171,7 @@ fn cmd_bin(args: &[String]) -> i32 {
         },
     };
     let Some(key) = key else {
-        eprintln!("error: no dashboard key: pass --k or set WTF_DASHBOARD_KEY (argv can leak via shell history; prefer the env var)");
+        eprintln!("error: no capability token: pass --cap, --k or set WTF_CAPABILITY (argv can leak via shell history; prefer the env var)");
         return 2;
     };
 
@@ -1184,7 +1184,7 @@ fn cmd_bin(args: &[String]) -> i32 {
     match op {
         "ls" => {
             let resp =
-                match client::request(&format!("{hub_url}/api/v1/bins?k={key}"), "GET", &[], b"") {
+                match client::request(&format!("{hub_url}/api/v1/bins?cap={key}"), "GET", &[], b"") {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("error: cannot reach hub: {e}");
@@ -1222,7 +1222,7 @@ fn cmd_bin(args: &[String]) -> i32 {
                 return 2;
             };
             let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins/{id}?k={key}"),
+                &format!("{hub_url}/api/v1/bins/{id}?cap={key}"),
                 "GET",
                 &[],
                 b"",
@@ -1297,7 +1297,7 @@ fn cmd_bin(args: &[String]) -> i32 {
             }
             let body = json::Value::obj(vec![("content", json::Value::from(content.as_str()))]);
             let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins/{id}?k={key}"),
+                &format!("{hub_url}/api/v1/bins/{id}?cap={key}"),
                 "PUT",
                 &[],
                 body.to_json().as_bytes(),
@@ -1373,12 +1373,6 @@ fn cmd_dashboard_url() -> i32 {
     }
     if !bind.is_loopback() {
         println!("LAN capability link: http://{}:{}/w/{cap}", util::lan_ip(), cfg.port);
-        println!(
-            "from other hosts: http://{}:{}/?k={} (legacy dashboard key)",
-            util::lan_ip(),
-            cfg.port,
-            cfg.dashboard_key
-        );
     }
     0
 }

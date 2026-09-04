@@ -3,15 +3,17 @@
 //!
 //! AuthZ model:
 //! - `/healthz` — open (connectivity probe; leaks nothing but version/uptime)
-//! - `/` and `/stream` — dashboard key via `?k=` (device auth also accepted on /stream)
-//! - `/api/v1/state` — dashboard key OR device auth
-//! - `/api/v1/bins`, `/api/v1/bins/{1,2,3}` — GET/PUT: dashboard key OR device auth
+//! - `/healthz` — open (connectivity probe; leaks nothing but version/uptime)
+//! - `/w/<capability>` — singular dashboard page (uniform 404 on invalid paths)
+//! - `/stream` — capability (`?cap=`, header, or bearer) OR device auth
+//! - `/api/v1/state` — capability OR device auth
+//! - `/api/v1/bins`, `/api/v1/bins/{1,2,3}` — GET/PUT: capability OR device auth
 //! - `/api/v1/{checkin,event,heartbeat}` — device auth only
 //! - `/api/v1/identity` — device auth only (register own ML-KEM-768 ek)
-//! - `/api/v1/devices` — dashboard key OR device auth (identity registry read)
-//! - `/api/v1/agents/available` — GET: dashboard key OR capability OR device auth
-//! - `/api/v1/sessions` — GET list: dashboard key OR device; POST create: device only
-//! - `/api/v1/sessions/{id}` — GET: dashboard key OR device
+//! - `/api/v1/devices` — capability OR device auth (identity registry read)
+//! - `/api/v1/agents/available` — GET: capability OR device auth
+//! - `/api/v1/sessions` — GET list: capability OR device; POST create: capability OR device
+//! - `/api/v1/sessions/{id}` — GET: capability OR device
 //! - `/api/v1/sessions/{id}/{join,seal,seals,send,recv}` — device auth only;
 //!   seal/seals/send/recv additionally require session membership.
 //! - `/api/v1/enroll` — NO device HMAC: two credential modes. (1) a one-time
@@ -198,13 +200,6 @@ fn cap_ok(hub: &Hub, req: &Request) -> bool {
     false
 }
 
-fn dash_ok(hub: &Hub, req: &Request) -> bool {
-    match req.q("k") {
-        Some(k) => ct_eq_str(&hub.dashboard_key, &k),
-        None => false,
-    }
-}
-
 fn parse_body(req: &Request) -> Result<Value, Response> {
     json::parse(&String::from_utf8_lossy(&req.body))
         .map_err(|e| Response::error(400, &format!("invalid JSON body: {e}")))
@@ -224,15 +219,15 @@ fn healthz(hub: &Hub) -> Response {
 }
 
 fn state(hub: &Hub, req: &Request) -> Response {
-    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
     Response::json(200, &hub.store.to_state_json(hub.started_at, &hub.bins))
 }
 
 fn bins_list(hub: &Hub, req: &Request) -> Response {
-    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
     Response::json(200, &Value::obj(vec![("bins", hub.bins.to_state_json())]))
 }
@@ -244,8 +239,7 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
     let Some(id) = bin_id_of(&req.path) else {
         return Response::error(404, "not found");
     };
-    let read_only = req.method == "GET";
-    let actor = if dash_ok(hub, req) || (read_only && cap_ok(hub, req)) {
+    let actor = if cap_ok(hub, req) {
         "dashboard".to_string()
     } else {
         match device_auth(hub, req) {
@@ -298,29 +292,20 @@ fn bin_single(hub: &Arc<Hub>, req: &Request) -> Response {
 /// loopback-only the page is served without ?k= (the capability path IS the
 /// secret and localhost is the network gate). Otherwise the legacy ?k=
 /// dashboard key still works, so remote dashboards keep functioning.
+/// Capability-gated dashboard. The page lives exclusively at /w/<64-hex token>;
+/// any other path shape gets the same uniform 404 as every unknown route (no
+/// oracle distinguishing "wrong token" from "no token").
 fn dashboard(hub: &Hub, req: &Request) -> Response {
     let on_cap = req.path == format!("/w/{}", hub.capability);
-    let authorized = on_cap || dash_ok(hub, req);
-    if authorized {
+    if on_cap {
         return Response::html(200, crate::dashboard::PAGE);
-    }
-    // Legacy remote path (non-loopback hub): keep the old 401 hint.
-    if !hub.loopback_only && req.path == "/" {
-        return Response::html(
-            401,
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>401</title></head>
-<body style="background:#0b0e14;color:#d7dde8;font-family:monospace;padding:40px">
-<h1>401 — dashboard key required</h1>
-<p>on the hub machine run <code>wtf dashboard-url</code> for the capability link.</p>
-</body></html>"#,
-        );
     }
     Response::error(404, "not found")
 }
 
 fn stream(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
-    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return HandlerResult::Respond(Response::error(401, "missing or bad capability or ?k= key"));
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return HandlerResult::Respond(Response::error(401, "missing or bad capability token or device auth"));
     }
     let hub2 = Arc::clone(hub);
     HandlerResult::Sse(Box::new(move |session: &mut SseSession| {
@@ -720,8 +705,8 @@ fn identity_register(hub: &Arc<Hub>, req: &Request) -> Response {
 
 /// GET /api/v1/devices — the identity registry (dashboard key or device).
 fn devices_list(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
     let reg = hub.identities.lock().unwrap();
     let devices: Vec<Value> = reg
@@ -746,8 +731,8 @@ fn devices_list(hub: &Arc<Hub>, req: &Request) -> Response {
 
 /// GET /api/v1/sessions — list session metadata (no messages).
 fn sessions_list(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !cap_ok(hub, req) && !dash_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "provide ?k=<dashboard key> or capability or device auth headers");
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
     let all = hub.sessions.list();
     let arr: Vec<Value> = all.iter().map(|s| s.to_wire_json(false)).collect();
@@ -760,7 +745,7 @@ fn session_create(hub: &Arc<Hub>, req: &Request) -> Response {
     let device = match device_auth(hub, req) {
         Ok(d) => d,
         Err(r) => {
-            if dash_ok(hub, req) || cap_ok(hub, req) {
+            if cap_ok(hub, req) {
                 let reg = hub.identities.lock().unwrap();
                 reg.first().map(|(d, _)| d.clone()).unwrap_or_else(|| "dashboard".to_string())
             } else {
@@ -837,10 +822,10 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
 
     match (req.method.as_str(), action) {
         ("GET", "") => {
-            let is_dash = dash_ok(hub, req) || term_allowed(hub, req);
+            let is_dash = term_allowed(hub, req);
             let member = device_auth(hub, req).ok();
             if !is_dash && member.is_none() {
-                return Response::error(401, "provide ?k=<dashboard key> or device auth headers");
+                return Response::error(401, "provide ?cap=<capability> or device auth headers");
             }
             match hub.sessions.get(id) {
                 Some(s) => Response::json(200, &s.to_wire_json(is_dash || member.is_some())),
@@ -1070,7 +1055,7 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             // span several repos/machines. The repo field carries a free
             // scope string ("repo-a+repo-b@mac+win"); the dashboard renders
             // it as chips. Dashboard-key or device auth (member) may set it.
-            let is_dash = dash_ok(hub, req) || term_allowed(hub, req);
+            let is_dash = term_allowed(hub, req);
             let member = device_auth(hub, req).ok();
             if !is_dash && member.is_none() {
                 return Response::error(401, "operator or member auth required");
@@ -1098,7 +1083,7 @@ fn session_single(hub: &Arc<Hub>, req: &Request) -> Response {
             // elsewhere; here the dashboard key IS the gate, and the key
             // never leaves the machine it guards).
             if !term_allowed(hub, req) {
-                return Response::error(401, "operator auth required (?k= or ?cap= on loopback)");
+                return Response::error(401, "operator auth required (?cap=)");
             }
             let after = req
                 .q("after")
@@ -1431,12 +1416,12 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn term_allowed(hub: &Hub, req: &Request) -> bool {
-    dash_ok(hub, req) || cap_ok(hub, req)
+    cap_ok(hub, req)
 }
 
 fn agents_available(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !dash_ok(hub, req) && !cap_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "operator auth required (?k= or ?cap=)");
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "operator auth required (?cap=)");
     }
     let agents = crate::executor::available_agents();
     Response::json(200, &Value::obj(vec![
@@ -1450,7 +1435,7 @@ fn agents_available(hub: &Arc<Hub>, req: &Request) -> Response {
 
 fn term(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?k= or ?cap=)");
+        return Response::error(401, "operator auth required (?cap=)");
     }
     let Some(name) = term_session_name(req.path.strip_prefix("/api/v1/term/").unwrap_or("")) else {
         return Response::error(404, "unknown or disallowed tmux session (wtf-chat-* only)");
@@ -1520,7 +1505,7 @@ fn term(hub: &Arc<Hub>, req: &Request) -> Response {
 
 fn shell_machines(hub: &Hub, req: &Request) -> Response {
     if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?cap= or ?k=)");
+        return Response::error(401, "operator auth required (?cap=)");
     }
     let fed_lock = hub.fed.lock().unwrap();
     let peers: Vec<(String, String)> = fed_lock
@@ -1553,7 +1538,7 @@ fn shell_machines(hub: &Hub, req: &Request) -> Response {
 
 fn shell_exec(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?cap= or ?k=)");
+        return Response::error(401, "operator auth required (?cap=)");
     }
     let body = match parse_body(req) {
         Ok(v) => v,
@@ -1594,7 +1579,7 @@ fn shell_exec(hub: &Arc<Hub>, req: &Request) -> Response {
 
 fn shell_config_get(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?cap= or ?k=)");
+        return Response::error(401, "operator auth required (?cap=)");
     }
     let cfg = crate::fed_shell::load_fed_omp_config();
     Response::json(
@@ -1605,7 +1590,7 @@ fn shell_config_get(hub: &Arc<Hub>, req: &Request) -> Response {
 
 fn shell_config_post(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?cap= or ?k=)");
+        return Response::error(401, "operator auth required (?cap=)");
     }
     let val = match parse_body(req) {
         Ok(v) => v,

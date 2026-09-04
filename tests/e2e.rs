@@ -288,7 +288,7 @@ fn hub_bridge_end_to_end() {
 
     // 6. Signed state via the dashboard key shows the checked-in agent.
     let state =
-        wtf::client::request(&format!("{url}/api/v1/state?k={dkey}"), "GET", &[], b"").unwrap();
+        wtf::client::request(&format!("{url}/api/v1/state?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(state.status, 200);
     let sv = state.json().expect("state json");
     let agents = sv.get("agents").unwrap().as_arr().unwrap();
@@ -306,7 +306,7 @@ fn hub_bridge_end_to_end() {
 
     // 7. Paste-bins: dashboard-key write, authenticated reads, rejections.
     let put = wtf::client::request(
-        &format!("{url}/api/v1/bins/1?k={dkey}"),
+        &format!("{url}/api/v1/bins/1?cap={cap}"),
         "PUT",
         &[("Content-Type".to_string(), "application/json".to_string())],
         br#"{"content":"work from this bin: e2e spec"}"#,
@@ -328,7 +328,7 @@ fn hub_bridge_end_to_end() {
     // ids 4..=255 are dynamic bins (per-connection bins materialize on
     // write), so the negative case moved to 0/256.
     let bad_bin = wtf::client::request(
-        &format!("{url}/api/v1/bins/256?k={dkey}"),
+        &format!("{url}/api/v1/bins/256?cap={cap}"),
         "PUT",
         &[],
         br#"{"content":"x"}"#,
@@ -339,7 +339,7 @@ fn hub_bridge_end_to_end() {
     // Oversized paste is rejected, not truncated.
     let big = format!("{{\"content\":\"{}\"}}", "x".repeat(70_000));
     let too_big = wtf::client::request(
-        &format!("{url}/api/v1/bins/2?k={dkey}"),
+        &format!("{url}/api/v1/bins/2?cap={cap}"),
         "PUT",
         &[],
         big.as_bytes(),
@@ -348,12 +348,12 @@ fn hub_bridge_end_to_end() {
     assert_eq!(too_big.status, 400);
 
     let got =
-        wtf::client::request(&format!("{url}/api/v1/bins/1?k={dkey}"), "GET", &[], b"").unwrap();
+        wtf::client::request(&format!("{url}/api/v1/bins/1?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(got.status, 200);
     assert!(got.text().contains("work from this bin: e2e spec"));
 
     let all =
-        wtf::client::request(&format!("{url}/api/v1/bins?k={dkey}"), "GET", &[], b"").unwrap();
+        wtf::client::request(&format!("{url}/api/v1/bins?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(all.status, 200);
     assert_eq!(
         all.json()
@@ -495,7 +495,7 @@ fn hub_bridge_end_to_end() {
     // The device write is durable and attributed: dashboard-key GET shows
     // the content with the device as last writer.
     let got2 =
-        wtf::client::request(&format!("{url}/api/v1/bins/2?k={dkey}"), "GET", &[], b"").unwrap();
+        wtf::client::request(&format!("{url}/api/v1/bins/2?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(got2.status, 200);
     let bin2 = got2.json().expect("bin 2 json");
     assert!(
@@ -529,7 +529,12 @@ fn hub_bridge_end_to_end() {
         dutext.contains("http://localhost:"),
         "localhost link: {dutext}"
     );
-    assert!(dutext.contains("/?k="), "link must carry the key: {dutext}");
+    assert!(dutext.contains("/w/"), "link must carry capability path: {dutext}");
+    assert!(!dutext.contains("/?k="), "legacy ?k= must not appear: {dutext}");
+
+    // Uniform-404 check on retired legacy path
+    let legacy_denied = wtf::client::request(&format!("{url}/?k={dkey}"), "GET", &[], b"").unwrap();
+    assert_eq!(legacy_denied.status, 404, "legacy ?k= must return uniform 404");
 
     // 9. Cleanup.
     done.store(true, Ordering::SeqCst);
@@ -1114,24 +1119,17 @@ fn device_signed_bin_write_auth_matrix() {
     .unwrap();
     assert_eq!(r.status, 401, "unsigned bin write must fail");
 
-    // 7. The dashboard-key path still writes the same bin.
-    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
-    let dkey = wtf::json::parse(&cfg_text)
-        .unwrap()
-        .get("dashboard_key")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
+    // 7. The capability path writes the same bin.
+    let cap = std::fs::read_to_string(home.join("dashboard_capability")).unwrap();
     let r = wtf::client::request(
-        &format!("{url}{path}?k={dkey}"),
+        &format!("{url}{path}?cap={cap}"),
         "PUT",
         &[],
         b"{\"content\":\"dashboard overwrote bin 3\"}",
     )
     .unwrap();
     assert_eq!(r.status, 200, "dashboard-key write must still pass");
-    let r = wtf::client::request(&format!("{url}{path}?k={dkey}"), "GET", &[], b"").unwrap();
+    let r = wtf::client::request(&format!("{url}{path}?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(r.status, 200);
     let v = r.json().expect("bin json");
     assert_eq!(
@@ -1351,16 +1349,9 @@ fn session_channels_end_to_end() {
 
     // The hub's stored state carries only ciphertext: fetch the session
     // via dashboard key and assert no plaintext leaks.
-    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
-    let dkey = wtf::json::parse(&cfg_text)
-        .unwrap()
-        .get("dashboard_key")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
+    let cap = std::fs::read_to_string(home.join("dashboard_capability")).unwrap();
     let state =
-        wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"").unwrap();
+        wtf::client::request(&format!("{url}/api/v1/sessions?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(state.status, 200);
     let body = state.text();
     assert!(
@@ -1671,16 +1662,9 @@ fn comms_channels_end_to_end() {
     );
 
     // The hub stores no envelope plaintext: encrypted at rest + in transit.
-    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
-    let dkey = wtf::json::parse(&cfg_text)
-        .unwrap()
-        .get("dashboard_key")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
+    let cap = std::fs::read_to_string(home.join("dashboard_capability")).unwrap();
     let state =
-        wtf::client::request(&format!("{url}/api/v1/sessions?k={dkey}"), "GET", &[], b"").unwrap();
+        wtf::client::request(&format!("{url}/api/v1/sessions?cap={cap}"), "GET", &[], b"").unwrap();
     assert_eq!(state.status, 200);
     let body = state.text();
     for secret_string in [
@@ -2400,15 +2384,11 @@ fn bin_operator_courier_end_to_end() {
         .expect("hub url")
         .to_string();
 
-    // The operator holds only the dashboard key; read it from the hub's own
-    // config the way the operator does after `wtf dashboard`.
-    let cfg_text = std::fs::read_to_string(home.join("config.json")).unwrap();
-    let key = wtf::json::parse(cfg_text.trim())
+    // The operator holds the capability token; read it from the hub's own
+    // capability the way the operator does after `wtf dashboard-url`.
+    let key = std::fs::read_to_string(home.join("dashboard_capability"))
         .unwrap()
-        .get("dashboard_key")
-        .unwrap()
-        .as_str()
-        .unwrap()
+        .trim()
         .to_string();
     assert_eq!(key.len(), 64);
 
@@ -2422,6 +2402,7 @@ fn bin_operator_courier_end_to_end() {
             .env("WTF_HOME", &op)
             .env("WTF_HUB_URL", "")
             .env("WTF_DASHBOARD_KEY", "")
+            .env("WTF_CAPABILITY", "")
             .output()
             .expect("wtf bin")
     };
@@ -2448,6 +2429,7 @@ fn bin_operator_courier_end_to_end() {
         .env("WTF_HOME", &op)
         .env("WTF_HUB_URL", "")
         .env("WTF_DASHBOARD_KEY", "")
+        .env("WTF_CAPABILITY", "")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
