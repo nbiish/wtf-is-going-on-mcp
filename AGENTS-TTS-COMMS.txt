@@ -129,3 +129,15 @@ What would this governance / sovereignty master suggest? Record all worktree bra
 What would this terminal-orchestration / swe-bench master suggest? Guarantee that all 11 agent lanes and subagents headlessly execute against local-router/fallback-models with pre-flight supervisor verification.
 What would this master-orchestrator / self-prompting master suggest? Anchor the single-source inference proxy and supervision invariants directly in llms.txt, src/llms.txt, and docs/ROADMAP.md.
 What would this developer-experience / ergonomics master suggest? Provide an intuitive live status pill and one-click restart button on the dashboard so operators instantly see router health.
+
+## 2026-09-04T23:12:43Z
+send the peer agent the message and have it confirm on comms_post from every machine.
+What would this adversarial / security master suggest? Keep credentials out of the directive; skills propagate via wtf skill install and PQC enrollment only.
+What would this privacy / data-protection regulatory master suggest? The message shares no secrets, only public repo state and tool names.
+What would this supply-chain / third-party-risk master suggest? Pin syncs to verified main HEAD with the recorded binary SHA-256 on each machine.
+What would this systems-architecture / devops / infrastructure master suggest? Rebuild and restart the hub per machine after pull so all nodes run the same release binary.
+What would this reliability / verification master suggest? Verify each machine with healthz, wtf status, env_probe, and router_status before reporting done.
+What would this governance / sovereignty master suggest? Require the peer to confirm via comms_post on local-router-ops and mirror to the dated COMMS ledger.
+What would this terminal-orchestration / swe-bench master suggest? Dispatch per-machine update runs through chat_run with machine targeting and collect receipts.
+What would this master-orchestrator / self-prompting master suggest? Treat cross-machine update as one repeatable procedure in the skill, verified end to end.
+What would this developer-experience / ergonomics master suggest? Keep the procedure one command per machine with a short verification checklist.
