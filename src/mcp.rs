@@ -884,7 +884,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (free-claude-code → omp → hermes → trae-cli → mini → aider, first installed + exit-0 wins) with optional agent selection and Trae/Mini fleet toggle. Harnesses must be pre-installed by the operator; when the operator-run local-router answers on :11434 CLIs inherit its proxy env, otherwise they run with their own configuration. This system never spawns local-router/fcc-server. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
+                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI dispatch chain (dsh → omp → hermes, first installed + exit-0 wins) with optional agent selection (individual catalog CLIs and the Trae/Mini fleet remain available). Harnesses run with the HOST machine's current configuration/installation; when the operator-run local-router answers on :11434, openai/anthropic CLIs inherit its proxy env with the discovered preferred model (llama.cpp qwen3 abliterated first), while dsh always runs its own host config. This system never spawns local-router, fcc-server, or fcc-dsh. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
                     ),
                 ),
                 (
@@ -2163,7 +2163,7 @@ impl Bridge {
 
     /// chat_run { prompt, repo?, timeout_secs? }: execute a task handed to
     /// this repo's federated chat on THIS machine, in tmux session
-    /// `wtf-chat-<slug>`, through the omp → hermes → fcc-claude fallback
+    /// `wtf-chat-<slug>`, through the dsh → omp → hermes dispatch chain
     /// chain. The tmux session persists for attach; the report names the
     /// lane that ran. All CLIs are model-agnostic here: operator config on
     /// each machine points them at local-router/fallback-models.

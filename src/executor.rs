@@ -127,16 +127,26 @@ pub struct AgentSpec {
     pub name: &'static str,
     pub bins: &'static [&'static str],
     pub pre: &'static str,
-    pub protocol: &'static str, // "anthropic", "openai", "ollama"
+    /// "anthropic" | "openai" get the conditional :11434 proxy env when the
+    /// operator-run router is up; "own" (dsh) ALWAYS runs the host's current
+    /// configuration untouched — wtf never imposes endpoints on it.
+    pub protocol: &'static str,
 }
+
+/// Default dispatch chain for `auto` (operator directive 2026-09-07): the
+/// executor attempts exactly **dsh -> omp -> hermes**, first installed +
+/// exit-0 wins. Other catalog CLIs stay individually selectable; `fleet`
+/// remains trae-cli + mini. Agent CLIs always run with the HOST machine's
+/// current configuration/installation — wtf only orchestrates.
+pub const AUTO_CHAIN: &[&str] = &["dsh", "omp", "hermes"];
 
 pub const ALL_AGENTS: &[AgentSpec] = &[
     AgentSpec {
-        id: "free-claude-code",
-        name: "Claude Code / FCC",
-        bins: &["claude", "fcc-claude"],
-        pre: "-p --dangerously-skip-permissions",
-        protocol: "anthropic",
+        id: "dsh",
+        name: "DeepSeek Harness (dsh)",
+        bins: &["dsh"],
+        pre: "--profile headless",
+        protocol: "own",
     },
     AgentSpec {
         id: "omp",
@@ -149,8 +159,15 @@ pub const ALL_AGENTS: &[AgentSpec] = &[
         id: "hermes",
         name: "Hermes Agent",
         bins: &["hermes", "hermes-agent"],
-        pre: "chat -q",
+        pre: "--cli -z",
         protocol: "openai",
+    },
+    AgentSpec {
+        id: "free-claude-code",
+        name: "Claude Code / FCC",
+        bins: &["claude", "fcc-claude"],
+        pre: "-p --dangerously-skip-permissions",
+        protocol: "anthropic",
     },
     AgentSpec {
         id: "trae-cli",
@@ -245,8 +262,9 @@ pub fn available_agents() -> Vec<Value> {
     // Meta-Agents
     out.push(Value::obj(vec![
         ("id", Value::from("auto")),
-        ("name", Value::from("⚡ Auto Fallback Cascade")),
+        ("name", Value::from("⚡ Auto Fallback (dsh → omp → hermes)")),
         ("installed", Value::from(true)),
+        ("chain", Value::from("dsh -> omp -> hermes")),
         ("target_model", Value::from("local-router/fallback-models")),
         ("endpoint", Value::from("http://127.0.0.1:11434/v1")),
         ("backend", Value::from(backend)),
@@ -377,6 +395,44 @@ pub fn router_alive() -> bool {
     state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
+/// Model discovery (operator directive 2026-09-07): pick the preferred model
+/// from the operator-run router's live `/v1/models` catalog — the llama.cpp
+/// qwen3 abliterated tier first, then any qwen3, then any llama.cpp build,
+/// else the router's own default brain. Pure so the tier policy is testable.
+pub fn preferred_model(models: &[String]) -> String {
+    for m in models {
+        let l = m.to_ascii_lowercase();
+        if l.contains("qwen3") && l.contains("abliterat") {
+            return m.clone();
+        }
+    }
+    for m in models {
+        if m.to_ascii_lowercase().contains("qwen3") {
+            return m.clone();
+        }
+    }
+    for m in models {
+        if m.to_ascii_lowercase().contains("llama.cpp") {
+            return m.clone();
+        }
+    }
+    "local-router/fallback-models".to_string()
+}
+
+/// Models currently advertised by the operator-run router (passive read of
+/// the cached probe state; empty when :11434 is down).
+pub fn router_models() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(Value::Arr(items)) = router_state_json().get("models") {
+        for it in items {
+            if let Value::Str(id) = it {
+                out.push(id.clone());
+            }
+        }
+    }
+    out
+}
+
 // Operator directive (2026-09-04): NO spawn/supervise path exists here.
 // `router_ensure` / `router_restart` / `run_host_cmd` were removed — the
 // executor only PASSIVELY probes :11434 (read-only HTTP GET). Starting,
@@ -483,15 +539,16 @@ pub fn run_in_tmux(name: &str, workdir: &str, prompt: &str, timeout_secs: u64) -
     run_in_tmux_with_options(name, workdir, prompt, timeout_secs, "auto", true)
 }
 
-/// Execute with agent selection ("auto", "free-claude-code", "omp", "hermes", "trae-cli",
-/// "mini", "codex", "opencode", "aider", "cline", "pi", "fleet") and Trae/Mini fleet toggle.
+/// Execute with agent selection ("auto" = dsh → omp → hermes, "dsh", "omp",
+/// "hermes", "free-claude-code", "trae-cli", "mini", "codex", "opencode",
+/// "aider", "cline", "pi", "fleet") and Trae/Mini fleet toggle.
 pub fn run_in_tmux_with_options(
     name: &str,
     workdir: &str,
     prompt: &str,
     timeout_secs: u64,
     agent_choice: &str,
-    fleet_enabled: bool,
+    _fleet_enabled: bool, // retained for API compat; auto chain is fixed (2026-09-07)
 ) -> ChainOutcome {
     let mut trace = Vec::new();
     // Passive probe only — never spawn/ensure the router (operator directive).
@@ -504,6 +561,16 @@ pub fn run_in_tmux_with_options(
             "down(continuing)"
         }
     ));
+    // Model discovery (v0.15.4): query the router's live /v1/models catalog
+    // and prefer the llama.cpp qwen3 abliterated tier; protocol-"own"
+    // harnesses (dsh) ignore this and run the host config verbatim.
+    let preferred = if router {
+        let m = preferred_model(&router_models());
+        trace.push(format!("model:{m}"));
+        m
+    } else {
+        String::new()
+    };
 
     let backend = detect_backend();
     let is_wsl = backend == TerminalBackend::WslTmux;
@@ -525,6 +592,11 @@ pub fn run_in_tmux_with_options(
     }
 
     let candidates: Vec<&AgentSpec> = match agent_choice {
+        "auto" | "" | "chain" => ALL_AGENTS
+            .iter()
+            .filter(|c| AUTO_CHAIN.contains(&c.id))
+            .collect(),
+        "dsh" | "dsh-cli" | "deepseek" => ALL_AGENTS.iter().filter(|c| c.id == "dsh").collect(),
         "free-claude-code" | "fcc-claude" | "claude" => ALL_AGENTS
             .iter()
             .filter(|c| c.id == "free-claude-code")
@@ -542,16 +614,11 @@ pub fn run_in_tmux_with_options(
             .iter()
             .filter(|c| c.id == "trae-cli" || c.id == "mini")
             .collect(),
-        _ => {
-            if fleet_enabled {
-                ALL_AGENTS.iter().collect()
-            } else {
-                ALL_AGENTS
-                    .iter()
-                    .filter(|c| c.id != "trae-cli" && c.id != "mini")
-                    .collect()
-            }
-        }
+        // Unknown choices fall back to the standard dispatch chain.
+        _ => ALL_AGENTS
+            .iter()
+            .filter(|c| AUTO_CHAIN.contains(&c.id))
+            .collect(),
     };
 
     let mut last: Option<ChainOutcome> = None;
@@ -568,21 +635,28 @@ pub fn run_in_tmux_with_options(
             continue;
         };
 
-        // Routing env is conditional (operator directive 2026-09-04): when the
-        // operator-run router answers on :11434, CLIs inherit the standardized
-        // local-router proxy env; when it is down, harnesses run with their own
-        // pre-configured environment (e.g. dsh on another machine, fcc-server
-        // config, or provider defaults). We only ever probe — never spawn.
-        let env_prefix = if router {
-            "export PATH=\"$HOME/.local/bin:$PATH\" ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=local-router CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000 DISABLE_AUTOUPDATER=1 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=local-router OPENAI_API_BASE=http://127.0.0.1:11434/v1 OLLAMA_HOST=http://127.0.0.1:11434 MODEL=local-router/fallback-models HERMES_OPENAI_BASE_URL=http://127.0.0.1:11434/v1 HERMES_MODEL=local-router/fallback-models NONINTERACTIVE=1;"
-                .to_string()
+        // Routing env is conditional (operator directives 2026-09-04/07): the
+        // executor never spawns router infra; when the operator-run router
+        // answers on :11434, openai/anthropic-protocol CLIs inherit the proxy
+        // env with the DISCOVERED preferred model; dsh (protocol "own") and
+        // router-down cases run the harness's host configuration verbatim.
+        let env_prefix = if router && cand.protocol != "own" {
+            format!(
+                "export PATH=\"$HOME/.local/bin:$PATH\" ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=local-router CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000 DISABLE_AUTOUPDATER=1 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=local-router OPENAI_API_BASE=http://127.0.0.1:11434/v1 OLLAMA_HOST=http://127.0.0.1:11434 MODEL={preferred} HERMES_OPENAI_BASE_URL=http://127.0.0.1:11434/v1 HERMES_MODEL={preferred} NONINTERACTIVE=1;"
+            )
         } else {
-            // Router down: trust each harness's own configuration verbatim.
+            // Host config verbatim (dsh always; others when :11434 is down).
             "export PATH=\"$HOME/.local/bin:$PATH\" NONINTERACTIVE=1;".to_string()
         };
         trace.push(format!(
             "route:{}",
-            if router { "local-router" } else { "harness-own" }
+            if cand.protocol == "own" {
+                "host-config".to_string()
+            } else if router {
+                format!("local-router({preferred})")
+            } else {
+                "harness-own".to_string()
+            }
         ));
 
         let slug = slugify(name);
@@ -625,16 +699,16 @@ pub fn run_in_tmux_with_options(
                     .arg(prompt)
                     .current_dir(workdir)
                     .env("NONINTERACTIVE", "1");
-                if router {
+                if router && cand.protocol != "own" {
                     cmd.env("ANTHROPIC_BASE_URL", "http://127.0.0.1:11434")
                         .env("ANTHROPIC_AUTH_TOKEN", "local-router")
                         .env("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
                         .env("OPENAI_API_KEY", "local-router")
                         .env("OPENAI_API_BASE", "http://127.0.0.1:11434/v1")
                         .env("OLLAMA_HOST", "http://127.0.0.1:11434")
-                        .env("MODEL", "local-router/fallback-models")
+                        .env("MODEL", preferred.as_str())
                         .env("HERMES_OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
-                        .env("HERMES_MODEL", "local-router/fallback-models");
+                        .env("HERMES_MODEL", preferred.as_str());
                 } // else: harness runs with its own operator-managed config.
                 let outcome = cmd.output();
                 let (code_str, output) = match outcome {
@@ -784,6 +858,45 @@ mod tests {
         assert!(ALL_AGENTS.iter().any(|a| a.id == "free-claude-code"));
         assert!(ALL_AGENTS.iter().any(|a| a.id == "trae-cli"));
         assert!(ALL_AGENTS.iter().any(|a| a.id == "mini"));
+    }
+
+    /// Operator directive (2026-09-07): `auto` attempts exactly
+    /// dsh -> omp -> hermes, in that order, all from the catalog.
+    #[test]
+    fn auto_chain_is_dsh_omp_hermes() {
+        assert_eq!(AUTO_CHAIN, &["dsh", "omp", "hermes"]);
+        let ids: Vec<&str> = ALL_AGENTS.iter().map(|a| a.id).collect();
+        let pos = |id: &str| ids.iter().position(|x| *x == id).unwrap();
+        assert!(pos("dsh") < pos("omp"));
+        assert!(pos("omp") < pos("hermes"));
+    }
+
+    /// Model discovery prefers the llama.cpp qwen3 abliterated tier.
+    #[test]
+    fn preferred_model_tiers() {
+        let m = |ids: &[&str]| preferred_model(&ids.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            m(&["gpt-4o", "llama.cpp/qwen3-8b-abliterated"]),
+            "llama.cpp/qwen3-8b-abliterated"
+        );
+        // abliterated beats plain qwen3 regardless of order
+        assert_eq!(
+            m(&["qwen3-4b-instruct", "llama.cpp/qwen3-8b-abliterated"]),
+            "llama.cpp/qwen3-8b-abliterated"
+        );
+        assert_eq!(m(&["qwen3-4b", "smollm"]), "qwen3-4b");
+        assert_eq!(m(&["llama.cpp/other"]), "llama.cpp/other");
+        assert_eq!(m(&["random-model"]), "local-router/fallback-models");
+        assert_eq!(m(&[]), "local-router/fallback-models");
+    }
+
+    /// dsh runs the host's own configuration: protocol "own" is exempt from
+    /// the conditional :11434 proxy env by construction.
+    #[test]
+    fn dsh_is_own_protocol() {
+        let dsh = ALL_AGENTS.iter().find(|a| a.id == "dsh").unwrap();
+        assert_eq!(dsh.protocol, "own");
+        assert_eq!(dsh.pre, "--profile headless");
     }
 
     /// Operator directive (2026-09-04): the executor must never spawn, stop,

@@ -126,11 +126,12 @@ button.primary:hover{opacity:.9}
       </div>
       <div class="bar">
         <select id="agent-select" style="font-size:11px">
-          <option value="auto">⚡ Auto Fallback Cascade</option>
+          <option value="auto">⚡ Auto Fallback (dsh → omp → hermes)</option>
           <option value="fleet">🤖 SWE-bench Fleet (Trae + Mini)</option>
-          <option value="free-claude-code">Claude Code / FCC</option>
+          <option value="dsh">DeepSeek Harness (dsh)</option>
           <option value="omp">OhMyPy (omp)</option>
           <option value="hermes">Hermes Agent</option>
+          <option value="free-claude-code">Claude Code / FCC</option>
           <option value="trae-cli">Trae-CLI (AST Refactoring Master)</option>
           <option value="mini">Mini-SWE (TDD Reproduction Engineer)</option>
           <option value="codex">Codex CLI</option>
@@ -140,7 +141,7 @@ button.primary:hover{opacity:.9}
           <option value="pi">Pi Coding Agent</option>
         </select>
         <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="fleet-toggle" checked/> Fleet</label>
-        <span class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px" title="Single-source router model via 11434">model: local-router/fallback-models</span>
+        <span class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px" title="Router model when :11434 is up (prefers llama.cpp qwen3 abliterated); harnesses otherwise use host config">model: host config / :11434 preferred</span>
         <button id="btn-run-agent" class="primary" style="margin-left:auto;font-size:11px">⚡ Run Agent</button>
         <button id="btn-post-msg" style="font-size:11px">💬 Post</button>
       </div>

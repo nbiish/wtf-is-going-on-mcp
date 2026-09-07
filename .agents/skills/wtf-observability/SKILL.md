@@ -5,10 +5,10 @@ description: Expert operation of the wtf multi-agent observability hub (this rep
 
 > **Status:** Operator/CLI reference. Agents should use
 > `.agents/skills/wtf-agent-hub/SKILL.md` instead — it carries the current
-> 21-tool surface (v0.15.2+: incl. `write_bin`, `hub_info`, `env_report`/`env_probe`,
-> the encrypted `session_*` channels, COMMS ledger tools, and the executor
-> `chat_run`/`chat_sessions`/`chat_session_lifecycle` — per-chat tmux sessions
-> running the universal 11-agent catalog via local-router:11434),
+> 22-tool surface (v0.15.4+: incl. `write_bin`, `hub_info`, `env_report`/`env_probe`,
+> the encrypted `session_*` channels, COMMS ledger tools, the passive `router_status`
+> probe, and the executor `chat_run`/`chat_sessions`/`chat_session_lifecycle` —
+> per-chat tmux sessions running host-installed CLIs, auto chain dsh → omp → hermes),
 > the PQC credential lane with ephemeral handshake burn, singular capability URL (`/w/<capability>`),
 > and the paired Federated Multi-Machine Shell.
 > This document serves as the hub-operator + signed-curl fallback guide.
@@ -168,8 +168,8 @@ wtf_call GET  /api/v1/shell/machines        # discover federated shell cluster m
 
 2. **Embedded Chat & Agent Orchestration Studio**:
    - Integrated into the left pane of `/w/<capability>`.
-   - Dispatches SWE-bench coding fleet tasks across the 11-agent CLI catalog (`auto`, `fleet`, `claude`, `omp`, `hermes`, `trae-cli`, `mini`, `codex`, `opencode`, `aider`, `cline`, `pi`).
-   - All engines route through `local-router/fallback-models` on `127.0.0.1:11434`.
+   - Dispatches tasks across host-installed agent CLIs — `auto` attempts exactly **dsh → omp → hermes** (operator directive 2026-09-07); `fleet` (trae-cli + mini) and individual catalog CLIs (`free-claude-code`, `codex`, `opencode`, `aider`, `cline`, `pi`) remain selectable.
+   - Harnesses run with the HOST machine's current configuration/installation. When the operator-run router answers on `127.0.0.1:11434`, openai/anthropic CLIs inherit its proxy env with the discovered preferred model (llama.cpp qwen3 abliterated first); dsh always runs its own config. **wtf never spawns `local-router`, `fcc-server`, or `fcc-dsh`** — passive probe only.
 
 3. **Paired Federated Multi-Machine Shell & Intelligent Distributed Compute**:
    - Integrated into the right pane of `/w/<capability>`.

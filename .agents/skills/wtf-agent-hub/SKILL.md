@@ -1,6 +1,6 @@
 ---
 name: wtf-agent-hub
-description: Mastered, concise operating manual for connecting any AI agent harness (Claude Desktop, Cursor, Warp, Codex, OpenCode, Aider, Cline, Pi, CI bots, custom harnesses, OMP, Trae-cli, Mini, Fleet) to the wtf federated observability hub, shell, and compute mesh. Covers zero-config join, singular capability plane (/w/<cap>), PQC key generation (FIPS 203 ML-KEM-768) and single-use burn-on-handshake lifecycle (wtf enroll-token / wtf enroll --psk), paired Federated Multi-Machine Shell (~/ virtual cluster root with LKGL persistence), universal 11-agent CLI catalog (auto, fleet, claude, omp, hermes, trae-cli, mini, codex, opencode, aider, cline, pi) via loopback proxy local-router:11434, private ML-KEM-768 sealed sessions/chats, structured COMMS ledger, and distributed compute task execution (chat_run).
+description: Mastered, concise operating manual for connecting any AI agent harness (Claude Desktop, Cursor, Warp, Codex, OpenCode, Aider, Cline, Pi, CI bots, custom harnesses, DSH, OMP, Hermes, Trae-cli, Mini, Fleet) to the wtf federated observability hub, shell, and compute mesh. Covers zero-config join, singular capability plane (/w/<cap>), PQC key generation (FIPS 203 ML-KEM-768) and single-use burn-on-handshake lifecycle (wtf enroll-token / wtf enroll --psk), paired Federated Multi-Machine Shell (~/ virtual cluster root with LKGL persistence), cross-machine agent dispatch (auto chain dsh -> omp -> hermes on host-installed CLIs; passive :11434 model discovery preferring llama.cpp qwen3 abliterated — wtf NEVER spawns local-router/fcc-server/fcc-dsh), private ML-KEM-768 sealed sessions/chats, structured COMMS ledger, and distributed compute task execution (chat_run).
 ---
 
 # wtf-agent-hub — Master Operating Instruction Set
@@ -168,30 +168,32 @@ The shell engine parses compound operators (`&&`), switches execution contexts t
 
 ---
 
-## 4. Universal 11-Agent CLI Catalog & Local-Router Loopback
+## 4. Agent CLI Catalog, Dispatch Chain & Local-Router Loopback
 
 Headless tasks dispatched via the dashboard or MCP `chat_run` execute inside persistent, attachable tmux sessions (`wtf-chat-<slug>`).
 
-### 11-Agent CLI Catalog
-1. **`auto`**: Intelligent cascade fallback (`claude`/`fcc` -> `omp` -> `hermes` -> `trae-cli` -> `mini` -> `codex` -> `opencode` -> `aider` -> `cline` -> `pi`).
-2. **`fleet`**: SWE-bench Verified Dual-Engine pipeline. Dispatches `trae-cli` for surgical AST refactoring, handing discovered target symbols to `mini` for test reproduction and hardening.
-3. **`claude` / `free-claude-code` (`fcc`)**: Claude Code headless execution.
-4. **`omp`**: OhMyPy Python & generalist refactoring CLI (`omp "<prompt>"`).
-5. **`hermes`**: Hermes autonomous agent CLI.
-6. **`trae-cli`**: ByteDance AST Refactoring Master (`trae-cli run -f <task.md> --console-type simple --max-steps 30`).
-7. **`mini` / `mini-live`**: OpenAutoCoder TDD Reproduction Engineer (`mini --task "<task>" --yolo --exit-immediately`). Pre-configured via `~/.config/mini-swe-agent/.env`.
-8. **`codex`**: OpenAI Codex CLI.
-9. **`opencode`**: OpenCode multi-provider CLI.
-10. **`aider`**: Aider git-integrated coding agent.
-11. **`cline`**: Cline CLI harness.
-12. **`pi`**: Edge low-power agent node.
+### Dispatch Chain (`auto`) — dsh → omp → hermes
+Operator directive 2026-09-07: dispatched agent tasks attempt exactly, in order — **`dsh` → `omp` → `hermes`** (first installed + exit-0 wins).
+1. **`dsh`** — DeepSeek Harness (`dsh --profile headless "<task>"`). ALWAYS runs the host machine's current configuration/installation verbatim (protocol `own`): wtf never injects endpoints, models, or env into it.
+2. **`omp`** — OhMyPy (`omp -p "<task>"`). Inherits the conditional :11434 proxy env when the router is up.
+3. **`hermes`** — Hermes agent (`hermes --cli -z "<task>"`). Inherits the conditional :11434 proxy env with the DISCOVERED preferred model.
 
-### Singular Loopback Proxy Contract (`127.0.0.1:11434`)
-- **Single Source of Inference:** ALL agent CLIs route through the local router proxy on port 11434:
-  - OpenAI-compatible: `http://127.0.0.1:11434/v1`
-  - Ollama / Anthropic: `http://127.0.0.1:11434`
-  - Model: `local-router/fallback-models`
-- Router manages context window limits, multimodal vision inputs, and seamless fallback routing across 3 attempts before terminal failure.
+### Full Catalog (individually selectable; `fleet` = trae-cli + mini)
+`dsh`, `omp`, `hermes`, `free-claude-code`/`fcc`, `trae-cli`, `mini`/`mini-live`, `codex`, `opencode`, `aider`, `cline`, `pi`.
+
+### Singular Loopback Proxy Contract (`127.0.0.1:11434`) — PASSIVE ONLY
+- **The router is operator-owned infrastructure.** wtf (hub, MCP bridge, executor, dashboard) NEVER spawns, stops, restarts, or supervises `local-router`, `fcc-server`, or `fcc-dsh` — not as a process, not via `ensure`, not in the background. It only PASSIVELY probes `http://127.0.0.1:11434/v1` for the status pill and model catalog.
+- When the router answers, openai/anthropic-protocol CLIs inherit proxy env (`OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, `ANTHROPIC_BASE_URL=http://127.0.0.1:11434`, …). When it is down, every harness runs its own host config (trace: `route:harness-own`).
+- **Model discovery (v0.15.4):** the executor queries the router's live `/v1/models` and prefers the **llama.cpp qwen3 abliterated** tier → any qwen3 → any llama.cpp build → `local-router/fallback-models` (trace: `model:<id>`, `route:local-router(<id>)`).
+
+### Canonical Cross-Machine Walkthrough (the model for all future goals)
+Scenario: the **mac** wants the **windows** machine to run a task with its locally installed Hermes CLI and locally hosted model.
+1. From the mac, join the repo's federated lane (`session_list {repo}` → `session_join`) or dispatch directly with `chat_run {prompt, machine: "windows"}`.
+2. The windows executor opens/reuses `wtf-chat-<slug>` tmux and walks the chain: `dsh` (host config) → `omp` → `hermes`.
+3. Say `dsh` and `omp` are unavailable or fail: hermes boots with `HERMES_OPENAI_BASE_URL=http://127.0.0.1:11434/v1`; the executor has already probed `GET http://127.0.0.1:11434/v1/models` and pinned `HERMES_MODEL` to e.g. `llama.cpp/qwen3-8b-abliterated`.
+4. Hermes completes the task — e.g. *review the operator's site (https://nbiish.pages.dev) and report how to improve it for employers and the AI agents that crawl it* — streaming inside the attachable tmux pane.
+5. The result flows back through the lane (`session_send`/`comms_post`) or `write_bin`, and the trace names everything: `router:up | model:llama.cpp/qwen3-8b-abliterated | hermes: ok`.
+The same pattern works mac→windows, windows→mac, edge→heavy: **any machine can run any other machine's installed agent CLIs through `chat_run {machine: "<target>"}` — using the target's own configuration, never a wtf-spawned service.**
 
 ### Cross-Platform Execution Backend
 The executor (`src/executor.rs`) auto-detects host capabilities:
@@ -203,7 +205,7 @@ The executor (`src/executor.rs`) auto-detects host capabilities:
 Probe locally available agents at runtime:
 ```bash
 curl -sS "http://HUB:7800/api/v1/agents/available?cap=<capability>"
-# Returns: {"ok":true,"agents":[{"id":"omp","name":"OhMyPy CLI","available":true},...]}
+# Returns: {"ok":true,"agents":[{"id":"dsh","name":"DeepSeek Harness (dsh)","installed":true},...],"chain":"dsh -> omp -> hermes"}
 ```
 
 ---

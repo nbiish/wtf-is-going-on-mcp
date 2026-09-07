@@ -1,0 +1,6 @@
+# Team ledger 2026-09-07 21-31 (UTC) — feat/federated-dispatch-chain (v0.15.4)
+
+start: 2026-09-07T21:31:30Z agent:claude-worktree-1 parent:none branch:feat/federated-dispatch-chain
+checkin: scope=auto dispatch chain dsh->omp->hermes (host-config CLIs), preferred-model discovery (:11434 /v1/models, llama.cpp qwen3 abliterated first), dsh protocol-own exemption, skills+DOX cross-machine dispatch docs, v0.15.4
+update: 2026-09-07T21:32:27Z implemented AUTO_CHAIN=[dsh,omp,hermes] (dsh protocol-own host-config, --profile headless; omp -p; hermes --cli -z); preferred_model discovery llama.cpp qwen3-abliterated -> qwen3 -> llama.cpp -> fallback-models with model:/route: traces; dashboard select + studio pill text; mcp chat_run description; skills wtf-agent-hub (catalog section rewrite + canonical mac->windows hermes/qwen3 walkthrough) + wtf-observability; DOX llms.txt+src/llms.txt; v0.15.4; 116 unit + 14 e2e green, warnings unchanged 17
+intent-merge: 2026-09-07T21:32:27Z branch=feat/federated-dispatch-chain scope=src/{executor,mcp,dashboard}.rs .agents/skills/{wtf-agent-hub,wtf-observability}/SKILL.md llms.txt src/llms.txt Cargo.{toml,lock} .agents/comms
