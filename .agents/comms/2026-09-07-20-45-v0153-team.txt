@@ -1,0 +1,16 @@
+# Team ledger 2026-09-07 20-45 (UTC) — chore/v0.15.3-no-spawn-contract
+
+start: 2026-09-07T20:45:54Z agent:claude-worktree-1 parent:none branch:chore/v0.15.3-no-spawn-contract
+checkin: scope=v0.15.3 release sync (Cargo version, fleet/docs/skills) + nine-masters review of the no-spawn merge
+
+update: 2026-09-07T20:45:54Z MASTERS-REVIEW of 2bc9b1d (operator-requested):
+  1. adversarial/security: retired POST /api/v1/router/restart uniform-404s even with valid capability (e2e-verified) — no remote trigger left that can kill operator infra. CLOSED.
+  2. privacy/data-protection: passive :11434 probe returns version/model counts only; no keys or tokens in any router path. CLOSED (verified by reading probe_router_info).
+  3. supply-chain/third-party-risk: zero crates added; executor unit test agent_launch_lines_never_lifecycle_router_infra guards harness launch lines. CLOSED.
+  4. systems-architecture/devops: router+fcc-server now operator-owned; wtf is a read-only observer — duplicate-daemon port contention eliminated by design. CLOSED.
+  5. reliability/verification: flaky parallel WTF_HOME env race fixed (util::test_env_lock); suite green 3x consecutive. CLOSED.
+  6. governance/sovereignty: directive recorded in llms.txt, src/llms.txt, docs/ROADMAP.md, docs/OPERATIONS.md; ledger checkin->checkout closed for 2bc9b1d. CLOSED.
+  7. terminal-orchestration/swe-bench: dispatches degrade gracefully with route:harness-own trace instead of forcing a dead :11434 onto harnesses. CLOSED.
+  8. master-orchestrator: fleet-wide contract propagation — windows side brought up on v0.15.3 from fresh main this session; mac hub hub-799c0c4c still v0.15.2, announcement event posted to hub ring for peer pull. OPEN until mac pulls (operator/peer action).
+  9. developer-experience: operator terminal fcc-server usage no longer interrupted; dashboard offline state instructs operator to start router themselves. CLOSED.
+intent-merge: 2026-09-07T20:45:54Z branch=chore/v0.15.3-no-spawn-contract scope=Cargo.toml llms.txt src/llms.txt docs/FLEET.md .agents/skills/{wtf-agent-hub,wtf-observability}/SKILL.md .agents/comms

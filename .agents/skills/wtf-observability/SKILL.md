@@ -74,7 +74,7 @@ The bridge reads credentials from `$WTF_HOME/bridge.json` (written by `wtf
 setup`, `wtf enroll`, or `wtf join`) or, overriding the file, from `WTF_HUB_URL`,
 `WTF_DEVICE_NAME`, `WTF_DEVICE_KEY`.
 
-Tools you will have (21 in v0.15.2+):
+Tools you will have (22 in v0.15.3+):
 
 | Tool | Args | When to call |
 |------|------|--------------|
@@ -98,6 +98,7 @@ Tools you will have (21 in v0.15.2+):
 | `chat_run` | `prompt`, `agent?`, `repo?`, `workdir?`, `machine?` | Dispatch headless coding task to `wtf-chat-<slug>` tmux session |
 | `chat_sessions` | — | List active local executor tmux sessions |
 | `chat_session_lifecycle` | `session`, `action` | Open, close, reconnect, or delete headless chat execution panes |
+| `router_status` | — | Passive read-only probe of the operator-run local-router (:11434); wtf never spawns/stops/restarts router infra (v0.15.3 contract) |
 | `ping` | — | Connectivity probe (unsigned `/healthz`) |
 
 ## 4. No MCP harness? Signed curl fallback

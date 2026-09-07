@@ -223,7 +223,7 @@ Configure the stdio MCP bridge in any client configuration (`claude_desktop_conf
 }
 ```
 
-### 21 MCP Tools Surface (v0.15.2+)
+### 22 MCP Tools Surface (v0.15.3+)
 
 | Tool | Key Arguments | Purpose & Execution Trigger |
 |---|---|---|
@@ -247,6 +247,7 @@ Configure the stdio MCP bridge in any client configuration (`claude_desktop_conf
 | `chat_run` | `prompt`, `agent?`, `repo?`, `workdir?`, `machine?` | Dispatch headless coding task to `wtf-chat-<slug>` tmux session. Supports remote execution. |
 | `chat_sessions` | — | List active local executor tmux sessions. |
 | `chat_session_lifecycle` | `session`, `action` | Manage executor panes (`open`, `close`, `reconnect`, `delete`). |
+| `router_status` | — | PASSIVE probe of the operator-run local-router (:11434). Read-only: wtf never spawns/stops/restarts router or fcc-server infra (v0.15.3 contract). |
 | `ping` | — | Unauthenticated connectivity probe against `/healthz`. |
 
 ---

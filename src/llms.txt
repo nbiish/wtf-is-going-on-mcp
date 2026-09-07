@@ -55,7 +55,7 @@ sha256hex(body)`. ±300 s skew; per-device nonce replay cache. Device lookup hap
 - Bridge tools report failures as tool results, keeping the JSON-RPC layer for protocol faults only.
 
 ## Verification
-- `cargo test` — 108 unit tests + 14 e2e tests green.
+- `cargo test` — 113 unit tests + 14 e2e tests green.
 - `cargo build --release` must succeed (lto, codegen-units=1, panic=abort, overflow-checks).
 - rustfmt/clippy are not installed in this environment; run `cargo fmt`/`cargo clippy -- -D warnings` when available.
 
