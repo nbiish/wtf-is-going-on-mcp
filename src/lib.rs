@@ -12,7 +12,7 @@ pub mod client;
 pub mod comms;
 pub mod config;
 pub mod dashboard;
-pub mod executor;
+pub mod chat;
 pub mod fed_shell;
 pub mod federation;
 pub mod gcm;

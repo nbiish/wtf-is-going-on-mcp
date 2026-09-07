@@ -23,8 +23,8 @@ use wtf::VERSION;
 
 /// The portable hub skill, embedded at build time so the single binary can
 /// distribute it anywhere (`wtf skill install`). Kept byte-identical with
-/// `.agents/skills/wtf-agent-hub/SKILL.md` and the ainish-coder mirror.
-const AGENT_SKILL: &str = include_str!("../.agents/skills/wtf-agent-hub/SKILL.md");
+/// `.agents/skills/wtf-mcp-mastery/SKILL.md` and the ainish-coder mirror.
+const MASTER_SKILL: &str = include_str!("../.agents/skills/wtf-mcp-mastery/SKILL.md");
 
 fn main() {
     std::process::exit(run());
@@ -457,7 +457,7 @@ fn cmd_status() -> i32 {
 fn cmd_skill(args: &[String]) -> i32 {
     match args.first().map(|s| s.as_str()) {
         Some("print") => {
-            print!("{AGENT_SKILL}");
+            print!("{MASTER_SKILL}");
             0
         }
         Some("install") => {
@@ -469,11 +469,11 @@ fn cmd_skill(args: &[String]) -> i32 {
             let target = base
                 .join(".agents")
                 .join("skills")
-                .join("wtf-agent-hub")
+                .join("wtf-mcp-mastery")
                 .join("SKILL.md");
             if target.exists() {
                 let existing = std::fs::read_to_string(&target).unwrap_or_default();
-                if existing == AGENT_SKILL {
+                if existing == MASTER_SKILL {
                     println!("already installed (identical): {}", target.display());
                     return 0;
                 }
@@ -491,11 +491,11 @@ fn cmd_skill(args: &[String]) -> i32 {
                     return 1;
                 }
             }
-            match std::fs::write(&target, AGENT_SKILL) {
+            match std::fs::write(&target, MASTER_SKILL) {
                 Ok(_) => {
                     println!("skill installed: {}", target.display());
                     println!();
-                    println!("point agents at .agents/skills/wtf-agent-hub/SKILL.md, then register the bridge:");
+                    println!("point agents at .agents/skills/wtf-mcp-mastery/SKILL.md, then register the bridge:");
                     println!(r#"  {{ "command": "<absolute path to>/wtf", "args": ["agent"] }}"#);
                     0
                 }

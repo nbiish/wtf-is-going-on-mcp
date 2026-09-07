@@ -307,7 +307,7 @@ impl Bridge {
                     (
                         "instructions",
                         Value::from(
-                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) EXECUTION — use the agent-CLI fallback chain (OhMyPy -> Hermes -> FreeClaudeCode, non-interactive) for headless task execution; record which CLI ran the task. (5) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
+                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (5) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
                         ),
                     ),
                     (
@@ -879,12 +879,12 @@ impl Bridge {
             Value::obj(vec![
                 (
                     "name",
-                    Value::from("chat_run"),
+                    Value::from("chat"),
                 ),
                 (
                     "description",
                     Value::from(
-                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI dispatch chain (dsh → omp → hermes, first installed + exit-0 wins) with optional agent selection (individual catalog CLIs and the Trae/Mini fleet remain available). Harnesses run with the HOST machine's current configuration/installation; when the operator-run local-router answers on :11434, openai/anthropic CLIs inherit its proxy env with the discovered preferred model (llama.cpp qwen3 abliterated first), while dsh always runs its own host config. This system never spawns local-router, fcc-server, or fcc-dsh. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
+                        "Chat with the operator-run local-router (OpenAI-compatible http://127.0.0.1:11434/v1/chat/completions) from this machine. Model defaults to passive discovery from the router's live /v1/models catalog (llama.cpp qwen3 abliterated first). This system NEVER spawns local-router, fcc-server, or fcc-dsh — if :11434 is down the tool fails with a message telling the operator to start it.",
                     ),
                 ),
                 (
@@ -894,68 +894,15 @@ impl Bridge {
                         (
                             "properties",
                             Value::obj(vec![
-                                ("prompt", Self::prop("the task prompt to execute headlessly")),
-                                ("machine", Self::prop("optional target cluster machine name or alias (e.g. 'windows', 'mac', 'pi') for intelligent distributed compute; anchors to machine LKGL")),
-                                ("agent", Self::prop("optional agent choice: auto (default), fleet, free-claude-code, omp, hermes, trae-cli, mini, codex, opencode, aider, cline, pi")),
-                                ("fleet_enabled", Self::prop("optional boolean: enable Trae/Mini agent fleet (default true)")),
-                                ("repo", Self::prop("optional repo label for the session slug (default: device name)")),
-                                ("label", Self::prop("optional task label refining the tmux session name")),
-                                ("workdir", Self::prop("optional working directory (default: bridge cwd or machine LKGL)")),
-                                (
-                                    "timeout_secs",
-                                    int_prop("max seconds to wait for the CLI to finish (default 600, clamp 10..3600)"),
-                                ),
+                                ("prompt", Self::prop("the user prompt to send")),
+                                ("model", Self::prop("optional model id (default: discovered preferred model)")),
+                                ("system", Self::prop("optional system preamble")),
                             ]),
                         ),
                         ("required", Value::arr(vec![Value::from("prompt")])),
                         ("additionalProperties", Value::from(false)),
                     ]),
                 ),
-            ]),
-            Value::obj(vec![
-                (
-                    "name",
-                    Value::from("chat_sessions"),
-                ),
-                (
-                    "description",
-                    Value::from(
-                        "List this machine's wtf-chat-* tmux sessions (the executor sessions behind federated chats) so a peer can see what is running and attach.",
-                    ),
-                ),
-                (
-                    "inputSchema",
-                    Value::obj(vec![
-                        ("type", Value::from("object")),
-                        ("properties", Value::obj(vec![])),
-                        ("additionalProperties", Value::from(false)),
-                    ]),
-                ),
-            ]),
-            Value::obj(vec![
-                ("name", Value::from("chat_session_lifecycle")),
-                ("description", Value::from(
-                    "Lifecycle control for this machine's executor tmux sessions (wtf-chat-*): action=open (create if missing), close (graceful exit + kill), reconnect (kill + fresh session), delete (kill + drop exec state). Lifecycle contract for every agent connection: open a session when work starts, close or delete it when done, reconnect on a hung pane.",
-                )),
-                ("inputSchema", Value::obj(vec![
-                    ("type", Value::from("object")),
-                    ("properties", Value::obj(vec![
-                        ("session", Value::obj(vec![
-                            ("type", Value::from("string")),
-                            ("description", Value::from("session name (wtf-chat-<slug>) or bare chat slug")),
-                        ])),
-                        ("action", Value::obj(vec![
-                            ("type", Value::from("string")),
-                            ("enum", Value::arr(vec![Value::from("open"), Value::from("close"), Value::from("reconnect"), Value::from("delete")])),
-                        ])),
-                        ("workdir", Value::obj(vec![
-                            ("type", Value::from("string")),
-                            ("description", Value::from("optional working directory for open/reconnect (default: cwd)")),
-                        ])),
-                    ])),
-                    ("required", Value::arr(vec![Value::from("session"), Value::from("action")])),
-                    ("additionalProperties", Value::from(false)),
-                ])),
             ]),
             Value::obj(vec![
                 ("name", Value::from("router_status")),
@@ -1004,9 +951,7 @@ impl Bridge {
             "session_read" => self.tool_session_read(args),
             "comms_post" => self.tool_comms_post(args),
             "comms_read" => self.tool_comms_read(args),
-            "chat_run" => self.tool_chat_run(args),
-            "chat_sessions" => self.tool_chat_sessions(),
-            "chat_session_lifecycle" => self.tool_chat_session_lifecycle(args),
+            "chat" => self.tool_chat(args),
             "router_status" => self.tool_router_status(args),
             other => (format!("unknown tool: {other}"), true),
         }
@@ -1267,59 +1212,11 @@ impl Bridge {
         }
     }
 
-    /// Where is the hub? Answers the operator's "what's the address"
-    /// question without ever exposing the dashboard key: agents get the
-    /// Probe THIS machine's agent-CLI surface. Presence + versions only —
-    /// NEVER API keys or credentials (those live in the user's env /
-    /// PQC bundle and are not this system's business).
+    /// Probe THIS machine's environment for cluster discovery: os/arch +
+    /// wtf version only. No agent-CLI inventory (harness logic removed,
+    /// 2026-09-07); NEVER API keys or credentials.
     fn collect_env_report(&self) -> Value {
-        let probe = |cmd: &str, args: &[&str]| -> Value {
-            match std::process::Command::new(cmd).args(args).output() {
-                Ok(out) if out.status.success() => {
-                    let ver = String::from_utf8_lossy(&out.stdout);
-                    let ver = ver.lines().next().unwrap_or("").trim().to_string();
-                    let path = std::process::Command::new("which")
-                        .arg(cmd)
-                        .output()
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
-                    Value::obj(vec![
-                        ("version", Value::from(ver.as_str())),
-                        ("path", Value::from(path.as_str())),
-                    ])
-                }
-                _ => Value::from(false),
-            }
-        };
-        let clis = Value::obj(vec![
-            ("omp", probe("omp", &["--version"])),
-            ("hermes", probe("hermes", &["--version"])),
-            (
-                "freeclaude",
-                match std::process::Command::new("tmux").args(["ls"]).output() {
-                    Ok(out) if out.status.success() => {
-                        let s = String::from_utf8_lossy(&out.stdout);
-                        let sessions: Vec<&str> = s
-                            .lines()
-                            .filter(|l| l.contains("freeclaude-"))
-                            .map(|l| l.split(':').next().unwrap_or("").trim())
-                            .collect();
-                        if sessions.is_empty() {
-                            Value::from(false)
-                        } else {
-                            Value::obj(vec![(
-                                "tmux_sessions",
-                                Value::Arr(sessions.iter().map(|s| Value::from(*s)).collect()),
-                            )])
-                        }
-                    }
-                    _ => Value::from(false),
-                },
-            ),
-        ]);
         Value::obj(vec![
-            ("clis", clis),
             ("os", Value::from(std::env::consts::OS)),
             ("arch", Value::from(std::env::consts::ARCH)),
             ("wtf_version", Value::from(crate::VERSION)),
@@ -1354,50 +1251,14 @@ impl Bridge {
                         false,
                     );
                 }
-                let mut out =
-                    String::from("env reports (device · omp · hermes · freeclaude · os/arch):\n");
+                let mut out = String::from("env reports (device · os/arch · wtf):\n");
                 for d in devices {
                     let dev = d.get("device").and_then(|x| x.as_str()).unwrap_or("?");
                     let rep = d.get("report").unwrap_or(&Value::Null);
-                    let clis = rep.get("clis");
-                    let cli_state = |name: &str| -> String {
-                        clis.and_then(|c| c.get(name))
-                            .map(|x| {
-                                if x.as_bool() == Some(false) {
-                                    "-".to_string()
-                                } else {
-                                    x.get("version")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("present")
-                                        .to_string()
-                                }
-                            })
-                            .unwrap_or_else(|| "-".to_string())
-                    };
                     let os = rep.get("os").and_then(|x| x.as_str()).unwrap_or("?");
                     let arch = rep.get("arch").and_then(|x| x.as_str()).unwrap_or("?");
-                    let tmux_sessions = clis
-                        .and_then(|c| c.get("freeclaude"))
-                        .filter(|x| x.as_bool() != Some(false))
-                        .and_then(|x| x.get("tmux_sessions"))
-                        .and_then(|x| x.as_arr())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|s| s.as_str())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        })
-                        .unwrap_or_default();
-                    out.push_str(&format!(
-                        "  {dev} · omp:{} hermes:{} freeclaude:{} · {os}/{arch}\n",
-                        cli_state("omp"),
-                        cli_state("hermes"),
-                        if tmux_sessions.is_empty() {
-                            "-".into()
-                        } else {
-                            tmux_sessions
-                        }
-                    ));
+                    let ver = rep.get("wtf_version").and_then(|x| x.as_str()).unwrap_or("?");
+                    out.push_str(&format!("  {dev} · {os}/{arch} · wtf {ver}\n"));
                 }
                 (out, false)
             }
@@ -2161,151 +2022,41 @@ impl Bridge {
         (out, false)
     }
 
-    /// chat_run { prompt, repo?, timeout_secs? }: execute a task handed to
-    /// this repo's federated chat on THIS machine, in tmux session
-    /// `wtf-chat-<slug>`, through the dsh → omp → hermes dispatch chain
-    /// chain. The tmux session persists for attach; the report names the
-    /// lane that ran. All CLIs are model-agnostic here: operator config on
-    /// each machine points them at local-router/fallback-models.
-    fn tool_chat_run(&self, args: &Value) -> (String, bool) {
+    /// chat { prompt, model?, system? }: one OpenAI-compatible completion
+    /// against the operator-run local-router (127.0.0.1:11434/v1).
+    /// Passive-only: never spawns router infra; fails closed with an
+    /// actionable message when :11434 is down.
+    fn tool_chat(&self, args: &Value) -> (String, bool) {
         let Some(prompt) = arg_str(args, "prompt") else {
             return ("missing required argument: prompt".into(), true);
         };
-        if prompt.trim().is_empty() {
-            return ("prompt is empty".into(), true);
+        if prompt.len() > 32_768 {
+            return ("prompt too large (32 KiB max)".into(), true);
         }
-        let repo = arg_str(args, "repo").unwrap_or(&self.cfg.device_name);
-        let timeout = args
-            .get("timeout_secs")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(600)
-            .clamp(10, 3600) as u64;
-
-        // Intelligent distributed compute: route to remote cluster node if requested
-        if let Some(target_mach) = arg_str(args, "machine") {
-            let target_clean = target_mach.trim();
-            if !target_clean.is_empty() && target_clean != "local" && target_clean != self.cfg.device_name {
-                let agent_sel = arg_str(args, "agent").unwrap_or("auto");
-                let cmd_to_run = if agent_sel == "omp" {
-                    format!("omp '{}'", prompt)
-                } else {
-                    prompt.to_string()
-                };
-
-                // 1. Try hub /api/v1/shell/exec dispatch via device auth
-                let exec_body = Value::obj(vec![
-                    ("cmd", Value::from(cmd_to_run.as_str())),
-                    ("cwd", Value::from(format!("~/{}", target_clean).as_str())),
-                    ("timeout_secs", Value::from(timeout as i64)),
-                ]);
-                if let Ok(res) = self.api_post("/api/v1/shell/exec", &exec_body) {
-                    let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let out = res.get("output").and_then(|v| v.as_str()).unwrap_or("");
-                    let mach = res.get("machine").and_then(|v| v.as_str()).unwrap_or(target_clean);
-                    let mut text = format!(
-                        "distributed lane: federated hub ({}) on machine: {}\n---\n{}",
-                        if ok { "OK" } else { "FAILED" },
-                        mach,
-                        out.trim()
-                    );
-                    if text.len() > 8000 {
-                        text.truncate(8000);
-                        text.push_str("\n…[truncated]");
-                    }
-                    return (text, !ok);
+        let model = arg_str(args, "model");
+        let system = arg_str(args, "system");
+        let model_used = model
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| crate::chat::preferred_model(&crate::chat::router_models()));
+        match crate::chat::chat_completion(prompt, model, system) {
+            Ok(content) => {
+                let mut out = format!("model: {model_used}\n---\n{content}");
+                if out.len() > 16_000 {
+                    out.truncate(16_000);
+                    out.push_str("\n…[truncated]");
                 }
-
-                // 2. Fallback to local federated shell execution (e.g. direct SSH if configured)
-                let machines = crate::fed_shell::discover_machines(&self.cfg.device_name, &[], &[]);
-                if let Some(m) = crate::fed_shell::resolve_machine(target_clean, &machines) {
-                    if !m.is_local {
-                        let outcome = crate::fed_shell::exec_federated(
-                            &cmd_to_run,
-                            &format!("~/{}", m.name),
-                            &machines,
-                            timeout,
-                        );
-                        let mut out = format!(
-                            "distributed lane: {} ({}) on machine: {} [tier: {}]\narch: {} · lkgl: {}\n---\n{}",
-                            m.kind,
-                            if outcome.ok { "OK" } else { "FAILED" },
-                            m.name,
-                            m.compute_tier,
-                            m.arch,
-                            m.lkgl,
-                            outcome.output.trim()
-                        );
-                        if out.len() > 8000 {
-                            out.truncate(8000);
-                            out.push_str("\n…[truncated]");
-                        }
-                        return (out, !outcome.ok);
-                    }
-                }
+                (out, false)
             }
+            Err(e) => (format!("chat failed (model {model_used}): {e}"), true),
         }
-
-        // Local execution anchored to LKGL if not explicitly overridden
-        // (no router spawn/ensure here — passive probe happens in the executor).
-        let workdir = match arg_str(args, "workdir") {
-            Some(d) if !d.trim().is_empty() => d.to_string(),
-            _ => crate::fed_shell::get_machine_lkgl(repo)
-                .or_else(|| crate::fed_shell::get_machine_lkgl(&self.cfg.device_name))
-                .unwrap_or_else(|| {
-                    std::env::current_dir()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| "/tmp".into())
-                }),
-        };
-        let name = crate::executor::session_name(&format!(
-            "{repo}-{}",
-            crate::executor::slugify(arg_str(args, "label").unwrap_or("task"))
-        ));
-        let agent = arg_str(args, "agent").unwrap_or("auto");
-        let fleet_enabled = args.get("fleet_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-        let outcome = crate::executor::run_in_tmux_with_options(&name, &workdir, prompt, timeout, agent, fleet_enabled);
-        let mut out = format!(
-            "lane: {} — {}\nsession: {} (tmux attach -t {})\ntrace: {}\n---\n{}",
-            outcome.cli,
-            if outcome.ok { "OK" } else { "FAILED" },
-            name,
-            name,
-            outcome.trace.join(" | "),
-            outcome.output.trim()
-        );
-        if out.len() > 8000 {
-            out.truncate(8000);
-            out.push_str("\n…[truncated — full log in the tmux session]");
-        }
-        (out, !outcome.ok)
     }
 
-    /// chat_sessions: list this machine's wtf-chat-* tmux sessions.
-    fn tool_chat_sessions(&self) -> (String, bool) {
-        let list = crate::executor::list_sessions();
-        if list.is_empty() {
-            return ("no wtf-chat-* tmux sessions on this machine".into(), false);
-        }
-        let mut out = String::new();
-        for s in list {
-            let name = s.get("session").and_then(|v| v.as_str()).unwrap_or("?");
-            let attached = s.get("attached").and_then(|v| v.as_bool()).unwrap_or(false);
-            out.push_str(&format!(
-                "{}{}\n",
-                name,
-                if attached { " [attached]" } else { "" }
-            ));
-        }
-        (out, false)
-    }
-
-    /// chat_session_lifecycle { session, action, workdir? }: open / close /
-    /// reconnect / delete an executor tmux session (wtf-chat-* only). The
-    /// lifecycle contract for every agent connection: open on work start,
-    /// close/delete when done, reconnect on a hung pane.
+    /// router_status: PASSIVE read-only probe of the operator-run local-router
+    /// (127.0.0.1:11434). Never spawns, ensures, or restarts anything.
     fn tool_router_status(&self, _args: &Value) -> (String, bool) {
         // Passive read-only probe — never spawn/ensure/restart (2026-09-04).
-        let state = crate::executor::router_state_json();
+        let state = crate::chat::router_state_json();
         let alive = state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
         let endpoint = state.get("endpoint").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:11434/v1");
         let model = state.get("target_model").and_then(|v| v.as_str()).unwrap_or("local-router/fallback-models");
@@ -2319,59 +2070,6 @@ impl Bridge {
             state.to_json()
         );
         (text, !alive)
-    }
-
-    fn tool_chat_session_lifecycle(&self, args: &Value) -> (String, bool) {
-        let Some(session) = arg_str(args, "session") else {
-            return ("missing required argument: session".into(), true);
-        };
-        let Some(action) = arg_str(args, "action") else {
-            return ("missing required argument: action".into(), true);
-        };
-        let name = if session.starts_with(crate::executor::SESSION_PREFIX) {
-            session.to_string()
-        } else {
-            format!("{}-{}", crate::executor::SESSION_PREFIX, crate::executor::slugify(session))
-        };
-        if !name.starts_with("wtf-chat-") || name.len() > 48 {
-            return (format!("invalid session name: {name} (wtf-chat-* only)"), true);
-        }
-        let tmux = |a: &[&str]| -> bool {
-            std::process::Command::new("tmux").args(a).status().map(|s| s.success()).unwrap_or(false)
-        };
-        let exists = tmux(&["has-session", "-t", &name]);
-        match action {
-            "open" => {
-                if exists {
-                    return (format!("{name}: already open (live)"), false);
-                }
-                let wd = arg_str(args, "workdir").unwrap_or(".");
-                let ok = tmux(&["new-session", "-d", "-s", &name, "-c", wd]);
-                if ok { (format!("{name}: opened (workdir {wd})"), false) } else { (format!("{name}: open failed (tmux missing?)"), true) }
-            }
-            "close" => {
-                if !exists { return (format!("{name}: not running"), false); }
-                tmux(&["send-keys", "-t", &name, "C-d"]);
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                let gone = !tmux(&["has-session", "-t", &name]);
-                if !gone { let _ = tmux(&["kill-session", "-t", &name]); }
-                (format!("{name}: closed"), false)
-            }
-            "reconnect" => {
-                if exists { let _ = tmux(&["kill-session", "-t", &name]); }
-                let wd = arg_str(args, "workdir").unwrap_or(".");
-                let ok = tmux(&["new-session", "-d", "-s", &name, "-c", wd]);
-                if ok { (format!("{name}: reconnected (fresh session, workdir {wd})"), false) } else { (format!("{name}: reconnect failed"), true) }
-            }
-            "delete" => {
-                if exists { let _ = tmux(&["kill-session", "-t", &name]); }
-                let slug = crate::executor::slugify(&name);
-                let _ = std::fs::remove_file(format!("/tmp/wtf-chat-exec-{slug}.log"));
-                let _ = std::fs::remove_file(format!("/tmp/wtf-chat-exec-{slug}.code"));
-                (format!("{name}: deleted (session + exec state)"), false)
-            }
-            other => (format!("invalid action: {other} (open|close|reconnect|delete)"), true),
-        }
     }
 }
 

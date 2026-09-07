@@ -576,7 +576,7 @@ impl Store {
                 ),
             ),
             ("sessions", self.sessions_v()),
-            ("router", crate::executor::router_state_json()),
+            ("router", crate::chat::router_state_json()),
         ])
     }
 

@@ -125,27 +125,10 @@ button.primary:hover{opacity:.9}
         <div class="dim">select or create a chat lane above to begin</div>
       </div>
       <div class="bar">
-        <select id="agent-select" style="font-size:11px">
-          <option value="auto">⚡ Auto Fallback (dsh → omp → hermes)</option>
-          <option value="fleet">🤖 SWE-bench Fleet (Trae + Mini)</option>
-          <option value="dsh">DeepSeek Harness (dsh)</option>
-          <option value="omp">OhMyPy (omp)</option>
-          <option value="hermes">Hermes Agent</option>
-          <option value="free-claude-code">Claude Code / FCC</option>
-          <option value="trae-cli">Trae-CLI (AST Refactoring Master)</option>
-          <option value="mini">Mini-SWE (TDD Reproduction Engineer)</option>
-          <option value="codex">Codex CLI</option>
-          <option value="opencode">OpenCode CLI</option>
-          <option value="aider">Aider CLI</option>
-          <option value="cline">Cline CLI</option>
-          <option value="pi">Pi Coding Agent</option>
-        </select>
-        <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="fleet-toggle" checked/> Fleet</label>
-        <span class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px" title="Router model when :11434 is up (prefers llama.cpp qwen3 abliterated); harnesses otherwise use host config">model: host config / :11434 preferred</span>
-        <button id="btn-run-agent" class="primary" style="margin-left:auto;font-size:11px">⚡ Run Agent</button>
-        <button id="btn-post-msg" style="font-size:11px">💬 Post</button>
+        <span class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px" title="OpenAI-compatible chat via the operator-run local-router (127.0.0.1:11434/v1); model auto-discovered (llama.cpp qwen3 abliterated first)">chat: local-router :11434/v1</span>
+        <button id="btn-run-agent" class="primary" style="margin-left:auto;font-size:11px">⚡ Chat</button>
       </div>
-      <textarea id="chat-input" rows="2" placeholder="Type instructions for agents across machines, or message to lane... (Enter dispatches agent)"></textarea>
+      <textarea id="chat-input" rows="2" placeholder="Chat with the local-router brain… (Enter sends; wtf never spawns router infra)"></textarea>
     </div>
 
     <!-- Federated Shell -->
@@ -396,7 +379,7 @@ async function loadLaneChat(id){
       const j = await r.json();
       const msgs = j.msgs || [];
       if(!msgs.length){
-        feed.innerHTML = '<div class="dim">no messages in this lane yet. Type below to dispatch agents or post messages.</div>';
+        feed.innerHTML = '<div class="dim">no messages in this lane yet. Lane view is read-only from the dashboard; the chat box talks to the local-router.</div>';
       } else {
         feed.innerHTML = msgs.map(m=>{
           const isAgent = m.sender && (m.sender.includes("agent") || m.sender.includes("cli"));
@@ -414,46 +397,50 @@ async function loadLaneChat(id){
   }
 }
 
-// Run Agent Dispatch
-async function runAgent(){
+// Router Chat (v0.16.0): one OpenAI completion via the operator-run
+// local-router. The hub is an authenticated thin proxy — it never spawns
+// router infra; a down router surfaces as an error, never a restart.
+async function sendChat(){
   const input = document.getElementById("chat-input");
   const promptText = input.value.trim();
   if(!promptText) return;
-  if(!currentLaneId){alert("Please select or create a lane first.");return;}
-  
-  const sess = currentSessions.find(s=>s.id === currentLaneId);
-  const slug = (sess && sess.name ? sess.name : currentLaneId).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,24)||"task";
-  const termName = "wtf-chat-" + slug;
-  
-  const agentChoice = document.getElementById("agent-select").value;
-  const fleetOn = document.getElementById("fleet-toggle").checked;
   const stat = document.getElementById("chat-stat");
-  stat.textContent = "running " + agentChoice + "…";
-  
+  const feed = document.getElementById("chat-feed");
+  stat.textContent = "chatting with local-router…";
+  const msgDiv = document.createElement("div");
+  msgDiv.className = "m agent-msg";
+  msgDiv.innerHTML = '<div class="mtop"><b>you</b><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(promptText)+'</pre>';
+  feed.appendChild(msgDiv);
+  feed.scrollTop = feed.scrollHeight;
   try{
-    const r = await fetch("/api/v1/term/"+termName+"?"+AUTH, {
+    const r = await fetch("/api/v1/chat/completions?"+AUTH, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({prompt: promptText, agent: agentChoice, fleet: fleetOn})
+      body: JSON.stringify({prompt: promptText})
     });
     const j = await r.json();
-    stat.textContent = j.ok ? ("completed (" + j.cli + ")") : ("failed (" + (j.error || j.cli) + ")");
     input.value = "";
-    if(j.output){
-      const feed = document.getElementById("chat-feed");
-      const msgDiv = document.createElement("div");
-      msgDiv.className = "m agent-msg";
-      msgDiv.innerHTML = '<div class="mtop"><b>'+esc(j.cli)+'</b><span>(exit '+(j.ok?'0':'fail')+')</span><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(j.output)+'</pre>';
-      feed.appendChild(msgDiv);
+    if(j.ok){
+      stat.textContent = "replied via " + (j.model || "router");
+      const rep = document.createElement("div");
+      rep.className = "m agent-msg";
+      rep.innerHTML = '<div class="mtop"><b>local-router ('+esc(j.model||"")+')'+ '</b><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(j.content||"")+'</pre>';
+      feed.appendChild(rep);
+      feed.scrollTop = feed.scrollHeight;
+    } else {
+      stat.textContent = "failed: " + (j.error || ("HTTP "+r.status));
+      const rep = document.createElement("div");
+      rep.className = "m";
+      rep.innerHTML = '<div class="mtop"><b>router</b></div><pre>'+esc(j.error||("HTTP "+r.status))+'</pre>';
+      feed.appendChild(rep);
       feed.scrollTop = feed.scrollHeight;
     }
-    setTimeout(()=>loadLaneChat(currentLaneId), 600);
   }catch(e){
     stat.textContent = "error: " + e.message;
   }
 }
 
-document.getElementById("btn-run-agent").addEventListener("click", runAgent);
+document.getElementById("btn-run-agent").addEventListener("click", sendChat);
 
 // Router restart button removed (operator directive 2026-09-04): the hub
 // never starts, stops, or restarts local-router / fcc-server — it only
@@ -472,28 +459,10 @@ if(routerPill){
   });
 }
 
-document.getElementById("btn-post-msg").addEventListener("click", async ()=>{
-  const input = document.getElementById("chat-input");
-  const text = input.value.trim();
-  if(!text || !currentLaneId) return;
-  const sess = currentSessions.find(s=>s.id === currentLaneId);
-  const slug = (sess && sess.name ? sess.name : currentLaneId).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,24)||"task";
-  const termName = "wtf-chat-" + slug;
-  try{
-    await fetch("/api/v1/term/"+termName+"?"+AUTH, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({keys: text})
-    });
-    input.value = "";
-    setTimeout(()=>loadLaneChat(currentLaneId), 500);
-  }catch(e){alert(e.message);}
-});
-
 document.getElementById("chat-input").addEventListener("keydown", (e)=>{
   if(e.key === "Enter" && !e.shiftKey){
     e.preventDefault();
-    runAgent();
+    sendChat();
   }
 });
 
@@ -795,31 +764,9 @@ function copyBin(id){
   else{ta.select();document.execCommand("copy");done();}
 }
 
-async function loadAvailableAgents(){
-  try{
-    const r = await fetch("/api/v1/agents/available?"+AUTH);
-    if(r.ok){
-      const j = await r.json();
-      const agents = j.agents || [];
-      const sel = document.getElementById("agent-select");
-      for(const opt of sel.options){
-        const found = agents.find(a=>a.id === opt.value);
-        if(found){
-          if(found.installed){
-            opt.textContent = "✓ " + found.name;
-          } else {
-            opt.textContent = "· " + found.name + " (not detected)";
-          }
-        }
-      }
-    }
-  }catch(e){}
-}
-
 function boot(){
   buildBins();
   loadMachines();
-  loadAvailableAgents();
   fetch("/api/v1/state?"+AUTH)
     .then(r=>{if(!r.ok)throw 0;return r.json();})
     .then(render)
