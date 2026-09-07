@@ -91,7 +91,6 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/shell/config"
             | "/api/v1/shell/exec"
             | "/api/v1/router/status"
-            | "/api/v1/router/restart"
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
@@ -125,7 +124,6 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
         ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
         ("GET", "/api/v1/router/status") => HandlerResult::Respond(router_status(hub, req)),
-        ("POST", "/api/v1/router/restart") => HandlerResult::Respond(router_restart(hub, req)),
         ("GET", "/api/v1/agents/available") => HandlerResult::Respond(agents_available(hub, req)),
         (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
             HandlerResult::Respond(term(hub, req))
@@ -1472,40 +1470,8 @@ fn router_status(hub: &Arc<Hub>, req: &Request) -> Response {
     if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
         return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
-    let mut state = crate::executor::router_state_json();
-    let alive = state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !alive {
-        let _ = crate::executor::router_ensure();
-        state = crate::executor::router_state_json();
-    }
-    Response::json(200, &state)
-}
-
-fn router_restart(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "provide ?cap=<capability> or device auth headers");
-    }
-    let res = crate::executor::router_restart();
-    let ok = res.is_ok();
-    let d_auth = device_auth(hub, req);
-    let actor = if cap_ok(hub, req) {
-        "operator"
-    } else if let Ok(ref d) = d_auth {
-        d.as_str()
-    } else {
-        "unknown"
-    };
-    let dev = if hub.fed_name.is_empty() { "hub" } else { &hub.fed_name };
-    hub.store.log_event(
-        dev,
-        "wtf-hub",
-        if ok { "info" } else { "warn" },
-        &format!("local-router restart triggered by {actor}: {}", match &res {
-            Ok(msg) => msg.as_str(),
-            Err(e) => e.as_str(),
-        }),
-        "",
-    );
+    // Passive read-only probe (operator directive 2026-09-04): never spawn,
+    // ensure, or restart local-router / fcc-server from this hub.
     let state = crate::executor::router_state_json();
     Response::json(200, &state)
 }
@@ -1714,6 +1680,7 @@ mod tests {
 
     #[test]
     fn identity_persistence_and_rehydration() {
+        let _env = crate::util::test_env_lock(); // WTF_HOME is process-global
         let tmp = format!("/tmp/wtf-test-identities-{}", crate::rand::nonce_hex());
         std::env::set_var("WTF_HOME", &tmp);
 

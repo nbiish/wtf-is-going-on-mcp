@@ -884,7 +884,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (free-claude-code → omp → hermes → trae-cli → mini → aider, first installed + exit-0 wins) with optional agent selection and Trae/Mini fleet toggle. All CLIs route through local-router/fallback-models per operator config. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
+                        "Execute a task handed to this repo's federated chat on THIS machine: opens/reuses tmux session wtf-chat-<slug> and runs the agent-CLI fallback chain (free-claude-code → omp → hermes → trae-cli → mini → aider, first installed + exit-0 wins) with optional agent selection and Trae/Mini fleet toggle. Harnesses must be pre-installed by the operator; when the operator-run local-router answers on :11434 CLIs inherit its proxy env, otherwise they run with their own configuration. This system never spawns local-router/fcc-server. The tmux session persists — attach with `tmux attach -t <name>` to watch the work live. The result names the lane that ran.",
                     ),
                 ),
                 (
@@ -960,16 +960,11 @@ impl Bridge {
             Value::obj(vec![
                 ("name", Value::from("router_status")),
                 ("description", Value::from(
-                    "Check health of the machine's local-router proxy (http://127.0.0.1:11434/v1). If disconnected, automatically attempts restart and reconnection to ensure all agent inference paths are active.",
+                    "Passive health probe of the machine's local-router proxy (http://127.0.0.1:11434/v1). Read-only: this system never starts, stops, or restarts local-router/fcc-server — that infrastructure is operator-installed and operator-run.",
                 )),
                 ("inputSchema", Value::obj(vec![
                     ("type", Value::from("object")),
-                    ("properties", Value::obj(vec![
-                        ("restart", Value::obj(vec![
-                            ("type", Value::from("boolean")),
-                            ("description", Value::from("force a restart of local-router even if alive")),
-                        ])),
-                    ])),
+                    ("properties", Value::obj(vec![])),
                     ("additionalProperties", Value::from(false)),
                 ])),
             ]),
@@ -2251,9 +2246,7 @@ impl Bridge {
         }
 
         // Local execution anchored to LKGL if not explicitly overridden
-        if !crate::executor::router_alive() {
-            let _ = crate::executor::router_ensure();
-        }
+        // (no router spawn/ensure here — passive probe happens in the executor).
         let workdir = match arg_str(args, "workdir") {
             Some(d) if !d.trim().is_empty() => d.to_string(),
             _ => crate::fed_shell::get_machine_lkgl(repo)
@@ -2310,13 +2303,8 @@ impl Bridge {
     /// reconnect / delete an executor tmux session (wtf-chat-* only). The
     /// lifecycle contract for every agent connection: open on work start,
     /// close/delete when done, reconnect on a hung pane.
-    fn tool_router_status(&self, args: &Value) -> (String, bool) {
-        let force_restart = args.get("restart").and_then(|v| v.as_bool()).unwrap_or(false);
-        if force_restart {
-            let _ = crate::executor::router_restart();
-        } else if !crate::executor::router_alive() {
-            let _ = crate::executor::router_ensure();
-        }
+    fn tool_router_status(&self, _args: &Value) -> (String, bool) {
+        // Passive read-only probe — never spawn/ensure/restart (2026-09-04).
         let state = crate::executor::router_state_json();
         let alive = state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
         let endpoint = state.get("endpoint").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:11434/v1");

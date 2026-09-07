@@ -13,9 +13,12 @@
 //!   9. Cline `cline`
 //!   10. Pi `pi`
 //! The first CLI that is installed AND completes with exit 0 wins; every
-//! attempt is recorded so the report names the lane that ran. All CLIs are
-//! pre-configured to route through the local-router proxy (`local-router/fallback-models`
-//! on the Ollama/OpenAI/Anthropic compatible ports on 11434). Cross-platform execution
+//! attempt is recorded so the report names the lane that ran. Harnesses are
+//! trusted to be pre-installed by the operator. wtf NEVER spawns, stops, or
+//! supervises local-router / fcc-server: when the operator-run router answers
+//! on :11434, CLIs inherit the standardized proxy env; when it is down, each
+//! harness runs with its own pre-configured environment (passive probe only).
+//! Cross-platform execution
 //! supports native tmux, WSL Ubuntu tmux, and direct process fallback.
 
 use crate::json::Value;
@@ -374,59 +377,11 @@ pub fn router_alive() -> bool {
     state.get("alive").and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
-pub fn run_host_cmd(cmd: &str) -> std::io::Result<std::process::Output> {
-    if cfg!(windows) && detect_backend() == TerminalBackend::WslTmux {
-        Command::new("wsl")
-            .args(["-d", "Ubuntu", "-e", "bash", "-c", cmd])
-            .output()
-    } else if cfg!(windows) {
-        Command::new("powershell")
-            .args(["-NoProfile", "-Command", cmd])
-            .output()
-    } else {
-        Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .output()
-    }
-}
-
-pub fn router_ensure() -> Result<String, String> {
-    invalidate_router_cache();
-    if router_alive() {
-        return Ok("running".into());
-    }
-    let cmd = "export PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\"; if command -v local-router >/dev/null 2>&1; then local-router ensure; elif [ -f /mnt/d/Code/local-router/bin/local-router.js ]; then node /mnt/d/Code/local-router/bin/local-router.js ensure; fi";
-    let res = run_host_cmd(cmd);
-    for _ in 0..6 {
-        std::thread::sleep(Duration::from_millis(500));
-        invalidate_router_cache();
-        if router_alive() {
-            return Ok("started_and_connected".into());
-        }
-    }
-    match res {
-        Ok(out) => {
-            let out_str = String::from_utf8_lossy(&out.stdout);
-            let err_str = String::from_utf8_lossy(&out.stderr);
-            Err(format!(
-                "local-router ensure executed (exit={}) but port 11434 not responding: {} {}",
-                out.status,
-                out_str.trim(),
-                err_str.trim()
-            ))
-        }
-        Err(e) => Err(format!("failed to execute local-router ensure: {e}")),
-    }
-}
-
-pub fn router_restart() -> Result<String, String> {
-    invalidate_router_cache();
-    let stop_cmd = "export PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\"; if command -v local-router >/dev/null 2>&1; then local-router stop 2>&1 || true; elif [ -f /mnt/d/Code/local-router/bin/local-router.js ]; then node /mnt/d/Code/local-router/bin/local-router.js stop 2>&1 || true; fi";
-    let _ = run_host_cmd(stop_cmd);
-    std::thread::sleep(Duration::from_millis(300));
-    router_ensure()
-}
+// Operator directive (2026-09-04): NO spawn/supervise path exists here.
+// `router_ensure` / `router_restart` / `run_host_cmd` were removed — the
+// executor only PASSIVELY probes :11434 (read-only HTTP GET). Starting,
+// stopping, or restarting local-router / fcc-server is exclusively the
+// operator's job; spawning our own copy corrupted operator terminals.
 
 pub fn tmux_has_session(name: &str) -> bool {
     match detect_backend() {
@@ -539,11 +494,8 @@ pub fn run_in_tmux_with_options(
     fleet_enabled: bool,
 ) -> ChainOutcome {
     let mut trace = Vec::new();
-    let mut router = router_alive();
-    if !router {
-        let _ = router_ensure();
-        router = router_alive();
-    }
+    // Passive probe only — never spawn/ensure the router (operator directive).
+    let router = router_alive();
     trace.push(format!(
         "router:{}",
         if router {
@@ -616,8 +568,22 @@ pub fn run_in_tmux_with_options(
             continue;
         };
 
-        // Standardized environment variables routing all agents to local-router/fallback-models on 11434
-        let env_prefix = "export PATH=\"$HOME/.local/bin:$PATH\" ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=local-router CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000 DISABLE_AUTOUPDATER=1 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=local-router OPENAI_API_BASE=http://127.0.0.1:11434/v1 OLLAMA_HOST=http://127.0.0.1:11434 MODEL=local-router/fallback-models HERMES_OPENAI_BASE_URL=http://127.0.0.1:11434/v1 HERMES_MODEL=local-router/fallback-models NONINTERACTIVE=1;";
+        // Routing env is conditional (operator directive 2026-09-04): when the
+        // operator-run router answers on :11434, CLIs inherit the standardized
+        // local-router proxy env; when it is down, harnesses run with their own
+        // pre-configured environment (e.g. dsh on another machine, fcc-server
+        // config, or provider defaults). We only ever probe — never spawn.
+        let env_prefix = if router {
+            "export PATH=\"$HOME/.local/bin:$PATH\" ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=local-router CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000 DISABLE_AUTOUPDATER=1 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=local-router OPENAI_API_BASE=http://127.0.0.1:11434/v1 OLLAMA_HOST=http://127.0.0.1:11434 MODEL=local-router/fallback-models HERMES_OPENAI_BASE_URL=http://127.0.0.1:11434/v1 HERMES_MODEL=local-router/fallback-models NONINTERACTIVE=1;"
+                .to_string()
+        } else {
+            // Router down: trust each harness's own configuration verbatim.
+            "export PATH=\"$HOME/.local/bin:$PATH\" NONINTERACTIVE=1;".to_string()
+        };
+        trace.push(format!(
+            "route:{}",
+            if router { "local-router" } else { "harness-own" }
+        ));
 
         let slug = slugify(name);
         let run_line = format!(
@@ -658,16 +624,18 @@ pub fn run_in_tmux_with_options(
                 cmd.args(cand.pre.split_whitespace())
                     .arg(prompt)
                     .current_dir(workdir)
-                    .env("NONINTERACTIVE", "1")
-                    .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:11434")
-                    .env("ANTHROPIC_AUTH_TOKEN", "local-router")
-                    .env("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
-                    .env("OPENAI_API_KEY", "local-router")
-                    .env("OPENAI_API_BASE", "http://127.0.0.1:11434/v1")
-                    .env("OLLAMA_HOST", "http://127.0.0.1:11434")
-                    .env("MODEL", "local-router/fallback-models")
-                    .env("HERMES_OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
-                    .env("HERMES_MODEL", "local-router/fallback-models");
+                    .env("NONINTERACTIVE", "1");
+                if router {
+                    cmd.env("ANTHROPIC_BASE_URL", "http://127.0.0.1:11434")
+                        .env("ANTHROPIC_AUTH_TOKEN", "local-router")
+                        .env("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+                        .env("OPENAI_API_KEY", "local-router")
+                        .env("OPENAI_API_BASE", "http://127.0.0.1:11434/v1")
+                        .env("OLLAMA_HOST", "http://127.0.0.1:11434")
+                        .env("MODEL", "local-router/fallback-models")
+                        .env("HERMES_OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+                        .env("HERMES_MODEL", "local-router/fallback-models");
+                } // else: harness runs with its own operator-managed config.
                 let outcome = cmd.output();
                 let (code_str, output) = match outcome {
                     Ok(o) => {
@@ -816,5 +784,19 @@ mod tests {
         assert!(ALL_AGENTS.iter().any(|a| a.id == "free-claude-code"));
         assert!(ALL_AGENTS.iter().any(|a| a.id == "trae-cli"));
         assert!(ALL_AGENTS.iter().any(|a| a.id == "mini"));
+    }
+
+    /// Operator directive (2026-09-04): the executor must never spawn, stop,
+    /// or restart local-router / fcc-server. Guard the catalog against a
+    /// regression that smuggles lifecycle commands into a harness launch line.
+    #[test]
+    fn agent_launch_lines_never_lifecycle_router_infra() {
+        for a in ALL_AGENTS {
+            assert!(
+                !a.pre.contains("local-router ensure") && !a.pre.contains("local-router stop"),
+                "{} launch line must not lifecycle router infra",
+                a.id
+            );
+        }
     }
 }

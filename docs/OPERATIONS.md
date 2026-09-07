@@ -37,6 +37,11 @@ keys together, never "merge" by packing one key.
 
 ## 4. Router lifecycle (always-route contract)
 
+- **Operator-run only (2026-09-04 directive):** `wtf` (hub, MCP bridge,
+  dashboard, executor) NEVER spawns, stops, or restarts `local-router` /
+  `fcc-server`. It only passively probes :11434 for status display. Router
+  down ⇒ the OPERATOR starts it (`local-router start`); dispatched agent
+  harnesses then simply run with their own pre-installed configuration.
 - The ollama shim at `~/.local/bin/ollama` probes
   `http://127.0.0.1:11434/api/version` on EVERY invocation. Router down ⇒
   start detached (`local-router start`), wait ≤10s, proceed.

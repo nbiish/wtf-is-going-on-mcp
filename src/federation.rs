@@ -232,6 +232,7 @@ mod tests {
 
     #[test]
     fn ensure_name_is_stable() {
+        let _env = crate::util::test_env_lock(); // WTF_HOME is process-global
         let d = std::env::temp_dir().join(format!(
             "wtf-fed-name-{}-{}",
             std::process::id(),

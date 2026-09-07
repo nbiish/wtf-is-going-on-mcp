@@ -1,0 +1,6 @@
+# Team ledger 2026-09-07 20-10 (UTC) — feat/no-local-fcc-spawn
+
+start: 2026-09-07T20:10:19Z agent:claude-worktree-1 parent:none branch:feat/no-local-fcc-spawn
+checkin: scope=remove in-process local-router/fcc-server spawn+supervision; passive probe only; harnesses trusted pre-installed
+update: 2026-09-07T20:19:20Z removed router_ensure/router_restart/run_host_cmd, serve supervisor thread, POST /api/v1/router/restart, dashboard restart button + auto-reconnect, chat_run/router_status auto-ensure; env injection toward :11434 now conditional (route:harness-own fallback); flaky WTF_HOME test race fixed via util::test_env_lock; 113 unit + 14 e2e green (3x)
+intent-merge: 2026-09-07T20:19:20Z branch=feat/no-local-fcc-spawn scope=src/{executor,main,api,mcp,dashboard,federation,util}.rs tests/e2e.rs llms.txt src/llms.txt docs/{ROADMAP,OPERATIONS}.md .agents/{comms,tasks}

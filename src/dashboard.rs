@@ -93,7 +93,7 @@ button.primary:hover{opacity:.9}
   <h1>WTF IS GOING ON</h1>
   <span id="meta" class="dim">connecting…</span>
   <span id="cap-url-chip" class="cap-badge" title="Click to copy singular dashboard URL">📋 copy url</span>
-  <span id="router-status-pill" class="pill ok" style="cursor:pointer" title="Local Router Proxy: http://localhost:11434/v1 (click to test/reconnect)">● router :11434</span>
+  <span id="router-status-pill" class="pill ok" style="cursor:pointer" title="Local Router Proxy: http://localhost:11434/v1 (click to re-probe)">● router :11434</span>
   <span id="conn" class="dot" title="live stream"></span>
 </header>
 
@@ -109,7 +109,7 @@ button.primary:hover{opacity:.9}
       <div class="bar" id="router-status-bar" style="align-items:center;margin:2px 0 6px 0;font-size:11px;background:rgba(88,166,255,0.06);padding:3px 8px;border-radius:4px;border:1px solid var(--edge)">
         <span id="router-status-indicator" class="pill ok" style="font-size:10px">● local-router :11434</span>
         <span id="router-model-info" class="dim" style="margin-left:8px;font-size:10px">http://localhost:11434/v1 · fallback-models</span>
-        <button id="btn-router-restart" class="sess-bin-btn" style="margin-left:auto" title="Trigger supervisor ensure / restart">🔄 Restart Router</button>
+        <span class="dim" style="margin-left:auto;font-size:10px" title="Operator-run infrastructure: wtf only passively probes :11434">operator-run router</span>
       </div>
       <div class="bar">
         <label class="dim" style="font-size:11px">Lane:</label>
@@ -291,7 +291,7 @@ function render(s){
   if(s.bin_scopes) updateScopeDropdown(s.bin_scopes);
   if(currentBinScope === "user") renderBins(s.bins, now);
 
-  // Local Router Status Supervision
+  // Local Router Status (passive probe — wtf never spawns/restarts the router)
   if(s.router){
     const alive = !!s.router.alive;
     const rp = document.getElementById("router-status-pill");
@@ -303,22 +303,14 @@ function render(s){
     if(rp){
       rp.className = pillCls;
       rp.textContent = pillText;
-      rp.title = "Local Router: " + (alive ? ("Connected to " + (s.router.endpoint || "11434") + " (" + count + " models)") : "Disconnected — click to reconnect");
+      rp.title = "Local Router: " + (alive ? ("Connected to " + (s.router.endpoint || "11434") + " (" + count + " models)") : "Offline — operator-run router not detected. Start it yourself; wtf never spawns it (passive probe only)");
     }
     if(ri){
       ri.className = pillCls;
-      ri.textContent = alive ? ("● connected (" + count + " models)") : "○ offline (reconnecting)";
+      ri.textContent = alive ? ("● connected (" + count + " models)") : "○ offline (operator-run)";
     }
     if(rm){
-      rm.textContent = alive ? ("http://localhost:11434/v1 · " + (s.router.target_model || "local-router/fallback-models")) : "offline — attempting supervisor restart…";
-    }
-    // Auto-reconnect if offline
-    if(!alive && !window._routerReconnecting){
-      window._routerReconnecting = true;
-      fetch("/api/v1/router/status?"+AUTH).then(r=>r.json()).then(r=>{
-        window._routerReconnecting = false;
-        if(r && r.alive) fetch("/api/v1/state?"+AUTH).then(res=>res.json()).then(render);
-      }).catch(()=>{ window._routerReconnecting = false; });
+      rm.textContent = alive ? ("http://localhost:11434/v1 · " + (s.router.target_model || "local-router/fallback-models")) : "offline — start local-router/fcc-server yourself; agents fall back to their own harness config";
     }
   }
 }
@@ -462,23 +454,9 @@ async function runAgent(){
 
 document.getElementById("btn-run-agent").addEventListener("click", runAgent);
 
-const btnRouterRestart = document.getElementById("btn-router-restart");
-if(btnRouterRestart){
-  btnRouterRestart.addEventListener("click", async ()=>{
-    btnRouterRestart.textContent = "⏳ Restarting…";
-    try {
-      const res = await fetch("/api/v1/router/restart?"+AUTH, {method:"POST"});
-      const data = await res.json();
-      btnRouterRestart.textContent = data.alive ? "✅ Connected" : "⚠️ Offline";
-      setTimeout(()=>{ btnRouterRestart.textContent = "🔄 Restart Router"; }, 2000);
-      const stateRes = await fetch("/api/v1/state?"+AUTH);
-      render(await stateRes.json());
-    } catch(e) {
-      btnRouterRestart.textContent = "❌ Failed";
-      setTimeout(()=>{ btnRouterRestart.textContent = "🔄 Restart Router"; }, 2000);
-    }
-  });
-}
+// Router restart button removed (operator directive 2026-09-04): the hub
+// never starts, stops, or restarts local-router / fcc-server — it only
+// passively probes :11434 for the status pill below.
 
 const routerPill = document.getElementById("router-status-pill");
 if(routerPill){

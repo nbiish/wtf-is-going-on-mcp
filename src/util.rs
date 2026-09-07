@@ -182,3 +182,13 @@ mod tests {
         assert_eq!(clamp("hi", 10), "hi");
     }
 }
+
+/// Serialize tests that mutate the process-global `WTF_HOME` env var.
+/// `std::env` is process-global: parallel tests setting/restoring it race
+/// (observed: `federation::ensure_name_is_stable` read another test's temp
+/// home mid-run and compared two different hub names). Test-infra only.
+#[cfg(test)]
+pub fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}

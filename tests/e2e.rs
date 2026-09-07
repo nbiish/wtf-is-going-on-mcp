@@ -2726,9 +2726,11 @@ fn federated_shell_and_singular_capability_dashboard_end_to_end() {
     let unauth_router = wtf::client::request(&format!("{url}/api/v1/router/status"), "GET", &[], b"").unwrap();
     assert_eq!(unauth_router.status, 401, "unauthorized router status must be 401");
 
-    // Security negative: unauthorized router restart request without cap
-    let unauth_restart = wtf::client::request(&format!("{url}/api/v1/router/restart"), "POST", &[], b"").unwrap();
-    assert_eq!(unauth_restart.status, 401, "unauthorized router restart must be 401");
+    // Route retired (operator directive 2026-09-04: the hub never spawns,
+    // stops, or restarts local-router/fcc-server): POST /api/v1/router/restart
+    // must behave like any unknown path — uniform 404, even with capability.
+    let retired_restart = wtf::client::request(&format!("{url}/api/v1/router/restart?cap={cap}"), "POST", &[], b"").unwrap();
+    assert_eq!(retired_restart.status, 404, "router restart route must be retired (uniform 404)");
 
     // Cleanup
     let _ = hub.kill();
