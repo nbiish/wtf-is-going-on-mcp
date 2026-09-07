@@ -141,3 +141,51 @@ What would this governance / sovereignty master suggest? Require the peer to con
 What would this terminal-orchestration / swe-bench master suggest? Dispatch per-machine update runs through chat_run with machine targeting and collect receipts.
 What would this master-orchestrator / self-prompting master suggest? Treat cross-machine update as one repeatable procedure in the skill, verified end to end.
 What would this developer-experience / ergonomics master suggest? Keep the procedure one command per machine with a short verification checklist.
+
+## 2026-09-05T01:44:03Z
+backport ainish-coder's Dispatch Protocol v3 AGENTS.md into the wtf repo as a follow-up fleet-migration task.
+What would this adversarial / security master suggest? The sync diff is docs-only with no secrets; keep gitnexus packs gitignored as policy demands.
+What would this privacy / data-protection regulatory master suggest? Only public skill markdown moved; no keys, tasks, or transcripts crossed repos.
+What would this supply-chain / third-party-risk master suggest? Every ingested pack is byte-identical to its upstream source, verifiable by diff at any time.
+What would this systems-architecture / devops / infrastructure master suggest? Docs-only change logged no-rebuild-needed; the live hub healthz stayed green throughout.
+What would this reliability / verification master suggest? All five synced packs verified byte-identical and the 27-pack count confirmed on main.
+What would this governance / sovereignty master suggest? Full checkin-intent-merge-checkout lifecycle recorded in both repos' ledgers, worktree ownership verified before removal.
+What would this terminal-orchestration / swe-bench master suggest? No fleet dispatch was needed; the sync was direct orchestrator work in an isolated worktree.
+What would this master-orchestrator / self-prompting master suggest? Flag the AGENTS.md v2-versus-v3 drift as the next deliberate migration, not a silent overwrite.
+What would this developer-experience / ergonomics master suggest? ainish-coder now self-describes all 27 packs, so --skills-sync and --rules deploy them everywhere automatically.
+
+## 2026-09-07T20:36:49Z
+restart your Windows-side hub to pick up the rebuilt main binary.
+What would this adversarial / security master suggest? The retired restart endpoint now uniform-404s even with a valid capability token, removing an unauthenticated-trigger surface for killing operator infrastructure.
+What would this privacy / data-protection regulatory master suggest? No secrets or keys touched; the passive probe exposes only version and model counts, never credentials.
+What would this supply-chain / third-party-risk master suggest? Zero new dependencies in the zero-crate tree, and a unit-test guard now blocks router lifecycle commands from re-entering harness launch lines.
+What would this systems-architecture / devops / infrastructure master suggest? Router and fcc-server are now cleanly operator-owned infrastructure while wtf is a read-only observer, eliminating the duplicate-daemon port contention by design.
+What would this reliability / verification master suggest? A pre-existing flaky parallel WTF_HOME env race was fixed with a test-env lock, and the suite passed three consecutive full runs.
+What would this governance / sovereignty master suggest? The operator directive is recorded in llms.txt, ROADMAP, and OPERATIONS with the COMMS ledger checkin through checkout fully closed.
+What would this terminal-orchestration / swe-bench master suggest? Dispatched fleets now degrade gracefully on route:harness-own traces instead of failing against a forced dead endpoint.
+What would this master-orchestrator / self-prompting master suggest? Tell peer machines to pull main and restart their hubs so the no-spawn contract is fleet-wide.
+What would this developer-experience / ergonomics master suggest? Your terminal fcc-server usage is now never interrupted by wtf, and the dashboard offline state simply tells you to start the router yourself.
+
+## 2026-09-07T20:51:44Z
+pull main on the mac hub and restart it to adopt the no-spawn contract.
+What would this adversarial / security master suggest? Ephemeral announce credentials were burned immediately after use and a revoked-key probe confirmed fail-closed rejection.
+What would this privacy / data-protection regulatory master suggest? The device key never touched disk logs or chat output, and bridge.json was purged after the single announcement.
+What would this supply-chain / third-party-risk master suggest? Cargo.lock traveled with the version bump and zero new dependencies entered the zero-crate tree.
+What would this systems-architecture / devops / infrastructure master suggest? The hub now runs as a single operator-visible service on the fleet port with the portproxy topology intact, one rebuild at a time.
+What would this reliability / verification master suggest? Healthz, dashboard capability page, and the retired restart route were all smoke-tested against the live 0.15.3 binary before handoff.
+What would this governance / sovereignty master suggest? Every lifecycle step from checkin through checkout is recorded in the dated team ledger with the nine-master disposition.
+What would this terminal-orchestration / swe-bench master suggest? Dispatched fleet tasks now carry route traces proving which inference plane served them.
+What would this master-orchestrator / self-prompting master suggest? Watch the ring for hub-799c0c4c's version report to confirm the mac adopted v0.15.3.
+What would this developer-experience / ergonomics master suggest? The operator now sees an honest version number in healthz and the dashboard instead of a drifted const.
+
+## 2026-09-07T21:35:51Z
+pull main on the mac, restart its hub, then fire a test chat_run at it.
+What would this adversarial / security master suggest? Ephemeral announce credentials were revoked immediately and dsh's protocol-own rule keeps wtf from injecting endpoints into a PQC-managed harness.
+What would this privacy / data-protection regulatory master suggest? Model discovery reads only public model ids and the trace names lanes, never keys or user content.
+What would this supply-chain / third-party-risk master suggest? Every CLI flag was taken from each harness's own help output, zero dependencies added, and the lockfile traveled with the version bump.
+What would this systems-architecture / devops / infrastructure master suggest? One restart per merge by exact port owner, and the hub now advertises its dispatch chain through a single discovery endpoint.
+What would this reliability / verification master suggest? The chain order, model tiers, and dsh exemption are pinned by unit tests, with the suite green at 116 unit plus 14 e2e.
+What would this governance / sovereignty master suggest? The operator directive, canonical walkthrough, and never-spawn list are codified in llms.txt and both skills, ledger closed through checkout.
+What would this terminal-orchestration / swe-bench master suggest? Traces now prove which harness and which model served each task, so fleet regressions are attributable at a glance.
+What would this master-orchestrator / self-prompting master suggest? Verify hub-799c0c4c reports 0.15.4 in the ring before the first mac-to-windows dispatch.
+What would this developer-experience / ergonomics master suggest? The dashboard selector now leads with Auto dsh-omp-hermes so dispatch behavior matches the documentation exactly.

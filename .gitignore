@@ -154,14 +154,14 @@ audit.log.*
 .omp/
 
 # Agent COMMS live board — in-flight coordination, never committed.
-# The dated ledger AGENTS/{date}.COMMS.md IS committed; this sidecar is not.
-AGENTS/*.COMMS.live.md
+# The rotating team ledger .agents/comms/{date}-{time}-team.txt IS committed; this sidecar is not.
+.agents/comms/*-team.live.txt
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Project-specific patterns (preserved from existing .gitignore)
 # ═══════════════════════════════════════════════════════════════════════════
 
+AGENTS/*.COMMS.live.md
+example-repos/
 trajectories/
 
-
-example-repos/
