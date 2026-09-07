@@ -68,13 +68,13 @@ keys together, never "merge" by packing one key.
 ## 7. Singular dashboard URL & Federated Multi-Machine Shell
 
 1. Access URL: Run `wtf dashboard-url` on the hub machine to print the authoritative singular capability link (`http://<host>:<port>/w/<capability>`). Opens universally across loopback and LAN without query-string secret leakage.
-2. Embedded Chat Studio: Manage lanes and prompt SWE-bench coding fleet agents (`trae-cli`, `mini`, `omp`, `fcc`) directly from the dashboard. Dispatches execute inside isolated tmux sessions routing through `local-router:11434`.
+2. Embedded Chat Studio (v0.16.0): chat directly with the operator-run local-router (`127.0.0.1:11434/v1` OpenAI completions) from the dashboard; model auto-discovered (llama.cpp qwen3 abliterated first). Lane viewer is read-only; NO agent-harness dispatch exists in wtf anymore — run agent CLIs yourself in your own terminal/tmux.
 3. Federated Shell: Virtual cluster root (`~/`) maps to connected machines (`~/mac`, `~/windows`, `~/creeper-pi`). Execute cross-machine release orchestration in a single compound command:
    `cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test`
 
 ## 8. Federated OMP & Architecture LKGL Operations
 
-1. Federated OMP Configuration: `$WTF_HOME/fed_omp_config.json` synchronizes shared model parameters (`local-router/fallback-models`), proxy endpoint (`http://127.0.0.1:11434/v1`), and the fallback cascade (`free-claude-code → omp → trae-cli → mini` or `fleet`).
+1. Federated OMP Configuration: `$WTF_HOME/fed_omp_config.json` synchronizes shared model parameters (`local-router/fallback-models`) and proxy endpoint (`http://127.0.0.1:11434/v1`). The wtf-side executor cascade was removed in v0.16.0; agent CLIs are run by the operator/machines directly.
 2. Architecture LKGL (Last Known Good Location): `$WTF_HOME/lkgl.json` persists each machine's active repository directory across sessions. Commands executed in `~/mac` or `~/windows` automatically anchor to that architecture's native LKGL unless explicitly redirected.
 3. Multi-Architecture Execution: The federated terminal resolves the target machine and executes commands at its LKGL. Compound pipelines allow operators on any device to orchestrate cross-architecture builds, tests, and ACP fleet operations in a single prompt.
 

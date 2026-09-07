@@ -1,0 +1,6 @@
+# Team ledger 2026-09-07 22-16 (UTC) — feat/router-chat-no-harness (v0.16.0)
+
+start: 2026-09-07T22:16:29Z agent:claude-worktree-1 parent:none branch:feat/router-chat-no-harness
+checkin: scope=strip ALL agent-harness logic; wtf = hub + bridge + observability + federated lanes/shell + router chat (OpenAI completions on operator-run :11434/v1, qwen3-abliterated-first discovery); consolidate wtf* skills into singular wtf-mcp-mastery
+update: 2026-09-07T22:17:38Z executor.rs->chat.rs (probe+models+preferred_model+chat_completion); mcp 20 tools (chat_run/sessions/lifecycle -> chat; env_report trimmed to os/arch/wtf); api: /api/v1/chat/completions added, term+agents routes removed; dashboard studio = router chat pane, lane viewer read-only; skills consolidated into singular .agents/skills/wtf-mcp-mastery (wtf-agent-hub + wtf-observability removed); DOX llms.txt+src/llms.txt+OPERATIONS+FLEET+ROADMAP R7; v0.16.0; 111 unit + 14 e2e green, warnings 17=17
+intent-merge: 2026-09-07T22:17:38Z branch=feat/router-chat-no-harness scope=src/{chat,api,mcp,dashboard,main,store,lib}.rs .agents/skills/ tests/e2e.rs llms.txt src/llms.txt docs/ Cargo.{toml,lock} .agents/comms

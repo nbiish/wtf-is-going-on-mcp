@@ -6,7 +6,7 @@ Verified: 2026-09-03 (mac and windows fleet re-verified)
 
 | Machine | Host | Hub | wtf | Router | Notes |
 |---|---|---|---|---|---|
-| windows (WSL2) | Windows host LAN `192.168.1.248` (WSL NAT `172.30.170.141` behind portproxy :7800) | `hub-2538554f` :7800, bind 0.0.0.0 | v0.15.3 (passive-router no-spawn contract; singular /w/ URL, Chat Studio, Federated Shell, LKGL) | local-router v0.6.4 on 127.0.0.1:11434, loopback | single bridge; omp/hermes/fcc + ollama CLI + ACP fleet all route through :11434 |
+| windows (WSL2) | Windows host LAN `192.168.1.248` (WSL NAT `172.30.170.141` behind portproxy :7800) | `hub-2538554f` :7800, bind 0.0.0.0 | v0.16.0 (router-chat-only, harness-free; singular /w/ URL, Studio chat pane, Federated Shell, LKGL) | local-router v0.6.4 on 127.0.0.1:11434, loopback | single bridge; omp/hermes/fcc + ollama CLI + ACP fleet all route through :11434 |
 | mac | LAN `192.168.1.68` | `hub-799c0c4c` :7800 | v0.15.2 (singular /w/ URL, Chat Studio, Federated Shell, LKGL) | local-router :11434 (all-harness fallback-models) | R1 identity persistence active; trae-cli/mini dual engine; LKGL tracking |
 
 ## Federation

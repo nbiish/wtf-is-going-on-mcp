@@ -11,8 +11,9 @@
 //! - `/api/v1/{checkin,event,heartbeat}` — device auth only
 //! - `/api/v1/identity` — device auth only (register own ML-KEM-768 ek)
 //! - `/api/v1/devices` — capability OR device auth (identity registry read)
-//! - `/api/v1/agents/available` — GET: capability OR device auth
+//! - `/api/v1/chat/completions` — POST: capability OR device auth (thin authenticated
 //! - `/api/v1/sessions` — GET list: capability OR device; POST create: capability OR device
+//!   proxy to the operator-run local-router :11434/v1; fails closed 502 when down)
 //! - `/api/v1/sessions/{id}` — GET: capability OR device
 //! - `/api/v1/sessions/{id}/{join,seal,seals,send,recv}` — device auth only;
 //!   seal/seals/send/recv additionally require session membership.
@@ -85,8 +86,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
             | "/api/v1/env"
-            | "/api/v1/term"
-            | "/api/v1/agents/available"
+            | "/api/v1/chat/completions"
             | "/api/v1/shell/machines"
             | "/api/v1/shell/config"
             | "/api/v1/shell/exec"
@@ -95,8 +95,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         || req.path.starts_with("/w/")
         || bin_id_of(&req.path).is_some()
         || req.path.starts_with("/api/v1/sessions/")
-        || req.path.starts_with("/api/v1/term/")
-        || req.path == "/api/v1/agents/available";
+        || req.path == "/api/v1/chat/completions";
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => HandlerResult::Respond(healthz(hub)),
         ("GET", "/") => HandlerResult::Respond(dashboard(hub, req)),
@@ -124,10 +123,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
         ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
         ("GET", "/api/v1/router/status") => HandlerResult::Respond(router_status(hub, req)),
-        ("GET", "/api/v1/agents/available") => HandlerResult::Respond(agents_available(hub, req)),
-        (_, p) if p == "/api/v1/term" || p.starts_with("/api/v1/term/") => {
-            HandlerResult::Respond(term(hub, req))
-        }
+        ("POST", "/api/v1/chat/completions") => HandlerResult::Respond(chat_completions(hub, req)),
         (_, p) if p.starts_with("/api/v1/fed/pull") => HandlerResult::Respond(fed_pull(hub, req)),
         ("GET", "/api/v1/sessions") => HandlerResult::Respond(sessions_list(hub, req)),
         ("POST", "/api/v1/sessions") => HandlerResult::Respond(session_create(hub, req)),
@@ -1404,144 +1400,61 @@ fn env_list(hub: &Arc<Hub>, req: &Request) -> Response {
     Response::json(200, &Value::obj(vec![("devices", Value::Arr(arr))]))
 }
 
-// ---------- operator terminal (v0.15.0) ----------
+// ---------- router chat (v0.16.0) ----------
 
-/// Operator terminal for chat executor sessions. Dashboard-key gated;
-/// restricted to `wtf-chat-*` tmux sessions (the executor's namespace —
-/// arbitrary shell sessions on the machine are NOT exposed).
-///
-///   GET  /api/v1/term/<session>?lines=N        → pane capture (text)
-///   POST /api/v1/term/<session> {keys: "…"}    → send keys + Enter
-///   POST /api/v1/term/<session> {spawn: "…"}   → create session (workdir $PWD)
-///
-/// This is the operator driving the SAME tmux sessions the chat executor
-/// uses (`wtf-chat-<slug>`), from the dashboard. The dashboard key is the
-/// operator credential; on a loopback hub the capability path plays that
-/// role for the page, and the page forwards ?cap= — accepted here too on
-/// loopback-only hubs.
-fn term_session_name(input: &str) -> Option<String> {
-    let name = percent_decode(input);
-    if name.starts_with("wtf-chat-") && name.len() <= 48 && name.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_'
-    }) {
-        Some(name)
-    } else {
-        None
-    }
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
+/// Generic operator gate: dashboard capability or device HMAC. (Name kept
+/// from the v0.15 terminal era; now shared by shell + chat routes.)
 fn term_allowed(hub: &Hub, req: &Request) -> bool {
     cap_ok(hub, req) || device_auth(hub, req).is_ok()
 }
 
-fn agents_available(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
-        return Response::error(401, "operator auth required (?cap=)");
+/// POST /api/v1/chat/completions {prompt, model?, system?}: chat with the
+/// operator-run local-router's OpenAI-compatible endpoint. The hub is a thin
+/// authenticated proxy — it NEVER spawns router infra (2026-09-04/07); with
+/// :11434 down this fails closed with a 502 and a clear message. Model
+/// defaults to passive discovery (llama.cpp qwen3 abliterated first).
+fn chat_completions(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or device headers)");
     }
-    let agents = crate::executor::available_agents();
-    Response::json(200, &Value::obj(vec![
-        ("ok", Value::from(true)),
-        ("backend", Value::from(crate::executor::detect_backend_str())),
-        ("router_endpoint", Value::from("http://127.0.0.1:11434/v1")),
-        ("router_model", Value::from("local-router/fallback-models")),
-        ("agents", Value::arr(agents)),
-    ]))
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(prompt) = body.get("prompt").and_then(|x| x.as_str()) else {
+        return Response::error(400, "body must be {prompt: \"...\", model?: \"...\", system?: \"...\"}");
+    };
+    if prompt.len() > 32_768 {
+        return Response::error(413, "prompt too large (32 KiB max)");
+    }
+    let model = body.get("model").and_then(|x| x.as_str());
+    let system = body.get("system").and_then(|x| x.as_str());
+    let model_used = model
+        .map(str::to_string)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| crate::chat::preferred_model(&crate::chat::router_models()));
+    match crate::chat::chat_completion(prompt, model, system) {
+        Ok(content) => Response::json(200, &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("model", Value::from(model_used.as_str())),
+            ("content", Value::from(content.as_str())),
+        ])),
+        Err(e) => Response::json(502, &Value::obj(vec![
+            ("ok", Value::from(false)),
+            ("model", Value::from(model_used.as_str())),
+            ("error", Value::from(e.as_str())),
+        ])),
+    }
 }
 
+/// GET /api/v1/router/status: PASSIVE read-only probe of the operator-run
+/// local-router (:11434). Never spawns, ensures, or restarts anything.
 fn router_status(hub: &Arc<Hub>, req: &Request) -> Response {
     if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
         return Response::error(401, "provide ?cap=<capability> or device auth headers");
     }
-    // Passive read-only probe (operator directive 2026-09-04): never spawn,
-    // ensure, or restart local-router / fcc-server from this hub.
-    let state = crate::executor::router_state_json();
+    let state = crate::chat::router_state_json();
     Response::json(200, &state)
-}
-
-fn term(hub: &Arc<Hub>, req: &Request) -> Response {
-    if !term_allowed(hub, req) {
-        return Response::error(401, "operator auth required (?cap=)");
-    }
-    let Some(name) = term_session_name(req.path.strip_prefix("/api/v1/term/").unwrap_or("")) else {
-        return Response::error(404, "unknown or disallowed tmux session (wtf-chat-* only)");
-    };
-    match req.method.as_str() {
-        "GET" => {
-            let lines = req.q("lines").and_then(|s| s.parse::<usize>().ok()).unwrap_or(200).min(5000);
-            match crate::executor::tmux_capture_pane(&name, lines) {
-                Ok(pane) => Response::json(200, &Value::obj(vec![
-                    ("session", Value::from(name.as_str())),
-                    ("pane", Value::from(pane.as_str())),
-                ])),
-                Err(e) => Response::error(404, &format!("session output not found: {e}")),
-            }
-        }
-        "POST" => {
-            let body = match parse_body(req) {
-                Ok(v) => v,
-                Err(r) => return r,
-            };
-            let spawn_req = body.get("spawn").map(|x| match x {
-                Value::Str(s) => Some(s.clone()),
-                Value::Bool(true) => Some(String::new()),
-                _ => None,
-            }).unwrap_or(None);
-            if let Some(_spawn_cmd) = spawn_req {
-                if !crate::executor::tmux_has_session(&name) {
-                    let cwd = std::env::current_dir().unwrap_or_default().display().to_string();
-                    if !crate::executor::tmux_new_session(&name, &cwd) {
-                        return Response::error(500, "cannot create tmux session");
-                    }
-                }
-                return Response::json(200, &Value::obj(vec![("ok", Value::from(true)), ("session", Value::from(name.as_str()))]));
-            }
-            if let Some(agent_prompt) = body.get("prompt").and_then(|x| x.as_str()) {
-                let agent = body.get("agent").and_then(|x| x.as_str()).unwrap_or("auto");
-                let fleet = body.get("fleet").and_then(|x| x.as_bool()).unwrap_or(true);
-                let cwd = std::env::current_dir().unwrap_or_default().display().to_string();
-                let outcome = crate::executor::run_in_tmux_with_options(&name, &cwd, agent_prompt, 300, agent, fleet);
-                return Response::json(200, &Value::obj(vec![
-                    ("ok", Value::from(outcome.ok)),
-                    ("cli", Value::from(outcome.cli.as_str())),
-                    ("output", Value::from(outcome.output.as_str())),
-                    ("trace", Value::arr(outcome.trace.into_iter().map(|s| Value::from(s.as_str())).collect())),
-                    ("session", Value::from(name.as_str())),
-                ]));
-            }
-            let Some(keys) = body.get("keys").and_then(|x| x.as_str()) else {
-                return Response::error(400, "body must be {prompt: \"...\"}, {keys: \"...\"} or {spawn: true}");
-            };
-            if keys.len() > 8192 {
-                return Response::error(413, "keys payload too large");
-            }
-            match crate::executor::tmux_send_keys(&name, keys) {
-                Ok(_) => Response::json(200, &Value::obj(vec![
-                    ("ok", Value::from(true)),
-                    ("session", Value::from(name.as_str())),
-                ])),
-                Err(e) => Response::error(500, &e),
-            }
-        }
-        _ => Response::error(405, "method not allowed"),
-    }
 }
 
 // ---------- federated multi-machine shell ----------
@@ -1698,12 +1611,11 @@ mod tests {
     }
 
     #[test]
-    fn agents_available_endpoint_structure() {
-        let agents = crate::executor::available_agents();
-        assert!(!agents.is_empty());
-        let auto = agents.iter().find(|a| a.get("id").and_then(|x| x.as_str()) == Some("auto"));
-        assert!(auto.is_some());
-        let hermes = agents.iter().find(|a| a.get("id").and_then(|x| x.as_str()) == Some("hermes"));
-        assert!(hermes.is_some());
+    fn chat_completion_body_errors_fail_closed() {
+        // Model discovery fallback matches the router-chat contract.
+        let used = crate::chat::preferred_model(&crate::chat::router_models());
+        assert!(!used.is_empty());
+        // parse failures produce readable errors, not panics.
+        assert!(crate::chat::chat_parse_reply(503, "unavailable").is_err());
     }
 }

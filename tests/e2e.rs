@@ -159,7 +159,7 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 22); // +router_status
+    assert_eq!(tools.len(), 20); // 19 hub/session tools + chat + router_status
 
     rpc_write(
         &mut agent,
@@ -868,10 +868,10 @@ fn skill_install_distributes_portable_skill() {
     let path = home
         .join(".agents")
         .join("skills")
-        .join("wtf-agent-hub")
+        .join("wtf-mcp-mastery")
         .join("SKILL.md");
     let text = std::fs::read_to_string(&path).expect("installed skill");
-    assert!(text.contains("name: wtf-agent-hub"), "frontmatter: {text}");
+    assert!(text.contains("name: wtf-mcp-mastery"), "frontmatter: {text}");
     assert!(
         text.contains("write_bin") && text.contains("hub_info"),
         "current tool set: {text}"
@@ -895,7 +895,7 @@ fn skill_install_distributes_portable_skill() {
     assert!(forced.status.success());
     assert!(std::fs::read_to_string(&path)
         .unwrap()
-        .contains("name: wtf-agent-hub"));
+        .contains("name: wtf-mcp-mastery"));
 
     // `wtf skill print` emits exactly the embedded skill.
     let printed = Command::new(env!("CARGO_BIN_EXE_wtf"))

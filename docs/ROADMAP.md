@@ -15,6 +15,16 @@ Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence; R3
 - **R5 — legacy `?k=` dashboard-key retirement [RESOLVED 2026-09-04].** Retired `dash_ok` in `api.rs`, removed non-loopback 401 hint page for uniform-404 security, deleted the third `wtf dashboard-url` link, and enforced singular capability routing (`/w/<capability>`).
 - **R6 — local-router status indicator, single-config reservation & automated supervisor reconnect [RESOLVED 2026-09-04; SUPERSEDED 2026-09-04 — supervisor retired].** Reserved `127.0.0.1:11434` strictly for `local-router/fallback-models` inference; live status badge retained. The 2026-09-04 operator directive retired all supervision: wtf NEVER spawns, stops, or restarts `local-router`/`fcc-server` (the supervisor loop, dashboard auto-reconnect + restart button, `POST /api/v1/router/restart`, and MCP auto-ensure were removed — that route now uniform-404s). The hub, MCP `router_status`, and dashboard only PASSIVELY probe :11434; the operator runs the router themselves, and agent harnesses run with their own config whenever it is down.
 
+- **R7 — router-chat-only simplification [RESOLVED 2026-09-07].** Operator
+  directive: strip ALL agent-harness logic from wtf. `src/executor.rs` became
+  `src/chat.rs` (passive :11434 probe + model discovery + OpenAI completions);
+  removed the agent-CLI catalog, tmux dispatch, `chat_run`/`chat_sessions`/
+  `chat_session_lifecycle` tools, `/api/v1/term/*` and `/api/v1/agents/`
+  routes, and the executor-era dashboard dispatch; Studio is now a router-chat
+  pane; the two wtf skills consolidated into singular
+  `.agents/skills/wtf-mcp-mastery/`. wtf = observability + federated lanes +
+  shell + router chat. Nothing else.
+
 ## Open defects
 
 - **Router NDJSON newline [RESOLVED].** Verified upstream in local-router
