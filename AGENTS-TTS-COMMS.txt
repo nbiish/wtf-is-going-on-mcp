@@ -189,3 +189,15 @@ What would this governance / sovereignty master suggest? The operator directive,
 What would this terminal-orchestration / swe-bench master suggest? Traces now prove which harness and which model served each task, so fleet regressions are attributable at a glance.
 What would this master-orchestrator / self-prompting master suggest? Verify hub-799c0c4c reports 0.15.4 in the ring before the first mac-to-windows dispatch.
 What would this developer-experience / ergonomics master suggest? The dashboard selector now leads with Auto dsh-omp-hermes so dispatch behavior matches the documentation exactly.
+
+## 2026-09-07T22:24:30Z
+pull main on the mac, restart its hub, then try the dashboard chat pane.
+What would this adversarial / security master suggest? The chat proxy is capability-or-device gated, prompts are size-capped, and every announce credential was revoked immediately after use.
+What would this privacy / data-protection regulatory master suggest? Chat content passes straight through as an authenticated proxy with no logging of prompts into the ring, and bridge.json was purged after each use.
+What would this supply-chain / third-party-risk master suggest? The refactor deleted far more code than it added on a zero-crate base, and the lockfile traveled with the version bump.
+What would this systems-architecture / devops / infrastructure master suggest? wtf now has one narrow job — observability, federated lanes, shell, and router chat — with the router strictly operator-owned.
+What would this reliability / verification master suggest? Pure request and parse helpers are unit-tested, the whole suite is green at 111 plus 14, and retired routes were verified to uniform-404.
+What would this governance / sovereignty master suggest? Your in-flight working-tree changes were preserved as a distinct commit with your approval before the merge, and the ledger runs checkin through checkout.
+What would this terminal-orchestration / swe-bench master suggest? Agent CLIs are now purely your terminal's business — wtf only carries directives through lanes and chats with the brain itself.
+What would this master-orchestrator / self-prompting master suggest? Confirm hub-799c0c4c reports 0.16.0 before using cross-machine lanes for dispatch directives.
+What would this developer-experience / ergonomics master suggest? One skill, one chat endpoint, one model-discovery rule — the repo finally does one simple thing well.
