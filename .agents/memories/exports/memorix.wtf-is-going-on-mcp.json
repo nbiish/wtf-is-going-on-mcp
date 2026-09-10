@@ -1,0 +1,56 @@
+{
+  "version": "0.9.0",
+  "exportedAt": "2026-09-10T01:28:31.423Z",
+  "projectId": "local/wtf-repo-memory",
+  "observations": [
+    {
+      "id": 1,
+      "entityName": "general",
+      "type": "problem-solution",
+      "title": "Retire graph-intelligence for repo-memory",
+      "narrative": "Retired legacy graph-intelligence substrate and skill in favor of three-MCP repo-memory substrate (memorix, reference_memory, engram) and git-tracked .agents/memories/ layer.",
+      "facts": [],
+      "filesModified": [],
+      "concepts": [],
+      "tokens": 49,
+      "createdAt": "2026-09-10T01:28:23.813Z",
+      "projectId": "local/wtf-repo-memory",
+      "hasCausalLanguage": false,
+      "topicKey": "bug/retire-graph-intelligence-for-repo-memory",
+      "revisionCount": 1,
+      "status": "active",
+      "source": "manual",
+      "visibility": "project",
+      "writeGeneration": 1
+    },
+    {
+      "id": 2,
+      "entityName": "general",
+      "type": "what-changed",
+      "title": "Release v0.16.0",
+      "narrative": "wtf-is-going-on-mcp v0.16.0 runs router-chat-only inference on 11434/v1 with singular wtf-mcp-mastery skill and zero external crates.",
+      "facts": [],
+      "filesModified": [],
+      "concepts": [],
+      "tokens": 45,
+      "createdAt": "2026-09-10T01:28:28.145Z",
+      "projectId": "local/wtf-repo-memory",
+      "hasCausalLanguage": false,
+      "topicKey": "general/release-v0160",
+      "revisionCount": 1,
+      "status": "active",
+      "source": "manual",
+      "visibility": "project",
+      "writeGeneration": 2
+    }
+  ],
+  "sessions": [],
+  "stats": {
+    "observationCount": 2,
+    "sessionCount": 0,
+    "typeBreakdown": {
+      "problem-solution": 1,
+      "what-changed": 1
+    }
+  }
+}
