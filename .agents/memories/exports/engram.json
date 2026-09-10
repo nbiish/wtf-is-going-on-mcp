@@ -1,0 +1,90 @@
+{
+  "version": "0.1.0",
+  "exported_at": "2026-09-10 01:28:49",
+  "sessions": [
+    {
+      "id": "manual-save-ainish-coder",
+      "project": "ainish-coder",
+      "directory": "/mnt/d/Code/ainish-coder",
+      "started_at": "2026-09-09 03:24:38"
+    },
+    {
+      "id": "manual-save",
+      "project": "",
+      "directory": "/mnt/d/Code/wtf-repo-memory",
+      "started_at": "2026-09-10 01:28:38"
+    },
+    {
+      "id": "manual-save-wtf-is-going-on-mcp",
+      "project": "wtf-is-going-on-mcp",
+      "directory": "/mnt/d/Code/wtf-repo-memory",
+      "started_at": "2026-09-10 01:28:45"
+    }
+  ],
+  "observations": [
+    {
+      "id": 1,
+      "sync_id": "obs-322cd2598f3cd068",
+      "session_id": "manual-save-ainish-coder",
+      "type": "discovery",
+      "title": "ainish smoke",
+      "content": "memory smoke test",
+      "project": "ainish-coder",
+      "scope": "project",
+      "revision_count": 1,
+      "duplicate_count": 1,
+      "last_seen_at": "2026-09-09 03:24:38",
+      "created_at": "2026-09-09 03:24:38",
+      "updated_at": "2026-09-09 03:27:50",
+      "deleted_at": "2026-09-09 03:27:50"
+    },
+    {
+      "id": 2,
+      "sync_id": "obs-7e767800d1f0d009",
+      "session_id": "manual-save-ainish-coder",
+      "type": "config",
+      "title": "Repo-memory validation token",
+      "content": "**What**: Stored the repo-memory validation token 'wickiup-7391' for future sessions\n**Why**: User asked to remember it for future use\n**Where**: repo-memory validation (ainish-coder project)\n**Learned**: Token is 'wickiup-7391' — use for repo-memory validation",
+      "project": "ainish-coder",
+      "scope": "project",
+      "revision_count": 1,
+      "duplicate_count": 1,
+      "last_seen_at": "2026-09-09 03:26:58",
+      "created_at": "2026-09-09 03:26:58",
+      "updated_at": "2026-09-09 21:07:38",
+      "deleted_at": "2026-09-09 21:07:38"
+    },
+    {
+      "id": 4,
+      "sync_id": "obs-ad3ba3133d16c8ef",
+      "session_id": "manual-save-wtf-is-going-on-mcp",
+      "type": "decision",
+      "title": "Retire graph-intelligence for repo-memory",
+      "content": "Retired legacy graph-intelligence substrate in favor of the three-MCP repo-memory substrate (memorix, reference_memory, engram) and .agents/memories/ layer.",
+      "project": "wtf-is-going-on-mcp",
+      "scope": "project",
+      "revision_count": 1,
+      "duplicate_count": 1,
+      "last_seen_at": "2026-09-10 01:28:45",
+      "review_after": "2027-03-10 01:28:45",
+      "created_at": "2026-09-10 01:28:45",
+      "updated_at": "2026-09-10 01:28:45"
+    },
+    {
+      "id": 5,
+      "sync_id": "obs-e33383b68c8588f0",
+      "session_id": "manual-save-wtf-is-going-on-mcp",
+      "type": "architecture",
+      "title": "v0.16.0 router-chat-only inference",
+      "content": "wtf-is-going-on-mcp runs router chat completions against operator-run local-router on :11434/v1 with singular wtf-mcp-mastery skill.",
+      "project": "wtf-is-going-on-mcp",
+      "scope": "project",
+      "revision_count": 1,
+      "duplicate_count": 1,
+      "last_seen_at": "2026-09-10 01:28:45",
+      "created_at": "2026-09-10 01:28:45",
+      "updated_at": "2026-09-10 01:28:45"
+    }
+  ],
+  "prompts": null
+}

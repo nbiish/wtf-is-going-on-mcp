@@ -78,19 +78,21 @@ keys together, never "merge" by packing one key.
 2. Architecture LKGL (Last Known Good Location): `$WTF_HOME/lkgl.json` persists each machine's active repository directory across sessions. Commands executed in `~/mac` or `~/windows` automatically anchor to that architecture's native LKGL unless explicitly redirected.
 3. Multi-Architecture Execution: The federated terminal resolves the target machine and executes commands at its LKGL. Compound pipelines allow operators on any device to orchestrate cross-architecture builds, tests, and ACP fleet operations in a single prompt.
 
-## 9. Three-Pillar Graph Intelligence Operations
+## 9. Repo-Memory Operations & Knowledge Layer
 
-1. **GitNexus (AST & Code Symbol Integrity):**
-   - Index the codebase: `gitnexus analyze --index-only`.
-   - Active repository metrics: 1,389 nodes, 4,782 edges, 55 clusters, 122 call processes.
-   - Pre-flight blast radius assessment: query `gitnexus_context` and `gitnexus_impact` before modifying exported contracts.
-   - Post-edit verification: `gitnexus_detect_changes` confirms zero unintended call-site regressions.
-2. **Graphify (Multimodal & Cross-Artifact Synthesis):**
-   - Synthesizes code (`src/*.rs`), PRD contracts (`llms.txt`), runbooks (`docs/*.md`), and tasks (`.agents/tasks/`).
-   - Leiden community clustering maps module boundaries and multi-agent interaction topologies.
-3. **Semantica (Context & Governance Layer):**
-   - Records immutable agent decision trees with W3C PROV-O provenance in `AGENTS/{date}.COMMS.md`.
-   - Enforces cryptographic compliance: FIPS 203 ML-KEM-768 for secrets encapsulation, FIPS 204 ML-DSA-65 for signatures, and AES-256-GCM payloads.
+1. **Three-Server Local Memory Substrate:**
+   - **Memorix (`memorix`):** Per-project SQLite store (`~/.memorix/data`). Captures facts, gotchas, bug root causes, and symbol graph via `memorix_store` and `memorix_store_reasoning`. Export snapshot via `memorix transfer export --format json --out .agents/memories/exports/memorix.wtf-is-going-on-mcp.json`.
+   - **Reference Memory (`reference_memory`):** Canonical entity-relation knowledge graph in JSONL (`MEMORY_FILE_PATH`). Direct graph queries via `search_nodes` / `read_graph` and mutation via `create_entities` / `create_relations`.
+   - **Engram (`engram`):** Curated session memory in SQLite+FTS5 (`~/.engram/engram.db`). Handles session bookkeeping (`mem_session_start` / `mem_session_summary`), conflict evaluation and verdicts (`mem_compare` / `mem_judge`), and snapshots via `engram export .agents/memories/exports/engram.json`.
+2. **Git-Tracked Memory Layer (`.agents/memories/`):**
+   - `MEMORY.md`: Curated, human/agent-readable digest of durable facts, decisions, and gotchas; updated at session close.
+   - `exports/`: Portable machine snapshots (`engram.json`, `memorix.<project>.json`, `reference-graph.jsonl`) committed on task branches and cloned across fleet machines.
+   - Offline fallback: When memory MCP servers are unreachable, read `MEMORY.md` and grep `exports/` as the local record of truth.
+3. **Session Discipline Loop:**
+   - **Orient:** `memorix_project_context` + `mem_context` at session start.
+   - **Recall:** Search before rediscovering (`memorix_search`, `mem_search`, `search_nodes`).
+   - **Route & Store:** Route by kind (facts -> Memorix, relations -> Reference Memory, decisions/conflicts -> Engram).
+   - **Resolve & Close:** Prune stale memories immediately; regenerate exports and append durable facts to `MEMORY.md` before checkout.
 
 ## 10. Universal Single-Config AI Tooling Source (Ollama :11434) & Convergence
 

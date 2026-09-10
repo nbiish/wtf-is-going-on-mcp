@@ -1,0 +1,7 @@
+{"type": "entity", "name": "wtf-is-going-on-mcp", "entityType": "repository", "observations": ["Observability hub and MCP bridge with zero external crates", "v0.16.0 router-chat-only inference"]}
+{"type": "entity", "name": "repo-memory", "entityType": "substrate", "observations": ["Three-server persistent memory plane: memorix, reference_memory, engram", "Git-tracked memory layer at .agents/memories/"]}
+{"type": "entity", "name": "graph-intelligence", "entityType": "retired-substrate", "observations": ["Retired on 2026-09-10 in favor of repo-memory"]}
+{"type": "entity", "name": "local-router", "entityType": "service", "observations": ["Operator-run inference proxy on 127.0.0.1:11434"]}
+{"type": "relation", "from": "wtf-is-going-on-mcp", "to": "repo-memory", "relationType": "uses"}
+{"type": "relation", "from": "wtf-is-going-on-mcp", "to": "graph-intelligence", "relationType": "deprecated"}
+{"type": "relation", "from": "wtf-is-going-on-mcp", "to": "local-router", "relationType": "probes"}
