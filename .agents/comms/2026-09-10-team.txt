@@ -4,3 +4,4 @@ start: 2026-09-10T01:27:00Z agent:antigravity parent:none branch:chore/repo-memo
 checkin: scope=adopt repo-memory tooling (memorix, reference_memory, engram) and .agents/memories/ layer; retire graph-intelligence from llms.txt, docs/OPERATIONS.md, and .agents/skills/
 update: 2026-09-10T01:29:45Z graph-intelligence deleted; repo-memory substrate + .agents/memories/ layer established (MEMORY.md digest + engram/memorix/reference-graph exports); llms.txt and docs/OPERATIONS.md updated; 111 unit + 14 e2e tests green
 intent-merge: 2026-09-10T01:29:45Z branch=chore/repo-memory-remove-graph-intel scope=.agents/skills/ .agents/memories/ .agents/tasks/ .agents/comms/ llms.txt docs/OPERATIONS.md AGENTS.md AGENTS-TTS-COMMS.txt
+checkout: 2026-09-10T01:30:00Z branch=chore/repo-memory-remove-graph-intel merged=main worktree=removed branch=deleted no-rebuild-needed
