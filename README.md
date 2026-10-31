@@ -1,577 +1,137 @@
-# wtf-is-going-on-mcp
+# wtf-live
 
-One command answers the eternal question across every machine you operate:
-**what the fuck is going on?**
+**One localhost page for every agent session on every machine.**
 
-`wtf` is a zero-dependency Rust pair:
+`wtf-live` is a small Rust binary (std only, no crates) that reads live state from
+**Herdr** and **Orca** and renders it plus a shared pastebin at
+<http://127.0.0.1:7800>. It replaces the previous `wtf` hub — the MCP bridge,
+federation, encrypted session channels, device keys and signed API are gone on
+purpose. What remains is a viewer and a clipboard.
 
-- **Hub** (`wtf serve`) — an HTTP API plus a live browser dashboard. Agents
-  report what they are doing; you watch it in one page.
-- **Bridge** (`wtf agent`) — an MCP stdio server that any MCP client launches.
-  It exposes reporting and collaboration tools (`check_in`, `log_event`,
-  `wtf_is_going_on`, `read_bin`, `write_bin`, `list_bins`, `ping`,
-  `hub_info`) and forwards everything to the hub over HMAC-signed requests.
+## What it shows
 
-Everything — SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server + client, and the
-MCP bridge — is implemented in this repo on the Rust standard library only.
-**Zero external crates.** The full security surface is readable in an
-afternoon.
+| Column | Source | Meaning |
+| --- | --- | --- |
+| Machines | Herdr + Orca | local box, saved `herdr machine` profiles, paired Orca servers |
+| Sessions | Herdr panes/agents, Orca worktrees/terminals | one card per agent or live shell |
+| Pastebins | `~/.wtf-live/bins/` | durable text shared by humans and agents |
 
-## Architecture
+Each card carries the agent kind, lifecycle state (`working`, `blocked`, `done`,
+`idle`, `shell`), the workspace, the working directory, the last output lines,
+and a copyable handle (`term_…` for Orca, `w1:p1` for Herdr).
 
-```
-hub machine                              agent machines
-┌────────────────────────────┐           ┌─────────────────────────┐
-│ wtf serve                  │           │ MCP client (agent, IDE) │
-│  ├─ HTTP API  /api/v1/*    │◄──HMAC────┤   └─ wtf agent          │
-│  ├─ SSE stream  /stream    │  signed   │      (MCP stdio)        │
-│  └─ dashboard   /?k=…      │  requests └─────────────────────────┘
-│ state: events.jsonl (SSOT) │
-└────────────────────────────┘
-```
+The page polls `/api/snapshot` every 3 seconds; press `p`-adjacent controls to
+pause, `/` to filter, `Esc` to close a paste. No external assets, no CDN.
 
-- The hub keeps an append-only event log (`events.jsonl`) as the source of
-  truth; agent status is rebuilt by replaying it on startup. Restarts lose
-  nothing.
-- Browsers subscribe to state changes over Server-Sent Events; the hub pushes
-  a fresh snapshot whenever the generation counter moves.
-
-## Requirements
-
-- Linux, macOS, or any Unix with `/dev/urandom` (WSL2 works; see
-  [Troubleshooting](#troubleshooting) for the NAT caveat).
-- A Rust toolchain (stable, edition 2021) — the **only** build prerequisite.
-  No crates are downloaded; the build is fully offline.
-- Reporting agents need one of: an MCP client (for `wtf agent`), or just
-  `curl` + `openssl` (signed fallback — see the agent skill below).
-- Viewers need only a browser.
-
-## Build and install
+## Build and run
 
 ```bash
-git clone <this repo> && cd wtf-is-going-on-mcp
 cargo build --release
+./target/release/wtf-live            # serve on 127.0.0.1:7800 and open a browser
 ```
 
-The single binary is `target/release/wtf`. Installing it on `PATH` is
-optional but recommended — a joining machine's `wtf join` and the hub-side
-`key issue` both assume `wtf` is resolvable:
+Flags and environment:
+
+```text
+wtf-live serve [--port N] [--bind IP] [--data-dir DIR] [--no-open] [--allow-remote]
+WTF_LIVE_HOME     state directory (default ~/.wtf-live)
+WTF_LIVE_MACHINE  display name for this box (default: hostname -s)
+ORCA_BIN          explicit path to the orca CLI
+HERDR_BIN         explicit path to the herdr CLI
+```
+
+The hub auto-detects the CLIs: `/Applications/Orca.app/Contents/Resources/bin/orca`
+(or `orca` on PATH) and `herdr` (Homebrew or `~/.local/bin`). If a CLI is
+missing the page says so instead of failing.
+
+`--bind` refuses non-loopback addresses unless `--allow-remote` is passed: the
+hub has no authentication.
+
+## Pastebins
+
+Three ways in, one store out:
+
+- the **+ paste** button on the page;
+- `wtf-live bin put --file notes.md --title "deploy plan"`;
+- `curl -X POST localhost:7800/api/bins -d '{"title":"…","body":"…"}'`.
+
+Read them back with `wtf-live bin ls`, `wtf-live bin get <id>`, or the page.
+Deletion is `wtf-live bin rm <id>` or the viewer's delete button. Bodies are
+capped at 256 KiB, bins at 400, and every write is atomic.
+
+Cross-machine sharing: run the hub where the other machine can reach it
+(`WTF_LIVE_HOME` stays local), bind a LAN or Tailscale address with
+`--allow-remote`, or keep it loopback and tunnel:
 
 ```bash
-install -m 755 target/release/wtf ~/.local/bin/wtf
+ssh -L 7800:127.0.0.1:7800 you@workbox     # then open localhost:7800 on the laptop
 ```
 
-## Running the hub
+## Cross-machine agent state
 
-```
-wtf serve                    # first run creates the config; binds all interfaces, port 7800
-```
+Both tools keep machine ownership on the machine that runs the agent, so the
+hub reads whatever the local CLIs can see:
 
-First run generates `$WTF_HOME/config.json` (dashboard key included) and
-prints the hub and dashboard URLs — the dashboard URL carries the `?k=`
-key. Useful flags: `--bind IP:PORT` (e.g. loopback only), `--no-open` (do
-not launch a browser), and `WTF_HOME=/some/dir` to relocate all state.
+- **Herdr** — `herdr status`, `workspace list`, `pane list`, `agent list`, and
+  `pane read` for previews, plus every enabled `herdr machine` profile through
+  the `--machine` prefix. Herdr 0.9 forwards pane/agent API calls over SSH, so a
+  saved machine's panes appear next to local ones.
+- **Orca** — `orca worktree ps` (agents, states, previews) and
+  `orca terminal list`, plus saved remote runtimes from `orca environment list`
+  queried with `--environment`.
 
-Run it persistently (it is a plain foreground process):
+Requirements on the source side:
 
 ```bash
-setsid wtf serve > "$WTF_HOME/serve.log" 2>&1 < /dev/null &
+herdr                     # or: herdr server   (the CLI needs a running server)
+herdr machine add workbox # one-time, interactive; needs SSH access
+orca serve                # headless Orca runtime + pairing link (optional)
+orca environment add --name workbox --pairing-code 'orca://pair?...'
 ```
 
-Stop with Ctrl-C or `pkill -f "wtf serve"`. Restarting is lossless: the
-event log is replayed, keys and config reload, and agents reappear with
-their last reported status (stale-marked until they check in again). If the
-hub is reached over an overlay or the internet, tell joiners where to find
-it: `wtf url http://OVERLAY-IP:7800` (or the public `https://` URL).
-
-## Using the dashboard
-
-On the hub machine the dashboard lives behind a **capability URL** — a
-64-hex token in the path — and a loopback-bound hub serves it to localhost
-only:
-
-```
-http://localhost:7800/w/<64-hex capability token>
-```
-
-`wtf serve` prints the link on every start, and `wtf dashboard-url`
-reprints it any time (the token lives in
-`$WTF_HOME/dashboard_capability`, 0600; rotate by deleting the file and
-restarting). A wrong or missing token returns the **same uniform 404** as
-any unknown path — no oracle. When the hub binds a LAN address (not
-loopback), the remote path still uses the legacy dashboard key
-(`http://HUB:7800/?k=<dashboard key>`); the capability link stays
-localhost-only. The token and key are never exposed over MCP — agents only
-see the hub address via the `hub_info` tool.
-
-- Each reporting agent renders as a card: `● name [status]` with its
-current task, details, and last-seen age (`●` fresh, `○` stale after a
-few minutes of silence).
-- The event feed lists everything agents have logged, newest first.
-- The **COPY-PASTE BINS** section holds three persistent bins shared by
-  humans *and* agents. Paste any content (a spec, logs, a URL list) into a
-  bin, hit Save, then tell any agent on any machine: *“work from bin 2”* —
-  it fetches it with the `read_bin` MCP tool. Agents can write back:
-  anything an agent saves via `write_bin` (device-signed PUT) lands in the
-  bin with the device name as last writer, so any other agent — on any
-  machine or harness — can read it. Bins survive hub restarts; every save
-  lands in the event feed, so the other dashboards see it live.
-- The page live-updates over Server-Sent Events (`/stream`) — no refresh,
-no external assets, works offline.
-
-## Security model
-
-- **Keys**: 256-bit secrets from the kernel CSPRNG (`/dev/urandom`), stored
-  `0600` in a `0700` directory. Device keys are printed exactly once by
-  `wtf key issue`.
-- **Request auth**: every agent request carries `X-Wtf-Device`,
-  `X-Wtf-Timestamp`, `X-Wtf-Nonce`, `X-Wtf-Signature`, where the signature is
-  `hex(hmac_sha256(secret, "wtf-hmac-v1\nMETHOD\npath-and-query\nts\nnonce\nsha256hex(body)")))`.
-  The body hash binds the payload; the secret never crosses the wire.
-- **Replay protection**: ±300 s timestamp skew plus a per-device nonce cache.
-- **Dashboard auth (v0.11.0)**: the page is served only at
-  `/w/<capability token>`; a loopback-only hub needs nothing else
-  (localhost is the network gate), a LAN hub additionally keeps the
-  dashboard key (`?k=`) for remote viewers. `/stream` and `/api/v1/state`
-  accept the capability token (`?cap=`) on loopback hubs, or the dashboard
-  key, or device auth.
-- **Constant-time** comparison for every secret check. Auth failures are
-  uniform 401s that do not reveal which factor failed.
-- **Enrollment tokens**: one-time, hashed at rest, expiring, revocable.
-  Redemption (`POST /api/v1/enroll`) is rate-limited and every refusal is
-  a uniform 403; the token burns only on success, so a typo does not
-  brick it.
-- **Signed-handshake enrollment (v0.9.0)**: the hub holds ONE site
-  `enroll_secret` (256-bit hex, 0600). A joiner proves possession with an
-  HMAC over (name, its ML-KEM-768 encapsulation key, timestamp, nonce) —
-  the secret never crosses the wire — plus ±300 s skew and a replay
-  cache, and receives its device key **ML-KEM-768-sealed** (FIPS 203,
-  AES-256-GCM): the key never crosses in plaintext. Rotate the secret
-  (`wtf enroll-secret --rotate`) to invalidate every outstanding copy.
-- **Transport topologies**: on a trusted LAN, plain HTTP is fine. Across
-  machines or off-LAN, run an encrypted overlay (WireGuard/Tailscale) and point
-  the bridge at the overlay address — no code changes; the HMAC signature
-  still authenticates every request. Behind a TLS-terminating proxy,
-  `https://` hub URLs are accepted. Raw port-forwarding plain HTTP to the
-  public internet remains unsupported; TLS is the proxy's job, never
-  hand-rolled here.
-- **PQC key delivery**: since v0.9.0, signed-handshake enrollment delivers
-  the device key ML-KEM-768-sealed to the joiner's encapsulation key
-  (FIPS 203 / AES-256-GCM; SP 800-38D) — it is unwrapped only in memory.
-  Credentials can also ride env vars (`WTF_HUB_URL`, `WTF_DEVICE_NAME`,
-  `WTF_DEVICE_KEY`), the path a PQC secrets bundle uses. The in-tree
-  ML-DSA-65 identity is the documented future upgrade for handshake
-  signing (today's proof is HMAC-SHA256, the same standard-transport lane
-  as request auth).
-
-## Deployment topologies
-
-- **LAN** (default): hub binds all interfaces on port 7800; `key issue`
-  auto-detects the LAN address.
-- **Overlay** (recommended off-LAN): install WireGuard/Tailscale on every
-  machine, then `wtf url http://OVERLAY-IP:7800` on the hub so joining
-  devices receive the overlay address. No exposed ports; the network is the
-  tunnel.
-- **Cloud**: run the hub on a VM, front it with a TLS-terminating proxy
-  (Caddy/nginx + Let's Encrypt), then `wtf url https://hub.example.com`.
-  The bridge accepts `https://`; TLS itself is always the proxy's job.
-
-## Federation — a ledger on every machine (v0.11.0)
-
-Every machine can run its own hub, and the ledgers replicate: check in on
-one machine and the event appears on every linked hub within seconds.
-Each hub is simultaneously a hub and a *device* on its peers — replication
-rides the existing HMAC request lane, no new crypto, `auth.rs` untouched.
-
-```
-# on the Mac (peer B already serves somewhere reachable):
-wtf federate add win --url http://WIN-IP:7800 --psk <win's wtf enroll-secret>
-# restart the hub; both ledgers now carry everything
-```
-
-- **One secret copy per edge**: the peer's *site* secret (`wtf
-  enroll-secret` there) enrolls this hub as device `fed-<hub-name>` on the
-  peer; the credential arrives ML-KEM-768-sealed and lands in
-  `$WTF_HOME/federation.json` (0600).
-- **Convergence**: push-on-append plus an anti-entropy sweep every 10 s;
-  events dedupe on `(origin, origin_id)` so restarts, retries, and mesh
-  loops are harmless. Every event carries its originating hub's name.
-- **Agents per repo**: every report carries a repo label — the bridge
-  stamps its working directory's name (override with `WTF_REPO` or the
-  tool's `repo` argument). Run one bridge per terminal/repo on the same
-  machine; the dashboard groups agents by origin hub and chips each
-  agent's repo.
-- **Ops**: `wtf federate list` shows the peer table; `wtf federate remove
-  <name>` unlinks (restart to stop replication). Peer URLs must be stable
-  across restarts (production hubs live on fixed LAN/overlay addresses).
-
-## Onboarding a machine
-
-### Agent-driven (recommended)
-
-With your SSH key authorized on the hub machine, one command enrolls a
-box: it runs `wtf key issue` remotely, receives the one-time secret inside
-the ssh channel, writes `bridge.json` locally, and verifies the
-credentials with a signed request:
-
-```
-git clone <this repo> && cd wtf-is-going-on-mcp
-cargo build --release
-./target/release/wtf join you@HUB-HOST --name laptop   # add --url to override the hub address
-```
-
-### Signed handshake (recommended: one secret per site)
-
-The hub auto-generates a single site enrollment secret; the operator
-prints it once and copies it to each joining machine — no ssh, no
-per-device hand-copied key. The joiner proves possession of the secret
-via HMAC (the secret never crosses the wire) and receives its device key
-ML-KEM-768-sealed to its own encapsulation key, unwrapped only in
-memory:
-
-```
-# on the hub (prints the secret + the ready-made join command)
-./target/release/wtf enroll-secret            # or --json; --rotate invalidates all copies
-# on the joining machine
-./target/release/wtf enroll --url http://HUB-LAN-IP:7800 --name laptop --psk <SECRET>
-```
-
-Wrong secret, stale clock (>±300 s), replayed handshake, tampered
-encapsulation key, and rotated-out copies all get the same uniform 403,
-under the same global rate cap (20 attempts per 5 minutes). Hub and
-joiner clocks must agree within ±5 minutes.
-
-### Enrollment token (no ssh, single-use token)
-
-The hub operator mints a one-time token; the joining machine redeems it
-and receives its device key over that single call — no ssh access to the
-hub, no secret copied by hand. The token is a 256-bit secret, stored
-hashed (0600), expires on its own (`--ttl` seconds, default 600), can be
-dropped early with `enroll-token revoke`, and burns on redemption:
-
-```
-# on the hub
-./target/release/wtf enroll-token laptop                # prints the token ONCE (or --json)
-# on the joining machine
-./target/release/wtf enroll --url http://HUB-LAN-IP:7800 --name laptop --token <TOKEN>
-```
-
-Wrong, unknown, truncated, expired, and reused tokens all get the same
-uniform 403; a typo does not burn the token, and a global cap (20 attempts
-per 5 minutes) blunts online guessing.
-
-### Manual
-
-Issue the key on the hub, then configure the joining machine with it:
-
-```
-# on the hub
-./target/release/wtf key issue laptop                  # prints the 64-hex device key ONCE
-# on the joining machine
-./target/release/wtf setup --url http://HUB-LAN-IP:7800 --name laptop --key <DEVICE_KEY>
-```
-
-All three paths end the same way: `bridge.json` (0600) exists and a signed
-round-trip against the hub has succeeded. For automation,
-`wtf key issue --json <name>` prints one machine-readable line:
-`{"hub_url":…,"device":…,"key":…}`.
-
-### Operator bin courier (no enrollment needed)
-
-Bins are not just for agents: with the dashboard key you can copy/paste
-content between machines and agents *before* any enrollment exists — the
-same channel the dashboard uses. On any machine that has a `wtf` binary
-(an empty `$WTF_HOME` is fine), run:
-
-```
-# paste content in from anywhere
-WTF_DASHBOARD_KEY=<key> wtf bin put 1 "paste me into the other agent" --url http://HUB-LAN-IP:7800
-# pull it back byte-exact on the other machine (pipe-friendly, no added newline)
-WTF_DASHBOARD_KEY=<key> wtf bin get 1 --url http://HUB-LAN-IP:7800
-WTF_DASHBOARD_KEY=<key> wtf bin ls  --url http://HUB-LAN-IP:7800
-```
-
-`put` also takes `--file F` or `-` (stdin); `get -o FILE` saves to a file
-instead of printing. Hub URL and key also resolve from
-`bridge.json`/`config.json` when those exist, so on an already-set-up
-machine plain `wtf bin get 1` works. Prefer the `WTF_DASHBOARD_KEY` env
-var over `--k` (argv can leak via shell history). The hub records
-`dashboard` as the last writer; enrolled agents read the same bins via
-`read_bin`. Never put secrets in a bin — the courier is for specs,
-prompts, logs, URLs, and setup payloads.
-
-## Connect any agent (any harness)
-
-Any MCP-speaking agent — Claude Desktop, Cursor, Warp, Codex, a CI bot, or
-a harness you wrote last night — points at this repo the same way. Agents
-should read **`.agents/skills/wtf-agent-hub/SKILL.md`** (also mirrored to
-sibling repos) — the canonical operating guide, written so an agent with
-nothing but a terminal can go from clone to reporting in minutes. It
-covers MCP wiring, etiquette, bin-based collaboration, the operator CLI,
-topologies, troubleshooting, security rules, and a signed `curl` +
-`openssl` fallback for environments without an MCP harness.
-
-MCP harnesses (Claude Desktop, Cursor, Warp, and most clients) register
-the bridge with the standard shape:
-
-```json
-{
-  "mcpServers": {
-    "wtf": {
-      "command": "/absolute/path/to/target/release/wtf",
-      "args": ["agent"]
-    }
-  }
-}
-```
-
-Credentials come from `bridge.json` (written by `wtf join`/`wtf setup`);
-env vars (`WTF_HUB_URL`, `WTF_DEVICE_NAME`, `WTF_DEVICE_KEY`) override it
-and are the recommended delivery path for secret managers:
-
-```
-WTF_HUB_URL=http://HUB-LAN-IP:7800
-WTF_DEVICE_NAME=laptop
-WTF_DEVICE_KEY=<64 hex chars>
-```
-
-### Delivery via the PQC secrets lane
-
-When your stack ships device keys through `pqc-secrets` (FIPS 203/204/205
-bundle), a packed `WTF_<NAME>_SECRET` env var unwraps into the three
-`WTF_*` vars without the key ever touching disk in plaintext:
-
-```bash
-export WTF_HUB_URL=http://HUB-LAN-IP:7800
-export WTF_DEVICE_NAME=laptop
-eval "$(pqc-secrets export | grep '^export WTF_LAPTOP_SECRET=')"
-# then launch the MCP client as usual; the bridge reads WTF_* first
-```
-
-### Distribute the skill anywhere
-
-The portable skill ships inside the binary. From any machine that has
-`wtf`, drop the operating guide into any repo, project, or harness
-workspace:
-
-```bash
-wtf skill install --dir /path/to/any/project   # -> <project>/.agents/skills/wtf-agent-hub/SKILL.md
-wtf skill print                                # raw SKILL.md to stdout
-```
-
-Installs are idempotent (identical copies are a no-op); overwrite a drifted
-file with `--force`. Point agents at `.agents/skills/wtf-agent-hub/SKILL.md`
-and they know how to connect, report, and collaborate.
-
-### Collaboration across agents and harnesses
-
-Bins are the collaboration surface: one agent writes findings with
-`write_bin`, tells the operator (or a peer via an event), and any other
-agent — any machine, any harness — picks it up with `read_bin`. Typical
-flows:
-
-- **Operator → agent**: paste a spec on the dashboard, say *“work from
-  bin N”*; the agent reads it before starting.
-- **Agent → agent**: agent A writes its findings/context to a bin and
-  logs `context in bin 2` to the event feed; agent B on another machine
-  reads the bin and continues the task.
-- **Agent → operator**: an agent drops a long report in a bin instead of
-  flooding the event feed; the operator reads it on the dashboard.
-
-## Agent etiquette
-
-- **Chain-of-draft is the reporting format.** Every `check_in` and
-`log_event` MUST be terse fragments, <=5 words per fragment, no prose
-(e.g. `fixing auth replay bug; hub restarted; blocked on sshd`). The user
-reads these on the dashboard to see what the fuck is going on.
-- `check_in` when you start (`working` + short task), when blocked
-(`blocked` + what you need), and when done (`done`).
-- `log_event` for milestones and failures; `warn`/`error` levels exist for
-a reason.
-- `wtf_is_going_on` before starting work — another agent may already be on
-it.
-- When the operator says *“work from bin N”*, call `read_bin` with that N
-before starting; bins hold pasted specs, logs, or whatever the operator
-queued for you.
-- **Bin hygiene**: `write_bin` replaces the whole bin (last writer wins) —
-read it first, write whole-purposeful content, and log an event so peers
-know the bin changed. Never put secrets in a bin; every device on the hub
-can read them, and bins persist to disk.
-- The bridge heartbeats automatically every 60 s while running. Keep
-`task`/`details` short and secret-free; the whole network can read them.
-## Encrypted agent-to-agent sessions
-
-Dedicated private chat channels between agents on any machine or harness.
-The hub stores only ML-KEM-768 sealed key packages and AES-256-GCM
-ciphertext — it relays bytes and cannot read a single message.
-
-- **Crypto (all in-tree, FIPS-aligned):** the creator holds a random
-  256-bit session key and seals it to every member's ML-KEM-768 identity
-  (FIPS 203). Messages are AES-256-GCM (SP 800-38D) with per-(session,
-  sender) subkeys; the AEAD's AAD binds the session id, sender, and the
-  hub-assigned monotonic sequence number, so replaying a ciphertext in any
-  other slot fails closed. The hub stores session keys only in sealed form
-  (`sessions.json`, 0600) and message content only as ciphertext.
-- **Identity:** each bridge auto-generates an ML-KEM-768 keypair at
-  `$WTF_HOME/identity.json` (0600) on first session use and registers the
-  public half with the hub.
-- **MCP tools:** `session_create`, `session_list`, `session_join`,
-  `session_seal`, `session_send`, `session_read` — see
-  `.agents/skills/wtf-agent-hub/SKILL.md` §6 for the flow.
-- **Pairing keys (v0.12.0):** every new chat mints a 256-bit pairing key
-  (shown once at create; the hub stores only its SHA-256). A joiner
-  presents it to `session_join` and is admitted with the session key
-  sealed to them automatically — no manual `session_seal` round-trip.
-  The creator machine keeps the key in `session_keys.json` (0600);
-  `wtf sessions` re-prints it for the operator. Chats carry a `repo`
-  label so agents (and you) can see which chat belongs to which project
-  at a glance.
-- **COMMS ledger channels:** `comms_post` / `comms_read` add structure on
-  top of the same encryption: small JSON envelopes (a ledger event type —
-  `checkin`, `update`, `intent-merge`, `checkout`, `blocked`, `announce`,
-  `handoff` — plus an optional `repo/branch` scope) carried as ordinary
-  encrypted session messages and rendered as ledger lines. This is the
-  fast cross-repo / cross-machine form of the `AGENTS/{date}.COMMS.md`
-  protocol — and the ONLY surface where secrets may travel between agents
-  (bins and the event feed are public).
-- **Validation:** all NIST ACVP keygen/encapsulation/decapsulation KATs
-  pass byte-exact, and the implementation cross-validates against
-  pyca/cryptography (OpenSSL) and kyber-py.
-
-
-## MCP tools
-
-| Tool | Args | Purpose |
-|------|------|---------|
-| `check_in` | `status` (working/blocked/done/idle), `task`, `details?`, `agent?` | Report current status; shown as an agent card |
-| `log_event` | `message`, `level?` (info/warn/error), `agent?` | Append to the shared event feed |
-| `wtf_is_going_on` | `agent?` | Text snapshot of all agents + recent events |
-| `read_bin` | `bin` (1-3) | Fetch bin content (use when told “work from bin N” or picking up a peer's handoff) |
-| `write_bin` | `bin` (1-3), `content` | Publish content to a bin for other agents/machines (device-signed, attributed to your device) |
-| `list_bins` | — | List bins with sizes and last-writer metadata |
-| `ping` | — | Hub connectivity probe (unsigned `/healthz`) |
-| `hub_info` | — | Which hub is this bridge connected to (URL, device, version); never exposes the dashboard key |
-| `session_create` | `name`, `repo?` | Create an encrypted agent-to-agent channel (ML-KEM-768 sealed keys; hub stores ciphertext only). Returns the **pairing key once** — copy it to joiners on other machines |
-| `session_list` | — | List encrypted channels: id · name · paired repo · members · msgs |
-| `session_join` | `session`, `pairing?` | Join with your ML-KEM-768 identity; with the pairing key you're admitted immediately and the session key is auto-sealed to you |
-| `session_seal` | `session`, `member` | Creator: seal the session key to a member's identity |
-| `session_send` | `session`, `message` | Send an encrypted message (AAD binds session/sender/seq) |
-| `session_read` | `session`, `after?` | Read + decrypt new messages |
-| `comms_post` | `session`, `event`, `note`, `scope?` | Post an encrypted COMMS ledger entry (cross-repo/cross-machine agent coordination; secrets allowed — e2e encrypted, hub stores ciphertext only) |
-| `comms_read` | `session`, `after?`, `event?` | Read + decrypt new COMMS entries as ledger lines |
-
-Tool failures (bad args, hub down, revoked key) are returned as
-`isError: true` results, never as MCP protocol errors.
+Known limit (Herdr 0.9.x): the Herdr *agent CLI* still works within one server;
+cross-machine pane APIs need an updated remote Herdr, and `machine add` is
+interactive. Orca's `--environment` path is live but slow links show up as a
+`down` machine row rather than blocking the page.
 
 ## HTTP API
 
-| Route | Auth | Purpose |
-|-------|------|---------|
-| `GET /healthz` | none | Connectivity probe (version, uptime) |
-| `GET /w/<capability>` | capability token (loopback hub) or dashboard key (LAN hub) | Dashboard page |
-| `GET /stream?k=KEY` | dashboard key / capability (`?cap=`, loopback) / device auth | SSE state stream |
-| `GET /api/v1/state` | dashboard key / capability / device auth | Full state JSON (includes `bins`, per-agent `repo` + `origin`) |
-| `GET /api/v1/bins` | dashboard key or device auth | All three paste-bins |
-| `GET /api/v1/bins/N` | dashboard key or device auth | One paste-bin (N = 1-3) |
-| `PUT /api/v1/bins/N` | dashboard key or device auth | Write a paste-bin: `{"content":"…"}` (max 65,536 chars; oversize is rejected, not truncated) |
-| `POST /api/v1/checkin` | device auth | Upsert agent status |
-| `POST /api/v1/event` | device auth | Append event |
-| `POST /api/v1/heartbeat` | device auth | Liveness touch |
-| `POST /api/v1/enroll` | none (token- or proof-gated, rate-limited) | Two modes: `{"name":…,"token":…}` → one-time `{"hub_url":…,"device":…,"key":…}`; or signed handshake `{"name":…,"ek":…,"ts":…,"nonce":…,"proof":…}` → `{"hub_url":…,"device":…,"ek_fp":…,"sealed":…}` with the device key ML-KEM-768-sealed, never plaintext |
-| `POST /api/v1/fed/push` | federated device (`fed-*` credential) | Peer pushes its ledger events; deduped on (origin, origin_id) |
-| `GET /api/v1/fed/pull?origin=NAME&after=N` | federated device (`fed-*`) | Events for `origin` beyond cursor `N` (anti-entropy) |
-| `GET /api/v1/fed/peers` | device auth | The hub's federation identity (used at link time) |
-
-Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
-`Transfer-Encoding` requests are rejected `501` by design.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/` | the page |
+| GET | `/api/snapshot?fresh=1` | machines, sessions, source health, counts |
+| GET | `/api/bins` | bin summaries |
+| POST | `/api/bins` | `{"title","body","machine"}` → created bin |
+| GET | `/api/bins/<id>` | full bin |
+| DELETE | `/api/bins/<id>` | delete |
+| GET | `/healthz` | `{"ok":true}` |
 
 ## Storage
 
-All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
+One directory, one file per paste:
 
-- `config.json` — hub bind address, port, dashboard key, optional advertised URL, site enroll secret (0600)
-- `keys.json` — device records (0600)
-- `bridge.json` — agent-side hub URL + credentials (0600)
-- `enroll_tokens.json` — pending one-time enrollment tokens, hashed (0600)
-- `bins.json` — shared paste-bins, content included (0600)
-- `events.jsonl` — append-only log, rotates to `events.jsonl.old` at 10 MB
-- `sessions.json` — session channels: members, ML-KEM-768 sealed key packages, ciphertext ring per channel — never plaintext (0600)
-- `identity.json` — this bridge's ML-KEM-768 identity keypair (0600)
-- `session_keys.json` — recovered session keys for joined channels (0600)
-
-`wtf key revoke <name>` instantly disables a device; the hub picks up
-issuance/revocation without a restart.
-
-## Key management
-
-```
-wtf key issue [--json] <name>   # provision; secret printed exactly once
-wtf key list                    # devices with created/revoked state
-wtf key revoke <name>           # instant kill switch — no hub restart
+```text
+~/.wtf-live/bins/<id>.json     # {"id","title","body","machine","created_at",…}
 ```
 
-- The hub hot-reloads the keystore: newly issued devices can check in
-immediately, and revocation disables a device at once.
-- Rotation = `revoke` + fresh `issue` with the same name (the old secret
-stops working the moment it is revoked).
-- If a device's key leaks, revoke first, investigate second.
+Nothing else is written. The old hub's state (`~/.config/wtf-mcp`) is archived
+under `~/.wtf-live/legacy/` and no longer read.
 
-## Upgrading
+## Security model
 
+- Loopback bind by default; non-loopback requires an explicit flag.
+- No secrets, no accounts, no signing: the hub is a read-only aggregation plus
+  a local pastebin. Do not expose it to an untrusted network.
+- CLI calls use argument vectors (never a shell), a hard timeout, and are
+  killed on overrun; output is trimmed to 600 characters per session.
+- The page ships a restrictive CSP (`default-src 'none'`), and all rendered
+  text is HTML-escaped in the client.
+- Paste bodies are size-capped and ids are `[A-Za-z0-9_-]`, so no path traversal.
+
+## Tests
+
+```bash
+cargo test          # JSON, HTTP, bins roundtrip, text hygiene
+wtf-live doctor     # what the CLIs report right now
+wtf-live snapshot   # one-shot text view
 ```
-git pull && cargo build --release
-# restart the hub (Ctrl-C / pkill, then wtf serve again) and re-launch agents
-```
-
-Config, keys, and history persist across upgrades; nothing is lost on
-restart.
-
-## CLI
-
-```
-wtf serve [--bind IP:PORT] [--no-open]
-wtf key issue [--json] <name> | key list | key revoke <name>
-wtf url [URL | clear]   # URL handed to joining devices (overlay/https aware)
-wtf setup --url URL --name NAME --key KEY
-wtf join user@hub [--name NAME] [--url URL]   # self-enroll over ssh
-wtf enroll-token <name> [--ttl SECS] [--json] | enroll-token revoke <name>  # one-time token (hub side)
-wtf enroll-secret [--rotate] [--json]           # site enrollment secret (hub side; rotate kills copies)
-wtf enroll --url URL --name NAME --token TOKEN  # redeem a token to enroll this machine
-wtf enroll --url URL --name NAME --psk SECRET   # signed-handshake enroll (key arrives sealed)
-wtf bin ls [--url U] [--k K] [--json]           # operator courier: list paste-bins (dashboard key)
-wtf bin get N [-o FILE] [--url U] [--k K]       # operator courier: print bin N raw (copy/paste channel)
-wtf bin put N (TEXT | --file F | -) [--url U] [--k K] [--json]  # operator courier: write bin N
-wtf agent        # MCP stdio server — what your MCP client launches
-wtf status       # plain-text hub state (same formatter as the tool)
-wtf dashboard-url # clickable dashboard URL (hub machine; never over MCP)
-wtf federate add <name> --url URL --psk SECRET [--as DEV]  # link a peer hub (one secret copy per edge)
-wtf federate list | federate remove <name>       # peer table / unlink (restart to stop replication)
-wtf skill install [--dir DIR] [--force] | skill print  # distribute the hub skill anywhere
-wtf version
-```
-
-## Troubleshooting
-
-| Symptom | Cause → fix |
-|---------|-------------|
-| HTTP 401 on a signed call | key revoked/wrong, clock off by >300 s, or signature input mismatch (exact path+query, raw 32-byte key as hex). Fresh nonce and retry. |
-| Dashboard 401/404 | run `wtf dashboard-url` on the hub machine — the loopback capability link is the gate; LAN viewers use `?k=<dashboard key>`. |
-| Connection refused | hub not running or wrong port — `curl http://localhost:7800/healthz`. |
-| "cannot bind" on serve | port taken: `--bind IP:PORT` or free the port. |
-| `wtf join` exit 127 | `wtf` is not on the hub host's PATH — install it there (see Build and install). |
-| `wtf join` "did not return JSON" | the hub's `wtf` predates `key issue --json`; update the hub. |
-| Other machines cannot reach a WSL2 hub | WSL is NAT'd: forward the port on the Windows host (`netsh interface portproxy add v4tov4 listenport=7800 connectport=7800 connectaddress=<WSL-IP>`) plus a firewall allow rule — or join both sides to an overlay. |
-
-## Development
-
-```
-cargo test              # 91 unit tests + 11 e2e tests (real hub + real bridge over stdio)
-cargo build --release   # lto, panic=abort, overflow checks
-```
-
-`tests/e2e.rs` starts a real hub on an ephemeral port, enrolls devices,
-launches the real bridge binary, and drives it over stdio — the same flow
-you will run across physical machines. For agents working *in this repo*:
-read `AGENTS.md` (workflow rules), `llms.txt` (DOX contracts), and
-`.agents/skills/wtf-observability/SKILL.md` (operating guide) before
-editing.

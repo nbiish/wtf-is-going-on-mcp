@@ -1,370 +1,210 @@
-//! Operator paste-bins: durable three-bin slots (BIN 1..3) holding copy-paste
-//! content handed from a human to agents, or between agents and machines on
-//! the federated server.
+//! File-backed pastebins: one JSON file per bin under `<home>/bins/`.
 //!
-//! Scoped Multi-Context 3-Bins Architecture:
-//! Every context individually owns its own trio of 3 bins (BIN 1..3):
-//!   - `scope: "user"`: global courier clipboard for human operator reference.
-//!   - `scope: "chat:<session_id>"`: dedicated 3 bins per agent chat / session channel.
-//!   - `scope: "machine:<device_name>"`: dedicated 3 bins per federated machine workspace.
-//!   - custom scopes supported seamlessly.
-//!
-//! Bins are plain state, not events: the canonical copy lives in
-//! `$WTF_HOME/bins.json`, written atomically on every update, so hub
-//! restarts lose nothing. Pasted content is treated as confidential: the
-//! file is `0600` like every other store under `$WTF_HOME`. Oversized
-//! pastes are rejected (never truncated) so instructions cannot be cut
-//! short silently.
+//! No encryption, no accounts, no database. The hub is loopback-only; bins
+//! are shared text (a spec, a log tail, a URL list) between humans and agents
+//! on any machine that can reach the hub.
 
-use crate::config;
-use crate::json::Value;
-use crate::util::{clamp, now_secs};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use crate::json::{self, Value};
+use crate::util::{clamp, now_millis};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
-pub const DEFAULT_BIN_IDS: [u8; 3] = [1, 2, 3];
-/// Hard cap per bin, in characters. Oversized writes fail closed.
-pub const MAX_BIN_CHARS: usize = 65_536;
+pub const MAX_BODY: usize = 256 * 1024;
+pub const MAX_TITLE: usize = 120;
+pub const MAX_BINS: usize = 400;
 
-pub fn normalize_scope(s: &str) -> String {
-    let t = s.trim();
-    if t.is_empty() {
-        "user".to_string()
-    } else {
-        clamp(t, 64)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Bin {
-    pub scope: String,
-    pub id: u8,
-    pub content: String,
-    /// Who last wrote this bin: a device name or "dashboard".
-    pub updated_by: String,
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub machine: String,
+    pub created_at: u64,
     pub updated_at: u64,
 }
 
 impl Bin {
-    pub fn empty(id: u8) -> Bin {
-        Self::empty_scoped("user", id)
+    pub fn bytes(&self) -> usize {
+        self.body.len()
     }
 
-    pub fn empty_scoped(scope: &str, id: u8) -> Bin {
-        Bin {
-            scope: normalize_scope(scope),
-            id,
-            content: String::new(),
-            updated_by: String::new(),
-            updated_at: 0,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.content.is_empty()
-    }
-
-    /// State/wire shape (content included so dashboards render verbatim).
-    pub fn to_state_json(&self) -> Value {
+    pub fn summary_json(&self) -> Value {
         Value::obj(vec![
-            ("scope", Value::from(self.scope.as_str())),
-            ("id", Value::from(self.id as i64)),
-            ("content", Value::from(self.content.as_str())),
-            ("updated_by", Value::from(self.updated_by.as_str())),
-            ("updated_at", Value::from(self.updated_at as i64)),
-            ("size", Value::from(self.content.chars().count() as i64)),
+            ("id", Value::from(self.id.clone())),
+            ("title", Value::from(self.title.clone())),
+            ("machine", Value::from(self.machine.clone())),
+            ("bytes", Value::num(self.body.len() as f64)),
+            ("created_at", Value::num(self.created_at as f64)),
+            ("updated_at", Value::num(self.updated_at as f64)),
+            (
+                "preview",
+                Value::from(clamp(&self.body.replace('\n', " "), 160)),
+            ),
         ])
     }
 
-    fn to_file_json(&self) -> Value {
+    pub fn to_json(&self) -> Value {
         Value::obj(vec![
-            ("scope", Value::from(self.scope.as_str())),
-            ("id", Value::from(self.id as i64)),
-            ("content", Value::from(self.content.as_str())),
-            ("updated_by", Value::from(self.updated_by.as_str())),
-            ("updated_at", Value::from(self.updated_at as i64)),
+            ("id", Value::from(self.id.clone())),
+            ("title", Value::from(self.title.clone())),
+            ("body", Value::from(self.body.clone())),
+            ("machine", Value::from(self.machine.clone())),
+            ("bytes", Value::num(self.body.len() as f64)),
+            ("created_at", Value::num(self.created_at as f64)),
+            ("updated_at", Value::num(self.updated_at as f64)),
         ])
     }
 
     fn from_json(v: &Value) -> Option<Bin> {
-        let id = v.get("id")?.as_i64()?;
-        if !Bins::valid_id(id) {
-            return None;
-        }
-        let raw_scope = v.get("scope").and_then(|x| x.as_str()).unwrap_or("user");
-        let scope = normalize_scope(raw_scope);
         Some(Bin {
-            scope,
-            id: id as u8,
-            content: v
-                .get("content")
+            id: v.get("id")?.as_str()?.to_string(),
+            title: v.get("title")?.as_str()?.to_string(),
+            body: v.get("body")?.as_str()?.to_string(),
+            machine: v
+                .get("machine")
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
-                .to_string(),
-            updated_by: v
-                .get("updated_by")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
+                .into(),
+            created_at: v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
             updated_at: v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
         })
     }
 }
 
-pub struct Bins {
-    inner: Mutex<Vec<Bin>>,
-    path: PathBuf,
+pub struct Store {
+    root: PathBuf,
 }
 
-impl Bins {
-    pub fn load() -> Bins {
-        Self::load_at(&config::bins_path())
+impl Store {
+    pub fn open(home: &Path) -> io::Result<Store> {
+        let root = home.join("bins");
+        fs::create_dir_all(&root)?;
+        Ok(Store { root })
     }
 
-    pub fn load_at(path: &PathBuf) -> Bins {
-        let mut bins: Vec<Bin> = Vec::new();
-        if let Ok(Some(v)) = config::load_json(path) {
-            if let Some(arr) = v.get("bins").and_then(|x| x.as_arr()) {
-                for item in arr {
-                    if let Some(b) = Bin::from_json(item) {
-                        bins.push(b);
-                    }
-                }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn list(&self) -> Vec<Bin> {
+        let mut bins = Vec::new();
+        let Ok(dir) = fs::read_dir(&self.root) else {
+            return bins;
+        };
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(bin) = read_bin(&path) {
+                bins.push(bin);
             }
         }
-        for id in DEFAULT_BIN_IDS {
-            if !bins.iter().any(|b| b.scope == "user" && b.id == id) {
-                bins.push(Bin::empty_scoped("user", id));
-            }
+        bins.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        bins
+    }
+
+    pub fn get(&self, id: &str) -> Option<Bin> {
+        if !valid_id(id) {
+            return None;
         }
-        bins.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.id.cmp(&b.id)));
-        Bins {
-            inner: Mutex::new(bins),
-            path: path.clone(),
+        read_bin(&self.root.join(format!("{id}.json")))
+    }
+
+    pub fn put(&self, title: &str, body: &str, machine: &str) -> Result<Bin, String> {
+        if body.trim().is_empty() {
+            return Err("body is empty".into());
         }
-    }
-
-    pub fn valid_id(id: i64) -> bool {
-        (1..=255).contains(&id)
-    }
-
-    pub fn trio_for_slot(slot: u16) -> [u8; 3] {
-        let base = 3 + slot.saturating_mul(3);
-        let b = base.min(253);
-        [b as u8, (b + 1) as u8, (b + 2) as u8]
-    }
-
-    pub fn get(&self, id: u8) -> Option<Bin> {
-        self.get_scoped("user", id)
-    }
-
-    pub fn get_scoped(&self, scope: &str, id: u8) -> Option<Bin> {
-        let sc = normalize_scope(scope);
-        let inner = self.inner.lock().unwrap();
-        if let Some(b) = inner.iter().find(|b| b.scope == sc && b.id == id) {
-            Some(b.clone())
-        } else if DEFAULT_BIN_IDS.contains(&id) {
-            Some(Bin::empty_scoped(&sc, id))
-        } else {
-            None
+        if body.len() > MAX_BODY {
+            return Err(format!("body exceeds {} KiB", MAX_BODY / 1024));
         }
-    }
-
-    pub fn list_scope(&self, scope: &str) -> Vec<Bin> {
-        let sc = normalize_scope(scope);
-        let inner = self.inner.lock().unwrap();
-        let mut list = Vec::new();
-        for id in DEFAULT_BIN_IDS {
-            if let Some(b) = inner.iter().find(|b| b.scope == sc && b.id == id) {
-                list.push(b.clone());
-            } else {
-                list.push(Bin::empty_scoped(&sc, id));
-            }
-        }
-        for b in inner.iter() {
-            if b.scope == sc && !DEFAULT_BIN_IDS.contains(&b.id) {
-                list.push(b.clone());
-            }
-        }
-        list.sort_by_key(|b| b.id);
-        list
-    }
-
-    pub fn scopes(&self) -> Vec<String> {
-        let inner = self.inner.lock().unwrap();
-        let mut list = vec!["user".to_string()];
-        for b in inner.iter() {
-            if !list.contains(&b.scope) {
-                list.push(b.scope.clone());
-            }
-        }
-        list
-    }
-
-    pub fn all(&self) -> Vec<Bin> {
-        self.inner.lock().unwrap().clone()
-    }
-
-    pub fn set(&self, id: u8, content: &str, by: &str) -> Result<Bin, String> {
-        self.set_scoped("user", id, content, by)
-    }
-
-    pub fn set_scoped(&self, scope: &str, id: u8, content: &str, by: &str) -> Result<Bin, String> {
-        if !Self::valid_id(id as i64) {
+        if self.list().len() >= MAX_BINS {
             return Err(format!(
-                "bin must be one of: {}",
-                DEFAULT_BIN_IDS
-                    .iter()
-                    .map(|i| i.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "bin limit reached ({MAX_BINS}); delete an old bin first"
             ));
         }
-        if content.chars().count() > MAX_BIN_CHARS {
-            return Err(format!("bin content too large (max {MAX_BIN_CHARS} chars)"));
-        }
-        let sc = normalize_scope(scope);
-        let bin = Bin {
-            scope: sc.clone(),
-            id,
-            content: content.to_string(),
-            updated_by: clamp(by, 64),
-            updated_at: now_secs(),
+        let title = if title.trim().is_empty() {
+            first_line(body)
+        } else {
+            clamp(title.trim(), MAX_TITLE)
         };
-        let mut inner = self.inner.lock().unwrap();
-        let mut found = false;
-        let mut projected: Vec<Value> = Vec::new();
-        for b in inner.iter() {
-            if b.scope == sc && b.id == id {
-                projected.push(bin.to_file_json());
-                found = true;
-            } else {
-                projected.push(b.to_file_json());
-            }
-        }
-        if !found {
-            projected.push(bin.to_file_json());
-        }
-        config::save_json(
-            &self.path,
-            &Value::obj(vec![("bins", Value::Arr(projected))]),
-            0o600,
-        )?;
-        match inner.iter_mut().find(|b| b.scope == sc && b.id == id) {
-            Some(slot) => *slot = bin.clone(),
-            None => {
-                inner.push(bin.clone());
-                inner.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.id.cmp(&b.id)));
-            }
-        }
+        let now = now_millis();
+        let id = format!("{now:x}-{:04x}", fnv1a(body.as_bytes()) & 0xffff);
+        let bin = Bin {
+            id: id.clone(),
+            title,
+            body: body.to_string(),
+            machine: clamp(machine.trim(), 60),
+            created_at: now,
+            updated_at: now,
+        };
+        let path = self.root.join(format!("{id}.json"));
+        let tmp = self.root.join(format!(".{id}.tmp"));
+        let json = bin.to_json().to_json();
+        fs::write(&tmp, json).map_err(|e| format!("write bin: {e}"))?;
+        fs::rename(&tmp, &path).map_err(|e| format!("commit bin: {e}"))?;
         Ok(bin)
     }
 
-    pub fn to_state_json(&self) -> Value {
-        Value::Arr(self.list_scope("user").iter().map(|b| b.to_state_json()).collect())
+    pub fn delete(&self, id: &str) -> bool {
+        if !valid_id(id) {
+            return false;
+        }
+        fs::remove_file(self.root.join(format!("{id}.json"))).is_ok()
     }
+}
+
+fn read_bin(path: &Path) -> Option<Bin> {
+    let text = fs::read_to_string(path).ok()?;
+    let value = json::parse(&text).ok()?;
+    Bin::from_json(&value)
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn first_line(body: &str) -> String {
+    clamp(body.lines().next().unwrap_or("untitled").trim(), MAX_TITLE)
+}
+
+fn fnv1a(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in data {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp_path(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "wtf-bins-{tag}-{}-{}",
-            std::process::id(),
-            crate::rand::hex(6)
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d.join("bins.json")
+    #[test]
+    fn roundtrip_and_delete() {
+        let dir = std::env::temp_dir().join(format!("wtf-live-test-{}", now_millis()));
+        let store = Store::open(&dir).unwrap();
+        let bin = store.put("hello", "a body\nline two", "box").unwrap();
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.get(&bin.id).unwrap().body, "a body\nline two");
+        assert!(store.delete(&bin.id));
+        assert!(store.list().is_empty());
+        assert!(store.get("../../etc/passwd").is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn set_get_and_persistence() {
-        let p = temp_path("persist");
-        let b = Bins::load_at(&p);
-        assert!(b.get(1).unwrap().is_empty());
-        let saved = b.set(2, "work from this spec", "dashboard").unwrap();
-        assert_eq!(saved.updated_by, "dashboard");
-        assert!(saved.updated_at > 0);
-        // survives a reload
-        let b2 = Bins::load_at(&p);
-        assert_eq!(b2.get(2).unwrap().content, "work from this spec");
-        assert_eq!(b2.get(1).unwrap().content, "");
-        // 0600 like every store under WTF_HOME
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&p).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn scoped_bins_isolation_and_persistence() {
-        let p = temp_path("scoped");
-        let b = Bins::load_at(&p);
-        assert!(b.get_scoped("chat:lane-1", 1).unwrap().is_empty());
-        b.set_scoped("chat:lane-1", 1, "chat secret key", "claude-code").unwrap();
-        b.set_scoped("machine:pi", 1, "pi wifi credentials", "dashboard").unwrap();
-        b.set(1, "global user spec", "dashboard").unwrap();
-
-        assert_eq!(b.get_scoped("chat:lane-1", 1).unwrap().content, "chat secret key");
-        assert_eq!(b.get_scoped("machine:pi", 1).unwrap().content, "pi wifi credentials");
-        assert_eq!(b.get(1).unwrap().content, "global user spec");
-
-        // List scope guarantees 3 bins
-        let chat_bins = b.list_scope("chat:lane-1");
-        assert_eq!(chat_bins.len(), 3);
-        assert_eq!(chat_bins[0].content, "chat secret key");
-        assert_eq!(chat_bins[1].content, "");
-
-        let scopes = b.scopes();
-        assert!(scopes.contains(&"user".to_string()));
-        assert!(scopes.contains(&"chat:lane-1".to_string()));
-        assert!(scopes.contains(&"machine:pi".to_string()));
-
-        // Reload from disk
-        let b2 = Bins::load_at(&p);
-        assert_eq!(b2.get_scoped("chat:lane-1", 1).unwrap().content, "chat secret key");
-        assert_eq!(b2.get_scoped("machine:pi", 1).unwrap().content, "pi wifi credentials");
-        assert_eq!(b2.get(1).unwrap().content, "global user spec");
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn rejects_bad_id_and_oversize() {
-        let p = temp_path("reject");
-        let b = Bins::load_at(&p);
-        assert!(b.set(0, "x", "d").is_err());
-        assert!(b.set(255, "x", "d").is_ok());
-        let big = "x".repeat(MAX_BIN_CHARS + 1);
-        assert!(b.set(1, &big, "d").is_err());
-        let at_cap = "x".repeat(MAX_BIN_CHARS);
-        assert!(b.set(1, &at_cap, "d").is_ok());
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn corrupt_and_missing_files_tolerated() {
-        let p = temp_path("tolerant");
-        std::fs::write(&p, "not json at all {{{").unwrap();
-        let b = Bins::load_at(&p);
-        assert_eq!(b.all().len(), 3);
-        assert!(b.all().iter().all(|x| x.is_empty()));
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn set_rejects_before_mutating_on_disk_error() {
-        let p = temp_path("failclosed");
-        std::fs::remove_file(&p).ok();
-        std::fs::create_dir_all(&p).unwrap();
-        let b = Bins::load_at(&p);
-        assert!(b.set(1, "hello", "d").is_err());
-        assert!(b.get(1).unwrap().is_empty());
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-        std::fs::remove_dir(&p).ok();
+    fn rejects_empty_and_oversize() {
+        let dir = std::env::temp_dir().join(format!("wtf-live-test-{}", now_millis() + 1));
+        let store = Store::open(&dir).unwrap();
+        assert!(store.put("t", "   ", "m").is_err());
+        assert!(store.put("t", &"x".repeat(MAX_BODY + 1), "m").is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
