@@ -1,0 +1,12 @@
+### [2026-10-31T14:22:00Z] feat/live-hub
+What changed: retired the wtf hub (MCP bridge, federation, PQC session channels, signed API) and shipped wtf-live — a 525 KB std-only binary serving one page for Herdr + Orca sessions and file-backed pastebins; merged to main as e7c013a.
+Next step: add a `--machine` fan-out test with a real second Herdr host, then decide whether the pastebin needs TTL/expiry.
+Adversarial/security: loopback-only bind plus explicit `--allow-remote` is right; keep the CSP and escape path audited as the page grows.
+Privacy/data-protection: pastebins are plaintext by design — document "no secrets in bins" in the skill and UI placeholder (done) and consider an opt-in redaction pass.
+Supply-chain/third-party-risk: zero crates means no lockfile surface, but the hub trusts `herdr`/`orca` JSON shapes — pin expectations with fixtures when either CLI bumps.
+Systems-architecture/devops: one binary, one dir, one port; a launchd/systemd unit would make it survive logout without adding a supervisor dependency.
+Reliability/verification: per-call timeouts and kill-on-overrun are in place; the route test now covers the 404 and bin lifecycle, but no test covers CLI-down degradation end-to-end.
+Governance/sovereignty: local-only state and no accounts keep the hub inside the operator's trust boundary; document that in README's security section (done).
+Terminal-orchestration/swe-bench: `wtf-live snapshot` is a clean machine-readable feed for orchestration loops — consider exposing it over MCP as read-only later.
+Master-orchestrator/self-prompting: the page is the human mirror of the COMMS ledger; link sessions to ledger entries once transcript search lands.
+Developer-experience/ergonomics: `doctor` plus the source pills make failure states legible; next ergonomic win is a `wtf-live open` that reuses the running port instead of spawning a second hub.

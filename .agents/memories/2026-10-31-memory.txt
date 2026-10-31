@@ -1,0 +1,8 @@
+# 2026-10-31 — durable notes
+
+- 14:10 wtf-live replaces the wtf hub: single std-only Rust binary, `serve` + `bin` CLI, page at 127.0.0.1:7800 — sources are `herdr` and `orca` CLIs only.
+- 14:12 Herdr 0.9.5 installed via Homebrew; CLI needs a running server (`herdr` TUI or `herdr server`); cross-machine panes go through `herdr --machine <profile>` and need an updated remote server.
+- 14:13 Orca CLI lives at /Applications/Orca.app/Contents/Resources/bin/orca — the /usr/local/bin/orca symlink is mode 700 root and fails; resolve the app bundle path explicitly.
+- 14:14 `orca worktree ps --json` is the cheapest live source (agents, states, previews); `orca environment list` + `--environment <id>` covers paired servers.
+- 14:16 Old hub retired: ~/.config/wtf-mcp archived to ~/.wtf-live/legacy/wtf-mcp-2026-10-31.tar.gz, stale ~/.local/bin/wtf archived alongside. Nothing reads WTF_HOME anymore.
+- 14:18 Verification: `cargo test` 18 unit + 1 route test green; headless Chrome DOM dump confirms live session titles render; `curl /api/snapshot` returns counts.
