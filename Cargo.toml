@@ -1,19 +1,19 @@
 [package]
-name = "wtf"
-version = "0.15.1"
+name = "wtf-live"
+version = "1.0.0"
 edition = "2021"
-description = "wtf-is-going-on-mcp: secure multi-agent activity hub with MCP stdio bridge and live dashboard"
+description = "wtf-live: one localhost view of every cross-machine agent session (Herdr + Orca CLI)"
 publish = false
 
-# Zero external dependencies by design (see README: Security model).
+# Zero external dependencies by design: std only, one static binary.
 [dependencies]
 
 [[bin]]
-name = "wtf"
+name = "wtf-live"
 path = "src/main.rs"
 
 [lib]
-name = "wtf"
+name = "wtf_live"
 path = "src/lib.rs"
 
 [profile.release]

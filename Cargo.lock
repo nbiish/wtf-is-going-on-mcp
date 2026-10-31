@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "wtf"
-version = "0.15.1"
+name = "wtf-live"
+version = "1.0.0"

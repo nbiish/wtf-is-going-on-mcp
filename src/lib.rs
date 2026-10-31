@@ -1,35 +1,20 @@
-//! wtf-is-going-on-mcp — see README.md.
+//! wtf-live — one localhost view of cross-machine agent sessions.
 //!
-//! Everything is implemented in-tree on top of `std` only:
-//! SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server+client, and the MCP stdio
-//! bridge. Zero external crates is a hard project constraint.
+//! Two live sources, one page:
+//!   * Herdr — workspaces, panes, agent state and pane output.
+//!   * Orca  — worktrees, terminals, agent state and terminal previews.
+//!
+//! Plus a file-backed pastebin shared between machines. Everything is `std`
+//! only; the whole server is the binary and one embedded page.
 
-pub mod aes;
-pub mod api;
-pub mod auth;
 pub mod bins;
-pub mod client;
-pub mod comms;
-pub mod config;
-pub mod dashboard;
-pub mod executor;
-pub mod fed_shell;
-pub mod federation;
-pub mod gcm;
-pub mod hmac;
+pub mod exec;
 pub mod http;
-pub mod identity;
 pub mod json;
-pub mod keccak;
-pub mod mcp;
-pub mod mlkem768;
-pub mod ntt_tables;
-pub mod rand;
-pub mod replicate;
-pub mod session_crypto;
-pub mod sessions;
-pub mod sha256;
-pub mod store;
+pub mod model;
+pub mod server;
+pub mod sources;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const DEFAULT_PORT: u16 = 7800;
