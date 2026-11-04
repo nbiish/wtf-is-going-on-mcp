@@ -1,0 +1,17 @@
+# Suggestions 2026-11-04 (UTC)
+
+## refactor/wtf-simplify-bins-orca — v0.17.0 bin removal + single Herdr-first skill
+
+**What changed:** The paste-bin subsystem is gone end-to-end (module, 3 HTTP routes, 3 MCP tools, CLI verb, dashboard section, federation sync, state fields, store file) — net −2,007 lines. Three overlapping wtf skills collapsed into one, `wtf-is-going-on-mcp`, authored in ainish-coder and embedded in the binary. The skill now draws the Herdr/wtf line explicitly.
+
+**Next step:** Rebase `wip/operator-preserve-2026-11-03` onto v0.17.0, keeping CompletionsConfig + hermes/pi switching and dropping its now-obsolete bin-federation half.
+
+**Adversarial/security:** Removing bins deleted a plaintext-at-rest surface (`bins.json`, 0600) that could hold operator-pasted specs and was reachable by any device on the hub. Net security win; no new attack surface added.
+**Privacy/data-protection:** One fewer store holding operator-pasted content; the guidance now routes secrets exclusively to the e2e-encrypted lane, which is where they belonged.
+**Supply-chain/third-party-risk:** Herdr is now the named session layer but is deliberately **not** a dependency — no code, no crates, no invocation from wtf. Docs-only coupling; the binary still builds offline with zero external crates.
+**Systems-architecture/devops:** This is subtraction, not migration: three routes return uniform 404, so old clients fail closed rather than silently diverging. Version bumped to 0.17.0 to mark the break.
+**Reliability/verification:** Verified on a live hub, not just in tests — bins 404, dashboard 200 and bin-free, state JSON clean, skill install path correct. E2E now asserts the exact retired-tool list, so the removal cannot silently regress.
+**Governance/sovereignty:** Skill authorship centralized in ainish-coder with a byte-identical embedded copy — one source of truth, and `tests/e2e.rs` will catch drift.
+**Terminal-orchestration/swe-bench:** The Herdr split is the substantive change here: wtf stops pretending to be an orchestrator and becomes what it is good at — a durable cross-machine record.
+**Master-orchestrator/self-prompting:** The operator WIP was preserved rather than discarded, on its own branch, with a note on what to keep and what to drop. Nothing destroyed.
+**Developer-experience/ergonomics:** −2,007 lines and three fewer concepts (bins, scopes, bin federation) for anyone reading or extending this repo.

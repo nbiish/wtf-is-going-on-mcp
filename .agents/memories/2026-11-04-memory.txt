@@ -1,0 +1,10 @@
+# Memory 2026-11-04 (UTC)
+
+- 04:02 [decision] paste-bin subsystem removed in v0.17.0 — src/bins.rs deleted; `/api/v1/bins*` returns uniform 404; MCP tools read_bin/write_bin/list_bins gone (20→17); `wtf bin` CLI gone; dashboard grid + scope tabs gone; `bins.json` no longer written. Agents use files + scp/ssh for scratch, session_send/comms_post for coordination. — src/api.rs, src/mcp.rs, src/main.rs, src/dashboard.rs
+- 04:02 [gotcha] `state.get("bins")` no longer exists in State JSON; anything reading bin fields must use sessions instead. — src/store.rs to_state_json
+- 03:52 [decision] ONE wtf skill: `wtf-is-going-on-mcp`, authored in ~/code-external/ainish-coder/.agents/skills/ and copied byte-identical into this repo for `include_str!` embedding. Replaced wtf-mcp-mastery + wtf-agent-hub + wtf-observability. — src/main.rs MASTER_SKILL
+- 04:00 [decision] Herdr-first split (operator directive 2026-11-03): Herdr owns agent sessions (workspaces/panes/worktrees/lifecycles/cross-machine over ssh); wtf owns the shared record and encrypted lanes. wtf launches no agents, manages no terminals, stores no scratch bytes. orca-cli is only a user-facing entry point, not a dependency.
+- 04:10 [gotcha] herdr 0.9.1 is at ~/.local/bin/herdr; bare `orca` resolves to the GNOME screen reader — use `orca-ide`. `herdr --skill` prints the agent guide; `HERDR_ENV=1` means you are inside a Herdr pane.
+- 04:09 [gotcha] the main checkout carried 52 files of uncommitted operator WIP that ADDS bin UI and overlaps the refactor. Preserved on `wip/operator-preserve-2026-11-03` (fc3e2f0) before merging. Never discard it.
+- 04:16 [gotcha] failing e2e runs leak `wtf serve --bind 127.0.0.1:0` child processes; `pkill -f 'wtf serve'` after a red test run or they accumulate.
+- 04:18 [RESOLVED] v0.16.0 "20 MCP tools / 111 unit / 14 e2e" — now 17 tools / 106 unit / 12 e2e as of v0.17.0.

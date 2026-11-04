@@ -1,0 +1,18 @@
+# Team ledger 2026-11-04 (UTC) — refactor/wtf-simplify-bins-orca
+
+start: 2026-11-04T03:12:00Z agent:cursor parent:none branch:refactor/wtf-simplify-bins-orca triage:now
+checkin: scope=remove paste-bin subsystem; consolidate three wtf skills into one Herdr-first skill; simplify dashboard. objective=cut managed infrastructure agents can replace with ssh/scp, make orca/herdr the cross-machine session layer, ship one distributable skill from ainish-coder.
+update: 2026-11-04T03:25:00Z found operator WIP uncommitted in main checkout (52 files, adds bin UI + CompletionsConfig) — preserved verbatim on branch wip/operator-preserve-2026-11-03 (commit fc3e2f0), NOT discarded.
+update: 2026-11-04T03:41:00Z bins removed end-to-end — src/bins.rs, /api/v1/bins* routes+handlers, read_bin/write_bin/list_bins (20→17 tools), `wtf bin` CLI, dashboard grid+scope tabs+~180 lines JS, state bins/bin_scopes, bins.json. 106 unit + 12 e2e green; clippy clean.
+update: 2026-11-04T03:52:00Z skill consolidation — wtf-mcp-mastery + wtf-agent-hub + wtf-observability → ONE `wtf-is-going-on-mcp`, authored in ainish-coder, byte-identical copy in this repo, embedded via include_str! for `wtf skill install`. Herdr-first: Herdr owns sessions, wtf owns the record.
+verify: 2026-11-04T04:02:00Z live hub v0.17.0 — /api/v1/bins* → 404 (uniform), dashboard 200 with zero bin UI, state JSON has no bins key, skill installs at .agents/skills/wtf-is-going-on-mcp/SKILL.md.
+intent-merge: 2026-11-04T04:06:00Z branch=refactor/wtf-simplify-bins-orca scope=src/ tests/ .agents/skills/ README.md llms.txt docs/ Cargo.toml
+update: 2026-11-04T04:09:00Z merge blocked by operator WIP in main checkout; moved WIP to wip/operator-preserve-2026-11-03, stashed, merged --no-ff (6a972ad), restored WIP and committed it there (fc3e2f0). Nothing lost.
+update: 2026-11-04T04:14:00Z ainish-coder side merged (354f32a): wtf-agent-hub + wtf-observability deleted, wtf-is-going-on-mcp added; pqc-secrets issue.rs comment updated to the new name.
+rebuild: 2026-11-04T04:16:00Z main rebuilt release, `wtf version` = 0.17.0; killed 4 leaked test hubs from the earlier failing runs; smoke-tested on 47831 then stopped.
+checkout: 2026-11-04T04:18:00Z branch=refactor/wtf-simplify-bins-orca merged=main worktree=removed branch=deleted rebuild=done status=complete
+
+## Notes for the next agent
+- `wip/operator-preserve-2026-11-03` holds real work: CompletionsConfig + hermes/pi agent switching (src/chat.rs), config modal + router pills (src/dashboard.rs), ML-KEM merge_remote federation. Its bin-federation half is now obsolete; rebase the rest.
+- Herdr (0.9.1) is installed at ~/.local/bin/herdr. `orca` on PATH is GNOME's screen reader — use `orca-ide` if Orca is ever needed. Operator directive: herdr-first, orca is just how users reach wtf.
+- Skill is canonical in ainish-coder; keep the repo copy byte-identical or `tests/e2e.rs` skill-install assertions drift.
