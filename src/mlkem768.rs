@@ -516,7 +516,7 @@ pub fn encaps_det(ek: &[u8; EK_BYTES], m: &[u8; 32]) -> ([u8; CT_BYTES], [u8; SS
         r
     };
 
-    let (kr64) = sha3_512_parts(&[m, &{
+    let kr64 = sha3_512_parts(&[m, &{
         let h = sha3_256_parts(&[ek]);
         h.to_vec()
     }]);

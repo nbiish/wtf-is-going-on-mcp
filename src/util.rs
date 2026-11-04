@@ -1,5 +1,7 @@
 //! Small shared helpers. No allocation-heavy magic, no panics on input.
 
+use std::net::Ipv4Addr;
+
 /// Lowercase hex encode.
 pub fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -136,9 +138,44 @@ pub fn lan_ip() -> String {
         .unwrap_or_else(|| Ipv4Addr::LOCALHOST.to_string())
 }
 
+/// Bind to a TCP port with automatic fallback: tries `start_port..=start_port + max_fallback`.
+/// Returns Ok((TcpListener, bound_port)) or Err if all attempts fail.
+pub fn bind_with_fallback(
+    ip: Ipv4Addr,
+    start_port: u16,
+    max_fallback: u16,
+) -> Result<(std::net::TcpListener, u16), String> {
+    let max_port = start_port.saturating_add(max_fallback);
+    let mut last_err = String::new();
+    for p in start_port..=max_port {
+        match std::net::TcpListener::bind(std::net::SocketAddr::from((ip, p))) {
+            Ok(l) => return Ok((l, p)),
+            Err(e) => {
+                last_err = format!("{e}");
+            }
+        }
+    }
+    Err(format!(
+        "cannot bind {ip} ports {start_port}..{max_port}: {last_err}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bind_with_fallback_auto_selects_next_port_when_busy() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let blocker = std::net::TcpListener::bind(std::net::SocketAddr::from((ip, 0))).unwrap();
+        let busy_port = blocker.local_addr().unwrap().port();
+
+        let (listener, bound_port) = bind_with_fallback(ip, busy_port, 10).unwrap();
+        assert_ne!(bound_port, busy_port);
+        assert!(bound_port > busy_port);
+        drop(listener);
+        drop(blocker);
+    }
 
     #[test]
     fn hex_roundtrip() {

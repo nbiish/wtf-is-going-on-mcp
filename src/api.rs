@@ -85,8 +85,10 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/enroll"
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
+            | "/api/v1/fed/bins"
             | "/api/v1/env"
             | "/api/v1/chat/completions"
+            | "/api/v1/completions/config"
             | "/api/v1/shell/machines"
             | "/api/v1/shell/config"
             | "/api/v1/shell/exec"
@@ -116,6 +118,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/enroll") => HandlerResult::Respond(enroll(hub, req)),
         ("POST", "/api/v1/fed/push") => HandlerResult::Respond(fed_push(hub, req)),
         ("GET", "/api/v1/fed/peers") => HandlerResult::Respond(fed_peers(hub, req)),
+        ("POST", "/api/v1/fed/bins") => HandlerResult::Respond(fed_bins_post(hub, req)),
+        ("GET", "/api/v1/fed/bins") => HandlerResult::Respond(fed_bins_get(hub, req)),
         ("POST", "/api/v1/env") => HandlerResult::Respond(env_report(hub, req)),
         ("GET", "/api/v1/env") => HandlerResult::Respond(env_list(hub, req)),
         ("GET", "/api/v1/shell/machines") => HandlerResult::Respond(shell_machines(hub, req)),
@@ -123,6 +127,12 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
         ("POST", "/api/v1/shell/exec") => HandlerResult::Respond(shell_exec(hub, req)),
         ("GET", "/api/v1/router/status") => HandlerResult::Respond(router_status(hub, req)),
+        ("GET", "/api/v1/completions/config") => {
+            HandlerResult::Respond(completions_config_get(hub, req))
+        }
+        ("POST", "/api/v1/completions/config") => {
+            HandlerResult::Respond(completions_config_post(hub, req))
+        }
         ("POST", "/api/v1/chat/completions") => HandlerResult::Respond(chat_completions(hub, req)),
         (_, p) if p.starts_with("/api/v1/fed/pull") => HandlerResult::Respond(fed_pull(hub, req)),
         ("GET", "/api/v1/sessions") => HandlerResult::Respond(sessions_list(hub, req)),
@@ -1408,11 +1418,9 @@ fn term_allowed(hub: &Hub, req: &Request) -> bool {
     cap_ok(hub, req) || device_auth(hub, req).is_ok()
 }
 
-/// POST /api/v1/chat/completions {prompt, model?, system?}: chat with the
-/// operator-run local-router's OpenAI-compatible endpoint. The hub is a thin
-/// authenticated proxy — it NEVER spawns router infra (2026-09-04/07); with
-/// :11434 down this fails closed with a 502 and a clear message. Model
-/// defaults to passive discovery (llama.cpp qwen3 abliterated first).
+/// POST /api/v1/chat/completions {prompt, model?, system?, agent?, provider?}:
+/// chat with the configured completions backend (OpenAI or Anthropic), defaulting to
+/// the operator-run local-router proxy (http://127.0.0.1:11434).
 fn chat_completions(hub: &Arc<Hub>, req: &Request) -> Response {
     if !term_allowed(hub, req) {
         return Response::error(401, "operator auth required (?cap= or device headers)");
@@ -1422,29 +1430,168 @@ fn chat_completions(hub: &Arc<Hub>, req: &Request) -> Response {
         Err(r) => return r,
     };
     let Some(prompt) = body.get("prompt").and_then(|x| x.as_str()) else {
-        return Response::error(400, "body must be {prompt: \"...\", model?: \"...\", system?: \"...\"}");
+        return Response::error(
+            400,
+            "body must be {prompt: \"...\", model?: \"...\", system?: \"...\", agent?: \"...\", provider?: \"...\"}",
+        );
     };
     if prompt.len() > 32_768 {
         return Response::error(413, "prompt too large (32 KiB max)");
     }
+    let mut cfg = crate::chat::load_completions_config();
+    if let Some(agent_arg) = body.get("agent").and_then(|x| x.as_str()) {
+        cfg.selected_agent = crate::chat::normalize_agent(agent_arg).to_string();
+    }
+    if let Some(p) = body.get("provider").and_then(|x| x.as_str()) {
+        let p_low = p.trim().to_ascii_lowercase();
+        if p_low == "anthropic" {
+            cfg.provider = "anthropic".to_string();
+        } else if p_low == "openai" {
+            cfg.provider = "openai".to_string();
+        }
+    }
     let model = body.get("model").and_then(|x| x.as_str());
     let system = body.get("system").and_then(|x| x.as_str());
-    let model_used = model
-        .map(str::to_string)
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| crate::chat::preferred_model(&crate::chat::router_models()));
-    match crate::chat::chat_completion(prompt, model, system) {
-        Ok(content) => Response::json(200, &Value::obj(vec![
-            ("ok", Value::from(true)),
-            ("model", Value::from(model_used.as_str())),
-            ("content", Value::from(content.as_str())),
-        ])),
-        Err(e) => Response::json(502, &Value::obj(vec![
-            ("ok", Value::from(false)),
-            ("model", Value::from(model_used.as_str())),
-            ("error", Value::from(e.as_str())),
-        ])),
+    match crate::chat::chat_completion_with_config(prompt, &cfg, model, system) {
+        Ok((content, model_used)) => Response::json(
+            200,
+            &Value::obj(vec![
+                ("ok", Value::from(true)),
+                ("model", Value::from(model_used.as_str())),
+                ("agent", Value::from(cfg.selected_agent.as_str())),
+                ("provider", Value::from(cfg.provider.as_str())),
+                ("content", Value::from(content.as_str())),
+            ]),
+        ),
+        Err(e) => Response::json(
+            502,
+            &Value::obj(vec![
+                ("ok", Value::from(false)),
+                ("model", Value::from(cfg.model.as_str())),
+                ("agent", Value::from(cfg.selected_agent.as_str())),
+                ("provider", Value::from(cfg.provider.as_str())),
+                ("error", Value::from(e.as_str())),
+            ]),
+        ),
     }
+}
+
+/// GET /api/v1/completions/config: fetch the current completions configuration
+/// and active router probe info.
+fn completions_config_get(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or device headers)");
+    }
+    let cfg = crate::chat::load_completions_config();
+    let resp = Value::obj(vec![
+        ("provider", Value::from(cfg.provider.as_str())),
+        ("endpoint", Value::from(cfg.endpoint.as_str())),
+        ("api_key", Value::from(cfg.api_key.as_str())),
+        ("model", Value::from(cfg.model.as_str())),
+        ("selected_agent", Value::from(cfg.selected_agent.as_str())),
+        ("system_prompt", Value::from(cfg.system_prompt.as_str())),
+        ("router", crate::chat::router_state_json()),
+    ]);
+    Response::json(200, &resp)
+}
+
+/// POST /api/v1/completions/config: update provider (openai|anthropic), endpoint,
+/// model, api_key, selected_agent (hermes|pi), and system prompt.
+fn completions_config_post(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !term_allowed(hub, req) {
+        return Response::error(401, "operator auth required (?cap= or device headers)");
+    }
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let mut cfg = crate::chat::load_completions_config();
+    if let Some(p) = body.get("provider").and_then(|x| x.as_str()) {
+        let p_low = p.trim().to_ascii_lowercase();
+        if p_low == "anthropic" {
+            cfg.provider = "anthropic".to_string();
+        } else {
+            cfg.provider = "openai".to_string();
+        }
+    }
+    if let Some(e) = body.get("endpoint").and_then(|x| x.as_str()) {
+        if !e.trim().is_empty() {
+            cfg.endpoint = e.trim().to_string();
+        }
+    }
+    if let Some(k) = body.get("api_key").and_then(|x| x.as_str()) {
+        cfg.api_key = k.trim().to_string();
+    }
+    if let Some(m) = body.get("model").and_then(|x| x.as_str()) {
+        cfg.model = m.trim().to_string();
+    }
+    if let Some(a) = body.get("selected_agent").and_then(|x| x.as_str()) {
+        cfg.selected_agent = crate::chat::normalize_agent(a).to_string();
+    }
+    if let Some(s) = body.get("system_prompt").and_then(|x| x.as_str()) {
+        cfg.system_prompt = s.to_string();
+    }
+    if let Err(e) = crate::chat::save_completions_config(&cfg) {
+        return Response::error(500, &format!("cannot save completions config: {e}"));
+    }
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("config", cfg.to_json()),
+        ]),
+    )
+}
+
+/// POST /api/v1/fed/bins: peer hub pushes updated bins across the federated mesh.
+/// Merges any bin whose updated_at is newer than local.
+fn fed_bins_post(hub: &Arc<Hub>, req: &Request) -> Response {
+    let peer_device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let bins_arr = match body.get("bins").and_then(|x| x.as_arr()) {
+        Some(arr) => arr,
+        None => return Response::error(400, "missing 'bins' array"),
+    };
+    let mut updated_count = 0usize;
+    for item in bins_arr {
+        if let Some(bin) = crate::bins::Bin::from_json(item) {
+            if let Ok(true) = hub.bins.merge_remote_bin(&bin) {
+                updated_count += 1;
+            }
+        }
+    }
+    if updated_count > 0 {
+        let _ = hub.store.log_event(
+            "federation",
+            &peer_device,
+            "info",
+            &format!("federation: synced {updated_count} bin(s) from {peer_device}"),
+            "",
+        );
+    }
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("ok", Value::from(true)),
+            ("updated", Value::from(updated_count as i64)),
+        ]),
+    )
+}
+
+/// GET /api/v1/fed/bins: peer hub pulls all bins for anti-entropy sync.
+fn fed_bins_get(hub: &Arc<Hub>, req: &Request) -> Response {
+    if device_auth(hub, req).is_err() {
+        return Response::error(401, "device auth required");
+    }
+    let all_bins = hub.bins.all();
+    let arr: Vec<Value> = all_bins.iter().map(|b| b.to_file_json()).collect();
+    Response::json(200, &Value::obj(vec![("bins", Value::Arr(arr))]))
 }
 
 /// GET /api/v1/router/status: PASSIVE read-only probe of the operator-run

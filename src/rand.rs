@@ -4,9 +4,30 @@
 //! closed: if the kernel CSPRNG cannot be read, every caller panics rather
 //! than silently degrading to weak randomness.
 
+#[cfg(not(windows))]
 use std::fs::File;
+#[cfg(not(windows))]
 use std::io::Read;
 
+#[cfg(windows)]
+#[link(name = "advapi32")]
+extern "system" {
+    #[link_name = "SystemFunction036"]
+    fn RtlGenRandom(buffer: *mut u8, length: u32) -> u8;
+}
+
+#[cfg(windows)]
+fn read_random(buf: &mut [u8]) {
+    if buf.is_empty() {
+        return;
+    }
+    let ret = unsafe { RtlGenRandom(buf.as_mut_ptr(), buf.len() as u32) };
+    if ret == 0 {
+        panic!("fatal: RtlGenRandom failed");
+    }
+}
+
+#[cfg(not(windows))]
 fn read_random(buf: &mut [u8]) {
     let mut f = File::open("/dev/urandom").expect("fatal: cannot open /dev/urandom");
     f.read_exact(buf)

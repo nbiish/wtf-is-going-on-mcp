@@ -16,7 +16,6 @@
 //! first message uses seq from the create/join response (`next_seq`).
 
 use crate::gcm;
-use crate::json::Value;
 use crate::keccak;
 
 /// Per-(session, sender) subkey: HKDF-SHA3-256 style expand of

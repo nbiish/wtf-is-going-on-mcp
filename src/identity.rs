@@ -10,7 +10,6 @@
 
 use crate::config;
 use crate::json::Value;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 pub const EK_HEX: usize = 2368; // 1184-byte encapsulation key
@@ -100,9 +99,12 @@ mod tests {
         let id2 = load_or_create_at(&p).unwrap();
         assert_eq!(id1.ek, id2.ek);
         assert_eq!(id1.dk, id2.dk);
-        // 0600
-        let meta = std::fs::metadata(&p).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&p).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

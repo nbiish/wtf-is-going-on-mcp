@@ -707,8 +707,18 @@ fn navigate_vpath(
 
 /// Run a command on the local machine with LKGL anchor and loopback router proxy.
 fn run_local_cmd(cmd: &str, subpath: &str, lkgl: &str, _timeout_secs: u64) -> (String, i32) {
-    let mut c = Command::new("sh");
-    c.arg("-c");
+    #[cfg(windows)]
+    let mut c = {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.arg("/c");
+        cmd
+    };
+    #[cfg(not(windows))]
+    let mut c = {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c");
+        cmd
+    };
 
     // Anchor OMP and agent fleet tools to singular loopback proxy :11434
     c.env("OLLAMA_HOST", "127.0.0.1:11434");
@@ -723,6 +733,13 @@ fn run_local_cmd(cmd: &str, subpath: &str, lkgl: &str, _timeout_secs: u64) -> (S
         String::new()
     };
 
+    #[cfg(windows)]
+    let run_cmd = if !run_dir.is_empty() {
+        format!("cd /d \"{}\" && {}", run_dir, cmd)
+    } else {
+        cmd.to_string()
+    };
+    #[cfg(not(windows))]
     let run_cmd = if !run_dir.is_empty() {
         format!("cd '{}' && {}", run_dir, cmd)
     } else {
@@ -997,6 +1014,9 @@ mod tests {
             lkgl: ".".into(),
         }];
 
+        #[cfg(windows)]
+        let outcome = exec_federated("echo WTF_SHELL_TEST_OK", "~/mac", &machines, 5);
+        #[cfg(not(windows))]
         let outcome = exec_federated("echo 'WTF_SHELL_TEST_OK'", "~/mac", &machines, 5);
         assert!(outcome.ok);
         assert!(outcome.output.contains("WTF_SHELL_TEST_OK"));
@@ -1004,8 +1024,8 @@ mod tests {
 
     #[test]
     fn lkgl_and_fed_omp_config_roundtrip() {
-        let tmp = format!("/tmp/wtf-lkgl-test-{}", crate::rand::nonce_hex());
-        let path = std::path::PathBuf::from(&tmp).join("lkgl.json");
+        let tmp = std::env::temp_dir().join(format!("wtf-lkgl-test-{}", crate::rand::nonce_hex()));
+        let path = tmp.join("lkgl.json");
         save_lkgl_at(&path, "test-node", "/var/log/test");
         assert_eq!(get_machine_lkgl_at(&path, "test-node"), Some("/var/log/test".to_string()));
         let _ = std::fs::remove_dir_all(&tmp);

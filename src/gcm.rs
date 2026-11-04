@@ -60,7 +60,7 @@ impl std::fmt::Display for GcmError {
 /// GHASH over AAD and ciphertext with the length block appended.
 fn ghash_aad_ct(h: &[u8; 16], aad: &[u8], ct: &[u8]) -> [u8; 16] {
     let mut s = [0u8; 16];
-    let mut absorb = |s: &mut [u8; 16], data: &[u8]| {
+    let absorb = |s: &mut [u8; 16], data: &[u8]| {
         for block in data.chunks(16) {
             let mut b = [0u8; 16];
             b[..block.len()].copy_from_slice(block);

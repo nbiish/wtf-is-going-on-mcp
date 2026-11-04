@@ -7,10 +7,21 @@
 use crate::json::{self, Value};
 use crate::rand;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_PORT: u16 = 7800;
+pub const DEFAULT_PORT: u16 = 47820;
+
+#[cfg(unix)]
+pub fn set_file_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+pub fn set_file_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
 
 pub fn home() -> PathBuf {
     if let Ok(h) = std::env::var("WTF_HOME") {
@@ -58,7 +69,7 @@ pub fn identities_path() -> PathBuf {
 pub fn ensure_home() -> std::io::Result<PathBuf> {
     let h = home();
     std::fs::create_dir_all(&h)?;
-    std::fs::set_permissions(&h, std::fs::Permissions::from_mode(0o700))?;
+    set_file_mode(&h, 0o700)?;
     Ok(h)
 }
 
@@ -79,7 +90,7 @@ pub fn save_json(path: &Path, val: &Value, mode: u32) -> Result<(), String> {
         .parent()
         .ok_or_else(|| format!("bad path {}", path.display()))?;
     std::fs::create_dir_all(dir)
-        .and_then(|_| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
+        .and_then(|_| set_file_mode(dir, 0o700))
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     let tmp = path.with_extension("json.tmp");
     {
@@ -88,8 +99,7 @@ pub fn save_json(path: &Path, val: &Value, mode: u32) -> Result<(), String> {
             .and_then(|_| f.sync_all())
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
     }
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    set_file_mode(&tmp, mode).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -671,8 +681,12 @@ mod tests {
         let c2 = HubConfig::load_or_create_at(&p).unwrap();
         assert_eq!(c1.dashboard_key, c2.dashboard_key);
         assert_eq!(c1.port, DEFAULT_PORT);
-        let meta = std::fs::metadata(&p).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&p).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -746,8 +760,12 @@ mod tests {
         assert_eq!(ts4.consume("box4", "x"), Err(TokenError::Unknown));
         assert!(!ts4.revoke("nobody"));
         // File mode is operator-only.
-        let meta = std::fs::metadata(d.join("tokens.json")).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(d.join("tokens.json")).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -756,14 +774,18 @@ mod tests {
         let d = temp_dir("bridge");
         let p = d.join("bridge.json");
         let good = BridgeConfig {
-            hub_url: format!("http://{}:{}", std::net::Ipv4Addr::LOCALHOST, 7800),
+            hub_url: format!("http://{}:{}", std::net::Ipv4Addr::LOCALHOST, DEFAULT_PORT),
             device_name: "box1".into(),
             device_key: crate::rand::key_hex(),
         };
         assert!(good.validate().is_ok());
         BridgeConfig::save_at(&p, &good).unwrap();
-        let meta = std::fs::metadata(&p).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&p).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         // https is now accepted (TLS-terminating proxy / cloud deployment).
         let tls = BridgeConfig {
             hub_url: "https://hub.example.com".into(),

@@ -15,7 +15,6 @@
 //! hub — the mesh heals on the next cadence.
 
 use crate::client;
-use crate::config::KeyStore;
 use crate::federation::{FedConfig, Peer};
 use crate::json::Value;
 use crate::rand;
@@ -32,6 +31,7 @@ const WARN_THROTTLE_SECS: u64 = 300;
 
 pub struct Replicator {
     pub store: Arc<Store>,
+    pub bins: Option<Arc<crate::bins::Bins>>,
     pub hub_url: String,
     pub hub_name: String,
     pub fed: Arc<Mutex<FedConfig>>,
@@ -43,7 +43,7 @@ pub struct Replicator {
 
 /// Sign + send a request to a peer as this hub's federated device.
 fn fed_request(
-    rep: &Replicator,
+    _rep: &Replicator,
     peer: &Peer,
     method: &str,
     path_and_query: &str,
@@ -288,6 +288,39 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// Bidirectional bin sync with a peer: pull remote bins, merge newer ones, push our bins.
+pub fn sync_bins_with_peer(rep: &Replicator, peer: &Peer) -> Result<(), String> {
+    let Some(ref bins) = rep.bins else {
+        return Ok(());
+    };
+    // 1. Pull peer's bins
+    if let Ok(resp) = fed_request(rep, peer, "GET", "/api/v1/fed/bins", b"") {
+        if resp.status == 200 {
+            if let Some(json) = resp.json() {
+                if let Some(arr) = json.get("bins").and_then(|x| x.as_arr()) {
+                    for item in arr {
+                        if let Some(b) = crate::bins::Bin::from_json(item) {
+                            let _ = bins.merge_remote_bin(&b);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 2. Push our bins to peer
+    let all = bins.all();
+    let body = Value::obj(vec![(
+        "bins",
+        Value::Arr(all.iter().map(|b| b.to_file_json()).collect()),
+    )])
+    .to_json();
+    let push_resp = fed_request(rep, peer, "POST", "/api/v1/fed/bins", body.as_bytes())?;
+    if push_resp.status != 200 {
+        return Err(format!("bin sync push refused (HTTP {})", push_resp.status));
+    }
+    Ok(())
+}
+
 /// Warn (throttled) into the store when a peer misbehaves.
 fn warn_throttled(rep: &Replicator, peer_name: &str, msg: &str) {
     let now = now_secs();
@@ -303,11 +336,17 @@ fn warn_throttled(rep: &Replicator, peer_name: &str, msg: &str) {
 }
 
 /// Spawn the per-peer replication loop. Never returns.
-pub fn spawn(store: Arc<Store>, hub_name: String, fed: Arc<Mutex<FedConfig>>) {
+pub fn spawn(
+    store: Arc<Store>,
+    bins: Arc<crate::bins::Bins>,
+    hub_name: String,
+    fed: Arc<Mutex<FedConfig>>,
+) {
     let gen = Arc::new(AtomicU64::new(0));
     let wake = Arc::new(AtomicBool::new(false));
     let rep = Arc::new(Replicator {
         store,
+        bins: Some(bins),
         hub_url: String::new(), // unused outbound; kept for symmetry
         hub_name,
         fed,
@@ -321,6 +360,14 @@ pub fn spawn(store: Arc<Store>, hub_name: String, fed: Arc<Mutex<FedConfig>>) {
         .spawn(move || loop {
             let peers: Vec<Peer> = rep.fed.lock().unwrap().peers.clone();
             for peer in &peers {
+                match sync_bins_with_peer(&rep, peer) {
+                    Ok(_) => {}
+                    Err(e) => warn_throttled(
+                        &rep,
+                        &peer.name,
+                        &format!("bin sync with {} failed: {e}", peer.name),
+                    ),
+                }
                 // push local events; then anti-entropy sweep
                 // (cursors live per-peer for the process lifetime; restarts
                 // re-sync through pull + dedupe, so loss is benign)

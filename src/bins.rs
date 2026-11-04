@@ -76,7 +76,7 @@ impl Bin {
         ])
     }
 
-    fn to_file_json(&self) -> Value {
+    pub fn to_file_json(&self) -> Value {
         Value::obj(vec![
             ("scope", Value::from(self.scope.as_str())),
             ("id", Value::from(self.id as i64)),
@@ -86,7 +86,7 @@ impl Bin {
         ])
     }
 
-    fn from_json(v: &Value) -> Option<Bin> {
+    pub fn from_json(v: &Value) -> Option<Bin> {
         let id = v.get("id")?.as_i64()?;
         if !Bins::valid_id(id) {
             return None;
@@ -260,6 +260,35 @@ impl Bins {
         Ok(bin)
     }
 
+    pub fn merge_remote_bin(&self, bin: &Bin) -> Result<bool, String> {
+        let sc = normalize_scope(&bin.scope);
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(existing) = inner.iter_mut().find(|b| b.scope == sc && b.id == bin.id) {
+            if bin.updated_at > existing.updated_at {
+                existing.content = bin.content.clone();
+                existing.updated_by = bin.updated_by.clone();
+                existing.updated_at = bin.updated_at;
+                let projected: Vec<Value> = inner.iter().map(|b| b.to_file_json()).collect();
+                config::save_json(
+                    &self.path,
+                    &Value::obj(vec![("bins", Value::Arr(projected))]),
+                    0o600,
+                )?;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        inner.push(bin.clone());
+        inner.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.id.cmp(&b.id)));
+        let projected: Vec<Value> = inner.iter().map(|b| b.to_file_json()).collect();
+        config::save_json(
+            &self.path,
+            &Value::obj(vec![("bins", Value::Arr(projected))]),
+            0o600,
+        )?;
+        Ok(true)
+    }
+
     pub fn to_state_json(&self) -> Value {
         Value::Arr(self.list_scope("user").iter().map(|b| b.to_state_json()).collect())
     }
@@ -366,5 +395,48 @@ mod tests {
         assert!(b.get(1).unwrap().is_empty());
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
         std::fs::remove_dir(&p).ok();
+    }
+
+    #[test]
+    fn merge_remote_bin_lww_and_stale_rejection() {
+        let p = temp_path("merge");
+        let b = Bins::load_at(&p);
+        let remote = Bin {
+            id: 1,
+            scope: "user".to_string(),
+            content: "remote v1".to_string(),
+            updated_at: 1000,
+            updated_by: "peer-hub".to_string(),
+        };
+        // Merge newer remote bin
+        assert!(b.merge_remote_bin(&remote).unwrap());
+        assert_eq!(b.get(1).unwrap().content, "remote v1");
+        assert_eq!(b.get(1).unwrap().updated_by, "peer-hub");
+
+        // Merge older remote bin: rejected (returns false, content unchanged)
+        let stale = Bin {
+            id: 1,
+            scope: "user".to_string(),
+            content: "stale content".to_string(),
+            updated_at: 500,
+            updated_by: "peer-hub".to_string(),
+        };
+        assert!(!b.merge_remote_bin(&stale).unwrap());
+        assert_eq!(b.get(1).unwrap().content, "remote v1");
+
+        // Merge newer remote bin with scoped chat
+        let chat_remote = Bin {
+            id: 2,
+            scope: "chat:team-lane".to_string(),
+            content: "team secret from peer".to_string(),
+            updated_at: 2000,
+            updated_by: "peer-device".to_string(),
+        };
+        assert!(b.merge_remote_bin(&chat_remote).unwrap());
+        assert_eq!(
+            b.get_scoped("chat:team-lane", 2).unwrap().content,
+            "team secret from peer"
+        );
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 }

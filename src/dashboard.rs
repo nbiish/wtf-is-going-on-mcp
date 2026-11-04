@@ -1,27 +1,35 @@
 //! Embedded dashboard: single dark-theme HTML page, no external assets.
 //! Bootstraps from /api/v1/state?k=… or /w/<capability> then live-updates via SSE (/stream).
-//! Integrates User Chat & SWE-bench Agent Orchestration paired with a Federated Shell.
+//! Integrates User Chat & Agent Orchestration (Hermes / Pi) paired with a Federated Shell
+//! and Cross-Machine Federated Pastebins.
 
 pub const PAGE: &str = r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WTF is going on? · Studio & Federated Shell</title>
+<title>WTF is going on? · Studio &amp; Federated Mesh</title>
 <style>
-:root{--bg:#0b0e14;--panel:#131824;--panel2:#0e131d;--edge:#232b3d;--edge2:#2d374d;--ink:#d7dde8;--dim:#8a93a6;--ok:#38d17c;--warn:#f0b429;--err:#ff5c5c;--info:#4aa3ff;--accent:#00ffc8;--term-bg:#05070c}
+:root{
+  --bg:#080c14;--panel:#0f1523;--panel2:#0b101c;--panel-elev:#141c2e;
+  --edge:#1e293b;--edge2:#2a3852;--edge-focus:#00f0ff;
+  --ink:#e2e8f0;--dim:#7e8b9f;--dim2:#536177;
+  --ok:#10b981;--warn:#f59e0b;--err:#ef4444;--info:#38bdf8;
+  --accent:#00f0ff;--accent2:#818cf8;--term-bg:#04070d;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--edge);background:var(--panel2);flex-wrap:wrap}
-h1{font-size:15px;margin:0;letter-spacing:2px;font-weight:700}
-#meta{color:var(--dim);font-size:12px}
-.dot{width:10px;height:10px;border-radius:50%;background:var(--dim);margin-left:auto}
-.dot.on{background:var(--ok);box-shadow:0 0 8px rgba(56,209,124,.6)}
-.cap-badge{font-size:11px;background:#162238;color:var(--accent);border:1px solid #234;border-radius:6px;padding:2px 8px;cursor:pointer}
-.cap-badge:hover{border-color:var(--accent)}
-main{padding:16px 20px;display:flex;flex-direction:column;gap:18px}
-h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px;text-transform:uppercase}
-.card{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:12px}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;overflow-x:hidden}
+header{display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--edge);background:var(--panel2);flex-wrap:wrap;position:sticky;top:0;z-index:100}
+h1{font-size:14px;margin:0;letter-spacing:2px;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:8px}
+h1 span{color:var(--accent)}
+#meta{color:var(--dim);font-size:11px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim2);margin-left:auto;transition:all .2s}
+.dot.on{background:var(--ok);box-shadow:0 0 10px rgba(16,185,129,.7)}
+.cap-badge{font-size:11px;background:#132035;color:var(--accent);border:1px solid #1e3352;border-radius:6px;padding:2px 8px;cursor:pointer;transition:all .15s}
+.cap-badge:hover{border-color:var(--accent);background:#1a2b47}
+main{padding:14px 18px;display:flex;flex-direction:column;gap:16px;max-width:1600px;margin:0 auto}
+h2{font-size:11px;color:var(--dim);letter-spacing:1px;margin:0 0 6px;text-transform:uppercase;font-weight:700;display:flex;align-items:center;gap:6px}
+.card{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:12px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
 
 /* Studio: Chat & Federated Shell Split View */
 #studio{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -29,30 +37,39 @@ h2{font-size:12px;color:var(--dim);letter-spacing:1px;margin:0 0 8px;text-transf
 
 .studio-pane{display:flex;flex-direction:column;gap:8px}
 .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-select,input[type="text"],textarea{background:var(--bg);color:var(--ink);border:1px solid var(--edge2);border-radius:6px;padding:6px 8px;font:inherit}
-select:focus,input[type="text"]:focus,textarea:focus{outline:none;border-color:var(--accent)}
-button{background:#162947;color:var(--ink);border:1px solid var(--edge2);border-radius:6px;padding:5px 12px;font:inherit;cursor:pointer;transition:all .15s}
-button:hover{border-color:var(--dim);background:#1d355c}
-button.primary{background:var(--accent);color:#0b0e14;font-weight:700;border:none}
-button.primary:hover{opacity:.9}
+select,input[type="text"],input[type="password"],textarea{background:var(--bg);color:var(--ink);border:1px solid var(--edge2);border-radius:6px;padding:6px 9px;font:inherit;font-size:12px}
+select:focus,input[type="text"]:focus,input[type="password"]:focus,textarea:focus{outline:none;border-color:var(--edge-focus);box-shadow:0 0 0 1px var(--edge-focus)}
+button{background:#162438;color:var(--ink);border:1px solid var(--edge2);border-radius:6px;padding:5px 12px;font:inherit;font-size:12px;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:5px}
+button:hover{border-color:var(--dim);background:#1e3250}
+button.primary{background:var(--accent);color:#050811;font-weight:700;border:none}
+button.primary:hover{opacity:.9;box-shadow:0 0 10px rgba(0,240,255,.3)}
+button.active{background:#233a60;border-color:var(--accent);color:var(--accent)}
 
-.feed-box{background:var(--term-bg);border:1px solid var(--edge);border-radius:6px;padding:10px;height:340px;overflow-y:auto;font-size:13px;display:flex;flex-direction:column;gap:8px}
+.feed-box{background:var(--term-bg);border:1px solid var(--edge);border-radius:6px;padding:10px;height:300px;overflow-y:auto;font-size:12px;display:flex;flex-direction:column;gap:8px}
 .m{border-bottom:1px dashed var(--edge);padding-bottom:6px}
 .m:last-child{border-bottom:0}
 .m .mtop{display:flex;gap:8px;font-size:11px;color:var(--dim)}
 .m pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:var(--ink);font-family:inherit}
 .m.agent-msg pre{color:var(--accent)}
 
+/* Team Chat Pastebins bar in Studio */
+#team-chat-bins-box{background:var(--panel2);border:1px solid var(--edge2);border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.chat-bin-tabs{display:flex;gap:6px;align-items:center}
+.chat-bin-tab{padding:2px 8px;font-size:11px;border-radius:4px;cursor:pointer;background:var(--bg);border:1px solid var(--edge)}
+.chat-bin-tab.active{background:var(--accent);color:#050811;font-weight:bold;border-color:var(--accent)}
+#chat-bin-editor{width:100%;min-height:75px;font-size:11px;resize:vertical}
+
 /* Federated Shell styling */
 #shell-out{background:var(--term-bg);border:1px solid var(--edge);border-radius:6px;padding:10px;height:340px;overflow-y:auto;color:#a8d18d;font-size:12px;white-space:pre-wrap;word-break:break-word}
 .cmd-prompt-line{color:var(--accent);font-weight:bold}
-.cmd-badge-local{color:#38d17c}
-.cmd-badge-remote{color:#f0b429}
+.cmd-badge-local{color:#10b981}
+.cmd-badge-remote{color:#f59e0b}
 
-.pill{font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--dim);color:var(--dim)}
-.pill.working{color:var(--ok);border-color:var(--ok)}
-.pill.blocked{color:var(--warn);border-color:var(--warn)}
-.pill.done{color:var(--info);border-color:var(--info)}
+.pill{font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--dim2);color:var(--dim)}
+.pill.ok{color:var(--ok);border-color:var(--ok)}
+.pill.warn{color:var(--warn);border-color:var(--warn)}
+.pill.info{color:var(--info);border-color:var(--info)}
+.pill.accent{color:var(--accent);border-color:var(--accent)}
 .pill.stale{opacity:.5}
 .ochip{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--info);color:var(--info);margin-right:4px}
 .repo{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--warn);color:var(--warn);margin:0 6px}
@@ -61,39 +78,53 @@ button.primary:hover{opacity:.9}
 /* Overview Grid */
 #overview{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:900px){#overview{grid-template-columns:1fr}}
-#feed{list-style:none;margin:0;padding:0;max-height:380px;overflow-y:auto}
+#feed{list-style:none;margin:0;padding:0;max-height:360px;overflow-y:auto}
 #feed li{padding:4px 0;border-bottom:1px dashed var(--edge);white-space:pre-wrap;word-break:break-word}
 .lv{font-size:11px}
 .lv.error{color:var(--err)}
 .lv.warn{color:var(--warn)}
 .lv.info{color:var(--info)}
 
-/* Bins */
-#bins{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:16px;padding:0}
+/* Cross-Machine Federated Bins */
+#bins-sec{display:flex;flex-direction:column;gap:8px}
+#bins{display:grid;grid-template-columns:repeat(3,minmax(240px,1fr));gap:16px;padding:0}
 @media(max-width:1100px){#bins{grid-template-columns:1fr}}
-.bin textarea{width:100%;min-height:120px;margin-top:6px;background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:8px;font:inherit;resize:vertical}
+.bin{display:flex;flex-direction:column}
+.bin textarea{width:100%;min-height:140px;margin-top:6px;background:var(--bg);color:var(--ink);border:1px solid var(--edge2);border-radius:6px;padding:8px;font:inherit;resize:vertical}
 .bhead{display:flex;gap:8px;align-items:baseline}
 .bmeta{margin-left:auto;font-size:11px}
 .bmeta .who{color:var(--info)}
-.bbtns{display:flex;gap:8px;margin-top:6px}
+.bbtns{display:flex;gap:8px;margin-top:6px;align-items:center}
 .bbtns button.dirty{border-color:var(--warn);color:var(--warn)}
 
 /* Sessions card */
 .sess{padding:8px 0;border-bottom:1px dashed var(--edge);cursor:pointer}
-.sess:hover{background:rgba(74,163,255,.06)}
+.sess:hover{background:rgba(74,163,255,.04)}
 .sess:last-child{border-bottom:0}
-  .scope-tab { background: var(--card, #1a1d24); border: 1px solid var(--edge, #2d333f); color: var(--fg, #e6edf3); border-radius: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer; transition: all 0.15s ease; }
-  .scope-tab:hover { border-color: var(--accent, #58a6ff); }
-  .scope-tab.active { background: var(--accent, #58a6ff); color: #0d1117; font-weight: bold; border-color: var(--accent, #58a6ff); }
-  .sess-bin-btn { padding: 1px 7px; font-size: 10px; margin-left: 6px; border-radius: 3px; cursor: pointer; }
+.scope-tab{background:var(--bg);border:1px solid var(--edge2);color:var(--ink);border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;transition:all 0.15s ease}
+.scope-tab:hover{border-color:var(--accent)}
+.scope-tab.active{background:var(--accent);color:#050811;font-weight:bold;border-color:var(--accent)}
+.sess-bin-btn{padding:1px 7px;font-size:10px;margin-left:6px;border-radius:3px;cursor:pointer}
+
+/* Completions Config Modal */
+#config-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);backdrop-filter:blur(3px);z-index:200;align-items:center;justify-content:center}
+#config-modal.open{display:flex}
+.modal-box{background:var(--panel);border:1px solid var(--edge2);border-radius:10px;width:90%;max-width:560px;padding:18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.field-row{display:flex;flex-direction:column;gap:4px}
+.field-row label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+.segmented-opts{display:flex;gap:6px}
+.segmented-opts button{flex:1;text-align:center;justify-content:center}
 </style>
 </head>
 <body>
 <header>
   <h1>WTF IS GOING ON</h1>
+  <span id="port-pill" class="pill accent" style="cursor:pointer" title="Auto-fallback port (click to copy)">● :47820</span>
   <span id="meta" class="dim">connecting…</span>
+  <span id="agent-toggle-pill" class="pill ok" style="cursor:pointer" title="Active Tooling Agent: click to switch between Hermes (OpenAI) and Pi (Anthropic)">⚡ Agent: hermes</span>
+  <span id="router-status-pill" class="pill ok" style="cursor:pointer" title="Completions Endpoint / Local Router :11434 (click to re-probe)">● :11434</span>
+  <button id="btn-open-config" title="Configure completions endpoint, models, and agents" style="font-size:11px;padding:2px 8px">⚙ Config</button>
   <span id="cap-url-chip" class="cap-badge" title="Click to copy singular dashboard URL">📋 copy url</span>
-  <span id="router-status-pill" class="pill ok" style="cursor:pointer" title="Local Router Proxy: http://localhost:11434/v1 (click to re-probe)">● router :11434</span>
   <span id="conn" class="dot" title="live stream"></span>
 </header>
 
@@ -106,11 +137,16 @@ button.primary:hover{opacity:.9}
         <h2>CHAT &amp; AGENT ORCHESTRATION</h2>
         <span id="chat-stat" class="dim" style="margin-left:auto;font-size:11px">idle</span>
       </div>
-      <div class="bar" id="router-status-bar" style="align-items:center;margin:2px 0 6px 0;font-size:11px;background:rgba(88,166,255,0.06);padding:3px 8px;border-radius:4px;border:1px solid var(--edge)">
-        <span id="router-status-indicator" class="pill ok" style="font-size:10px">● local-router :11434</span>
-        <span id="router-model-info" class="dim" style="margin-left:8px;font-size:10px">http://localhost:11434/v1 · fallback-models</span>
-        <span class="dim" style="margin-left:auto;font-size:10px" title="Operator-run infrastructure: wtf only passively probes :11434">operator-run router</span>
+
+      <!-- Quick status indicator bar -->
+      <div class="bar" id="router-status-bar" style="align-items:center;font-size:11px;background:rgba(0,240,255,0.04);padding:4px 8px;border-radius:4px;border:1px solid var(--edge)">
+        <span id="active-agent-badge" class="pill ok" style="font-size:10px">Hermes</span>
+        <span id="active-provider-badge" class="pill info" style="font-size:10px">OpenAI</span>
+        <span id="router-model-info" class="dim" style="margin-left:6px;font-size:10px">http://localhost:11434 · auto-model</span>
+        <span class="dim" style="margin-left:auto;font-size:10px" title="Operator-run completions proxy">localhost:11434</span>
       </div>
+
+      <!-- Lane selection -->
       <div class="bar">
         <label class="dim" style="font-size:11px">Lane:</label>
         <select id="lane-select" style="flex:1;min-width:140px;font-size:12px"></select>
@@ -121,37 +157,58 @@ button.primary:hover{opacity:.9}
         <span id="lane-scope-chip" class="repo">-</span>
         <span class="dim" style="margin-left:auto">Members: <span id="lane-members-text" style="color:var(--info)">-</span></span>
       </div>
+
+      <!-- Dedicated Team Chat Pastebins (3 bins per team chat) -->
+      <div id="team-chat-bins-box">
+        <div class="chat-bin-tabs">
+          <span style="font-size:11px;font-weight:bold;color:var(--dim);margin-right:4px">💬 Team Chat Bins:</span>
+          <button class="chat-bin-tab active" data-bin="1">Bin 1</button>
+          <button class="chat-bin-tab" data-bin="2">Bin 2</button>
+          <button class="chat-bin-tab" data-bin="3">Bin 3</button>
+          <span id="chat-bin-meta" class="dim" style="font-size:10px;margin-left:auto">0 chars</span>
+        </div>
+        <textarea id="chat-bin-editor" placeholder="Dedicated pastebin for this agent team chat (scope: chat:<id>). Agents read/write via read_bin/write_bin."></textarea>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="btn-save-chat-bin" style="padding:2px 10px;font-size:11px">Save Bin</button>
+          <button id="btn-copy-chat-bin" style="padding:2px 10px;font-size:11px">Copy</button>
+          <span id="chat-bin-status" class="dim" style="font-size:10px;margin-left:auto"></span>
+        </div>
+      </div>
+
+      <!-- Chat Feed -->
       <div id="chat-feed" class="feed-box">
         <div class="dim">select or create a chat lane above to begin</div>
       </div>
+
+      <!-- Chat input -->
       <div class="bar">
-        <span class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px" title="OpenAI-compatible chat via the operator-run local-router (127.0.0.1:11434/v1); model auto-discovered (llama.cpp qwen3 abliterated first)">chat: local-router :11434/v1</span>
-        <button id="btn-run-agent" class="primary" style="margin-left:auto;font-size:11px">⚡ Chat</button>
+        <span id="chat-agent-label" class="pill" style="border-color:var(--accent);color:var(--accent);font-size:10px">agent: hermes</span>
+        <button id="btn-run-agent" class="primary" style="margin-left:auto;font-size:11px">⚡ Send Chat</button>
       </div>
-      <textarea id="chat-input" rows="2" placeholder="Chat with the local-router brain… (Enter sends; wtf never spawns router infra)"></textarea>
+      <textarea id="chat-input" rows="2" placeholder="Message team or prompt selected agent… (Enter sends; Shift+Enter for newline)"></textarea>
     </div>
 
     <!-- Federated Shell -->
     <div class="card studio-pane">
       <div class="bar">
         <h2>FEDERATED SHELL</h2>
-        <span class="dim" style="font-size:11px">Root: <b style="color:var(--accent)">~/</b> (cluster machines)</span>
-        <span id="shell-cwd-badge" class="pill working" style="margin-left:auto">~/</span>
+        <span class="dim" style="font-size:11px">Root: <b style="color:var(--accent)">~/</b> (cluster mesh)</span>
+        <span id="shell-cwd-badge" class="pill ok" style="margin-left:auto">~/</span>
       </div>
-      <div id="shell-lkgl-info" class="dim" style="font-size:10px;margin:2px 0 4px 0">Cluster Root · Cross-Architecture Compound Terminal</div>
+      <div id="shell-lkgl-info" class="dim" style="font-size:10px;margin:2px 0 4px 0">Cluster Root · Cross-Architecture Multi-Machine Terminal</div>
       <div class="bar" id="machine-chips-bar" style="font-size:11px">
         <span class="dim">Quick Jump:</span>
         <button class="mach-chip" data-dir="~/" style="padding:1px 8px;font-size:11px">~/ (all)</button>
       </div>
-      <div id="shell-out">=== WTF FEDERATED SHELL & DISTRIBUTED OMP ===
+      <div id="shell-out">=== WTF FEDERATED SHELL &amp; MULTI-MACHINE MESH ===
 Virtual cluster root (~/) anchors to connected machines with persistent architecture LKGL.
-Dispatched tasks & 'omp' inherit synchronized local-router proxy (:11434) and fallback cascades.
-Supports cross-architecture compound orchestration in one prompt:
-  cd ~/mac && echo "mac ok" && cd ~/windows && echo "win ok"
-Type 'ls ~' or 'cd <machine>' to navigate.</div>
+Dispatched tasks inherit synchronized local-router proxy (:11434) and fallback cascades.
+Supports cross-architecture compound orchestration in one command:
+  cd ~/mac &amp;&amp; echo "mac ok" &amp;&amp; cd ~/windows &amp;&amp; echo "win ok"
+Type 'ls ~' or 'cd &lt;machine&gt;' to navigate.</div>
       <div class="bar" style="margin-top:2px">
         <span id="shell-prompt-tag" style="color:var(--ok);font-weight:bold;font-size:12px">[~/]$</span>
-        <input type="text" id="shell-input" style="flex:1;font-size:12px" placeholder="ls ~  OR  cd mac && npm test  OR  cd ~/windows && cargo test"/>
+        <input type="text" id="shell-input" style="flex:1;font-size:12px" placeholder="ls ~  OR  cd mac &amp;&amp; npm test  OR  cd ~/windows &amp;&amp; cargo test"/>
         <button id="btn-shell-exec" class="primary" style="font-size:11px">Exec</button>
         <button id="btn-shell-clear" style="font-size:11px">Clear</button>
       </div>
@@ -161,38 +218,101 @@ Type 'ls ~' or 'cd <machine>' to navigate.</div>
   <!-- OVERVIEW: Agents & Event Stream -->
   <section id="overview">
     <div>
-      <h2>AGENTS</h2>
+      <h2>AGENTS (ACTIVE MESH)</h2>
       <div id="agents" class="card"><span class="dim">no agents have checked in yet</span></div>
     </div>
     <div>
-      <h2>EVENT LOG</h2>
+      <h2>EVENT LOG (CROSS-MACHINE)</h2>
       <div class="card"><ul id="feed"><li class="dim">no events yet</li></ul></div>
     </div>
   </section>
 
-  <!-- SESSIONS & BINS -->
+  <!-- SESSIONS LIST -->
   <section>
-    <h2>SESSIONS · federated agent chats</h2>
+    <h2>FEDERATED AGENT CHAT LANES</h2>
     <div id="sessions" class="card"><span class="dim">no chats yet</span></div>
   </section>
 
+  <!-- CROSS-MACHINE FEDERATED PASTEBINS (GLOBAL) -->
   <section id="bins-sec">
     <div class="bar" style="align-items:center;flex-wrap:wrap;gap:8px">
-      <h2>SHARED BINS · paste here for agents · agents publish back with write_bin</h2>
-      <span id="bins-scope-pill" class="pill working" style="margin-left:auto">scope: user (global)</span>
+      <h2>🌐 CROSS-MACHINE FEDERATED PASTEBIN (GLOBAL · BIN 1-3)</h2>
+      <span id="bins-scope-pill" class="pill ok" style="margin-left:auto">scope: user (global mesh)</span>
     </div>
-    <div class="bar" id="bin-scope-bar" style="margin:6px 0 10px 0;flex-wrap:wrap;gap:6px">
+    <div class="dim" style="font-size:11px;margin-top:-4px">
+      Pastebins replicated across all connected machines in the federated cluster. Agents across all harnesses and terminals access via <code>read_bin</code> and <code>write_bin</code>.
+    </div>
+    <div class="bar" id="bin-scope-bar" style="margin:4px 0 6px 0;flex-wrap:wrap;gap:6px">
       <span class="dim" style="font-size:11px;align-self:center">Scope:</span>
-      <button class="scope-tab active" id="btn-scope-user" data-scope="user">👤 User Bins (global)</button>
-      <button class="scope-tab" id="btn-scope-active-chat" style="display:none" data-scope="">💬 Chat Bins</button>
+      <button class="scope-tab active" id="btn-scope-user" data-scope="user">👤 Global Mesh Bins</button>
+      <button class="scope-tab" id="btn-scope-active-chat" style="display:none" data-scope="">💬 Current Chat Bins</button>
       <button class="scope-tab" id="btn-scope-active-mach" style="display:none" data-scope="">💻 Machine Bins</button>
       <select id="scope-dropdown" style="font-size:11px;padding:2px 6px;margin-left:auto;max-width:240px">
-        <option value="user">user (global courier)</option>
+        <option value="user">user (global mesh)</option>
       </select>
     </div>
     <div id="bins"></div>
   </section>
 </main>
+
+<!-- Completions & Agent Config Modal -->
+<div id="config-modal">
+  <div class="modal-box">
+    <div style="display:flex;align-items:center;border-bottom:1px solid var(--edge);padding-bottom:8px">
+      <h2 style="margin:0;font-size:13px;color:var(--ink)">⚙ COMPLETIONS &amp; AGENT CONFIG</h2>
+      <button id="btn-close-config" style="margin-left:auto;padding:2px 8px;font-size:11px">✕</button>
+    </div>
+
+    <div class="field-row">
+      <label>Active Tooling Agent</label>
+      <div class="segmented-opts">
+        <button id="opt-agent-hermes" type="button" class="active">Hermes (OpenAI protocol)</button>
+        <button id="opt-agent-pi" type="button">Pi (Anthropic protocol)</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>Completions Provider</label>
+      <div class="segmented-opts">
+        <button id="opt-prov-openai" type="button" class="active">OpenAI Compatible</button>
+        <button id="opt-prov-anthropic" type="button">Anthropic Compatible</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>Endpoint URL (Default: local-router :11434)</label>
+      <input type="text" id="cfg-endpoint" placeholder="http://localhost:11434" value="http://localhost:11434"/>
+      <div style="display:flex;gap:6px;margin-top:2px">
+        <button type="button" onclick="setEndpointPreset('http://localhost:11434')" style="font-size:10px;padding:1px 6px">local-router :11434</button>
+        <button type="button" onclick="setEndpointPreset('https://api.openai.com/v1')" style="font-size:10px;padding:1px 6px">OpenAI Official</button>
+        <button type="button" onclick="setEndpointPreset('https://api.anthropic.com')" style="font-size:10px;padding:1px 6px">Anthropic Official</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>Model</label>
+      <input type="text" id="cfg-model" placeholder="qwen3:abliterated (leave blank for auto-discovered preferred model)"/>
+      <select id="cfg-model-select" style="margin-top:2px;font-size:11px">
+        <option value="">-- Discovered Models on Router --</option>
+      </select>
+    </div>
+
+    <div class="field-row">
+      <label>API Key (Optional / Hub-stored)</label>
+      <input type="password" id="cfg-apikey" placeholder="sk-… (optional for local router; required for official endpoints)"/>
+    </div>
+
+    <div class="field-row">
+      <label>System Preamble</label>
+      <textarea id="cfg-sysprompt" rows="2" placeholder="Optional system prompt preamble for chat completions"></textarea>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+      <button id="btn-save-config" class="primary">Save Configuration</button>
+      <span id="config-save-status" class="dim" style="font-size:11px"></span>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -211,6 +331,31 @@ let currentLaneId = "";
 let currentCwd = "~/";
 let currentSessions = [];
 let machinesList = [];
+let activeChatBinId = 1;
+let chatBinDirty = false;
+
+// Completions config state
+let completionsCfg = {
+  provider: "openai",
+  endpoint: "http://localhost:11434",
+  api_key: "",
+  model: "",
+  selected_agent: "hermes",
+  system_prompt: ""
+};
+
+// Set port pill text dynamically
+const portPill = document.getElementById("port-pill");
+if(portPill){
+  const p = location.port || (location.protocol === "https:" ? "443" : "80");
+  portPill.textContent = "● :" + p;
+  portPill.addEventListener("click", ()=>{
+    navigator.clipboard.writeText(location.host).then(()=>{
+      portPill.textContent = "✓ copied!";
+      setTimeout(()=>portPill.textContent = "● :" + p, 1200);
+    });
+  });
+}
 
 // Copy capability URL
 document.getElementById("cap-url-chip").addEventListener("click", ()=>{
@@ -226,7 +371,7 @@ function render(s){
   const now = s.server.now;
   document.getElementById("meta").textContent =
     "hub v"+esc(s.server.version)+" · up "+ago(s.server.started_at, now)+" · "+s.agents.length+" agent(s) · "+s.events.length+" event(s) · utc "+hms(now);
-  
+
   // Render Agents
   const ag = document.getElementById("agents");
   if(!s.agents.length){ag.innerHTML = '<span class="dim">no agents have checked in yet</span>';}
@@ -244,12 +389,12 @@ function render(s){
         for(const a of list){
           const cls = a.stale ? "stale" : esc(a.status);
           const label = esc(a.status)+(a.stale?" · stale":"");
-          html += '<div class="agent" style="margin-left:14px;padding:6px 0;border-bottom:1px dashed var(--edge)"><div class="top"><span class="who">'+esc(a.agent)+'@'+esc(a.device)+'</span>'
+          html += '<div class="agent" style="margin-left:14px;padding:6px 0;border-bottom:1px dashed var(--edge)"><div class="bar"><span class="who" style="font-weight:bold">'+esc(a.agent)+'@'+esc(a.device)+'</span>'
             +(a.repo?'<span class="repo">'+esc(a.repo)+'</span>':"")
             +'<span class="pill '+cls+'">'+label+'</span>'
             +'<span class="dim" style="margin-left:auto;font-size:11px">'+ago(a.last_seen, now)+' ago</span></div>'
-            +(a.task?'<div class="task" style="margin:2px 0 0">'+esc(a.task)+'</div>':"")
-            +(a.details?'<div class="dim" style="font-size:12px">'+esc(a.details)+'</div>':"")
+            +(a.task?'<div class="task" style="margin:2px 0 0;color:var(--accent)">'+esc(a.task)+'</div>':"")
+            +(a.details?'<div class="dim" style="font-size:11px">'+esc(a.details)+'</div>':"")
             +'</div>';
         }
       }
@@ -275,26 +420,25 @@ function render(s){
   if(s.bin_scopes) updateScopeDropdown(s.bin_scopes);
   if(currentBinScope === "user") renderBins(s.bins, now);
 
-  // Local Router Status (passive probe — wtf never spawns/restarts the router)
+  // Router probe status
   if(s.router){
     const alive = !!s.router.alive;
     const rp = document.getElementById("router-status-pill");
-    const ri = document.getElementById("router-status-indicator");
-    const rm = document.getElementById("router-model-info");
     const count = s.router.models_count || 0;
-    const pillText = alive ? ("● router :11434 (" + count + " models)") : "○ router :11434 (offline)";
+    const pillText = alive ? ("● :11434 (" + count + "m)") : "○ :11434";
     const pillCls = "pill " + (alive ? "ok" : "stale");
     if(rp){
       rp.className = pillCls;
       rp.textContent = pillText;
-      rp.title = "Local Router: " + (alive ? ("Connected to " + (s.router.endpoint || "11434") + " (" + count + " models)") : "Offline — operator-run router not detected. Start it yourself; wtf never spawns it (passive probe only)");
     }
-    if(ri){
-      ri.className = pillCls;
-      ri.textContent = alive ? ("● connected (" + count + " models)") : "○ offline (operator-run)";
-    }
+    const rm = document.getElementById("router-model-info");
     if(rm){
-      rm.textContent = alive ? ("http://localhost:11434/v1 · " + (s.router.target_model || "local-router/fallback-models")) : "offline — start local-router/fcc-server yourself; agents fall back to their own harness config";
+      const ep = completionsCfg.endpoint || "http://localhost:11434";
+      const mod = completionsCfg.model || (s.router.target_model || "auto");
+      rm.textContent = ep + " · " + mod;
+    }
+    if(s.router.models && Array.isArray(s.router.models)){
+      populateDiscoveredModels(s.router.models);
     }
   }
 }
@@ -335,6 +479,7 @@ function updateActiveLaneUI(){
     document.getElementById("lane-scope-chip").textContent = sess.repo || "none";
     document.getElementById("lane-members-text").textContent = (sess.members || 0) + " member(s)";
     loadLaneChat(sid);
+    loadActiveChatBin();
     const chatScope = "chat:" + sid;
     const chatName = sess.name || sid.slice(0, 12);
     const chatBtn = document.getElementById("btn-scope-active-chat");
@@ -353,9 +498,9 @@ function updateActiveLaneUI(){
 document.getElementById("lane-select").addEventListener("change", updateActiveLaneUI);
 
 document.getElementById("btn-new-lane").addEventListener("click", async ()=>{
-  const name = prompt("Enter name for the new federated lane:", "cross-arch-release");
+  const name = prompt("Enter name for the new federated lane:", "team-collab");
   if(!name) return;
-  const repo = prompt("Enter repo/scope label (e.g. frontend+backend@mac+windows):", "main");
+  const repo = prompt("Enter repo/scope label (e.g. backend@cluster):", "main");
   try{
     const r = await fetch("/api/v1/sessions?"+AUTH, {
       method: "POST",
@@ -379,10 +524,10 @@ async function loadLaneChat(id){
       const j = await r.json();
       const msgs = j.msgs || [];
       if(!msgs.length){
-        feed.innerHTML = '<div class="dim">no messages in this lane yet. Lane view is read-only from the dashboard; the chat box talks to the local-router.</div>';
+        feed.innerHTML = '<div class="dim">no messages in this lane yet. Send a prompt below to converse with the team and active agent.</div>';
       } else {
         feed.innerHTML = msgs.map(m=>{
-          const isAgent = m.sender && (m.sender.includes("agent") || m.sender.includes("cli"));
+          const isAgent = m.sender && (m.sender.includes("agent") || m.sender.includes("cli") || m.sender.includes("hermes") || m.sender.includes("pi"));
           return '<div class="m '+(isAgent?'agent-msg':'')+'">'
             +'<div class="mtop"><b>'+esc(m.sender||'unknown')+'</b><span>#'+esc(m.seq)+'</span><span style="margin-left:auto">'+new Date(m.ts*1000).toISOString().slice(11,19)+'Z</span></div>'
             +'<pre>'+esc(m.text)+'</pre></div>';
@@ -397,16 +542,97 @@ async function loadLaneChat(id){
   }
 }
 
-// Router Chat (v0.16.0): one OpenAI completion via the operator-run
-// local-router. The hub is an authenticated thin proxy — it never spawns
-// router infra; a down router surfaces as an error, never a restart.
+// TEAM CHAT PASTEBINS LOGIC (3 Dedicated Bins per Team Chat)
+document.querySelectorAll(".chat-bin-tab").forEach(tab=>{
+  tab.addEventListener("click", function(){
+    document.querySelectorAll(".chat-bin-tab").forEach(t=>t.classList.remove("active"));
+    this.classList.add("active");
+    activeChatBinId = parseInt(this.getAttribute("data-bin"), 10) || 1;
+    loadActiveChatBin();
+  });
+});
+
+async function loadActiveChatBin(){
+  if(!currentLaneId) return;
+  const scope = "chat:" + currentLaneId;
+  const ed = document.getElementById("chat-bin-editor");
+  const meta = document.getElementById("chat-bin-meta");
+  meta.textContent = "loading bin " + activeChatBinId + "…";
+  try{
+    const r = await fetch("/api/v1/bins?scope="+encodeURIComponent(scope)+"&"+AUTH);
+    if(r.ok){
+      const j = await r.json();
+      const b = (j.bins || []).find(x=>x.id === activeChatBinId);
+      if(b){
+        if(!chatBinDirty) ed.value = b.content || "";
+        meta.textContent = (b.size || 0) + " chars" + (b.updated_by ? (" · " + b.updated_by) : "");
+      } else {
+        if(!chatBinDirty) ed.value = "";
+        meta.textContent = "0 chars · empty";
+      }
+    }
+  }catch(e){
+    meta.textContent = "load error";
+  }
+}
+
+document.getElementById("chat-bin-editor").addEventListener("input", ()=>{
+  chatBinDirty = true;
+  document.getElementById("btn-save-chat-bin").classList.add("dirty");
+});
+
+document.getElementById("btn-save-chat-bin").addEventListener("click", async ()=>{
+  if(!currentLaneId) return;
+  const scope = "chat:" + currentLaneId;
+  const ed = document.getElementById("chat-bin-editor");
+  const btn = document.getElementById("btn-save-chat-bin");
+  const stat = document.getElementById("chat-bin-status");
+  btn.disabled = true;
+  stat.textContent = "saving…";
+  try{
+    const r = await fetch("/api/v1/bins/" + activeChatBinId + "?scope=" + encodeURIComponent(scope) + "&" + AUTH, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({content: ed.value, scope: scope})
+    });
+    const j = await r.json();
+    if(r.ok && j.ok){
+      chatBinDirty = false;
+      btn.classList.remove("dirty");
+      stat.textContent = "✓ saved";
+      setTimeout(()=>stat.textContent = "", 1500);
+      loadActiveChatBin();
+    } else {
+      stat.textContent = "err: " + (j.error || r.status);
+    }
+  }catch(e){
+    stat.textContent = "err: " + e.message;
+  }
+  btn.disabled = false;
+});
+
+document.getElementById("btn-copy-chat-bin").addEventListener("click", ()=>{
+  const ed = document.getElementById("chat-bin-editor");
+  const stat = document.getElementById("chat-bin-status");
+  navigator.clipboard.writeText(ed.value).then(()=>{
+    stat.textContent = "✓ copied!";
+    setTimeout(()=>stat.textContent = "", 1200);
+  }).catch(()=>{
+    ed.select();
+    document.execCommand("copy");
+    stat.textContent = "✓ copied!";
+    setTimeout(()=>stat.textContent = "", 1200);
+  });
+});
+
+// Chat Execution (passes active agent and provider)
 async function sendChat(){
   const input = document.getElementById("chat-input");
   const promptText = input.value.trim();
   if(!promptText) return;
   const stat = document.getElementById("chat-stat");
   const feed = document.getElementById("chat-feed");
-  stat.textContent = "chatting with local-router…";
+  stat.textContent = "sending to " + completionsCfg.selected_agent + "…";
   const msgDiv = document.createElement("div");
   msgDiv.className = "m agent-msg";
   msgDiv.innerHTML = '<div class="mtop"><b>you</b><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(promptText)+'</pre>';
@@ -416,22 +642,27 @@ async function sendChat(){
     const r = await fetch("/api/v1/chat/completions?"+AUTH, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({prompt: promptText})
+      body: JSON.stringify({
+        prompt: promptText,
+        agent: completionsCfg.selected_agent,
+        provider: completionsCfg.provider,
+        model: completionsCfg.model || undefined
+      })
     });
     const j = await r.json();
     input.value = "";
     if(j.ok){
-      stat.textContent = "replied via " + (j.model || "router");
+      stat.textContent = "replied via " + (j.agent || completionsCfg.selected_agent) + " (" + (j.model || "model") + ")";
       const rep = document.createElement("div");
       rep.className = "m agent-msg";
-      rep.innerHTML = '<div class="mtop"><b>local-router ('+esc(j.model||"")+')'+ '</b><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(j.content||"")+'</pre>';
+      rep.innerHTML = '<div class="mtop"><b>' + esc(j.agent || completionsCfg.selected_agent) + ' (' + esc(j.model||"") + ')' + '</b><span style="margin-left:auto">'+new Date().toISOString().slice(11,19)+'Z</span></div><pre>'+esc(j.content||"")+'</pre>';
       feed.appendChild(rep);
       feed.scrollTop = feed.scrollHeight;
     } else {
       stat.textContent = "failed: " + (j.error || ("HTTP "+r.status));
       const rep = document.createElement("div");
       rep.className = "m";
-      rep.innerHTML = '<div class="mtop"><b>router</b></div><pre>'+esc(j.error||("HTTP "+r.status))+'</pre>';
+      rep.innerHTML = '<div class="mtop"><b>router error</b></div><pre>'+esc(j.error||("HTTP "+r.status))+'</pre>';
       feed.appendChild(rep);
       feed.scrollTop = feed.scrollHeight;
     }
@@ -442,28 +673,158 @@ async function sendChat(){
 
 document.getElementById("btn-run-agent").addEventListener("click", sendChat);
 
-// Router restart button removed (operator directive 2026-09-04): the hub
-// never starts, stops, or restarts local-router / fcc-server — it only
-// passively probes :11434 for the status pill below.
-
-const routerPill = document.getElementById("router-status-pill");
-if(routerPill){
-  routerPill.addEventListener("click", async ()=>{
-    routerPill.textContent = "⏳ Testing…";
-    try {
-      const res = await fetch("/api/v1/router/status?"+AUTH);
-      const data = await res.json();
-      const stateRes = await fetch("/api/v1/state?"+AUTH);
-      render(await stateRes.json());
-    } catch(e){}
-  });
-}
-
 document.getElementById("chat-input").addEventListener("keydown", (e)=>{
   if(e.key === "Enter" && !e.shiftKey){
     e.preventDefault();
     sendChat();
   }
+});
+
+// COMPLETIONS & AGENT CONFIG MODAL
+const configModal = document.getElementById("config-modal");
+document.getElementById("btn-open-config").addEventListener("click", ()=>{
+  loadConfigIntoModal();
+  configModal.classList.add("open");
+});
+document.getElementById("btn-close-config").addEventListener("click", ()=>configModal.classList.remove("open"));
+configModal.addEventListener("click", (e)=>{
+  if(e.target === configModal) configModal.classList.remove("open");
+});
+
+// Quick toggle active agent from header
+document.getElementById("agent-toggle-pill").addEventListener("click", async ()=>{
+  const next = completionsCfg.selected_agent === "hermes" ? "pi" : "hermes";
+  completionsCfg.selected_agent = next;
+  if(next === "pi" && completionsCfg.provider !== "openai") completionsCfg.provider = "anthropic";
+  updateAgentUI();
+  await saveCompletionsConfig();
+});
+
+function updateAgentUI(){
+  const ag = completionsCfg.selected_agent || "hermes";
+  const prov = completionsCfg.provider || "openai";
+  const pill = document.getElementById("agent-toggle-pill");
+  if(pill) pill.textContent = "⚡ Agent: " + ag;
+  const ab = document.getElementById("active-agent-badge");
+  if(ab) ab.textContent = ag.toUpperCase();
+  const pb = document.getElementById("active-provider-badge");
+  if(pb) pb.textContent = prov === "anthropic" ? "Anthropic" : "OpenAI";
+  const cal = document.getElementById("chat-agent-label");
+  if(cal) cal.textContent = "agent: " + ag + " (" + prov + ")";
+}
+
+document.getElementById("opt-agent-hermes").addEventListener("click", function(){
+  this.classList.add("active");
+  document.getElementById("opt-agent-pi").classList.remove("active");
+  completionsCfg.selected_agent = "hermes";
+});
+
+document.getElementById("opt-agent-pi").addEventListener("click", function(){
+  this.classList.add("active");
+  document.getElementById("opt-agent-hermes").classList.remove("active");
+  completionsCfg.selected_agent = "pi";
+});
+
+document.getElementById("opt-prov-openai").addEventListener("click", function(){
+  this.classList.add("active");
+  document.getElementById("opt-prov-anthropic").classList.remove("active");
+  completionsCfg.provider = "openai";
+});
+
+document.getElementById("opt-prov-anthropic").addEventListener("click", function(){
+  this.classList.add("active");
+  document.getElementById("opt-prov-openai").classList.remove("active");
+  completionsCfg.provider = "anthropic";
+});
+
+function setEndpointPreset(url){
+  document.getElementById("cfg-endpoint").value = url;
+}
+
+function loadConfigIntoModal(){
+  if(completionsCfg.selected_agent === "pi"){
+    document.getElementById("opt-agent-pi").classList.add("active");
+    document.getElementById("opt-agent-hermes").classList.remove("active");
+  } else {
+    document.getElementById("opt-agent-hermes").classList.add("active");
+    document.getElementById("opt-agent-pi").classList.remove("active");
+  }
+  if(completionsCfg.provider === "anthropic"){
+    document.getElementById("opt-prov-anthropic").classList.add("active");
+    document.getElementById("opt-prov-openai").classList.remove("active");
+  } else {
+    document.getElementById("opt-prov-openai").classList.add("active");
+    document.getElementById("opt-prov-anthropic").classList.remove("active");
+  }
+  document.getElementById("cfg-endpoint").value = completionsCfg.endpoint || "http://localhost:11434";
+  document.getElementById("cfg-model").value = completionsCfg.model || "";
+  document.getElementById("cfg-apikey").value = completionsCfg.api_key || "";
+  document.getElementById("cfg-sysprompt").value = completionsCfg.system_prompt || "";
+}
+
+function populateDiscoveredModels(models){
+  const sel = document.getElementById("cfg-model-select");
+  if(!sel) return;
+  sel.innerHTML = '<option value="">-- Discovered Models on Router (' + models.length + ') --</option>';
+  for(const m of models){
+    const opt = document.createElement("option");
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  }
+  sel.onchange = function(){
+    if(this.value) document.getElementById("cfg-model").value = this.value;
+  };
+}
+
+async function fetchCompletionsConfig(){
+  try{
+    const r = await fetch("/api/v1/completions/config?"+AUTH);
+    if(r.ok){
+      const j = await r.json();
+      completionsCfg.provider = j.provider || "openai";
+      completionsCfg.endpoint = j.endpoint || "http://localhost:11434";
+      completionsCfg.api_key = j.api_key || "";
+      completionsCfg.model = j.model || "";
+      completionsCfg.selected_agent = j.selected_agent || "hermes";
+      completionsCfg.system_prompt = j.system_prompt || "";
+      updateAgentUI();
+      if(j.router && j.router.models){
+        populateDiscoveredModels(j.router.models);
+      }
+    }
+  }catch(e){}
+}
+
+async function saveCompletionsConfig(){
+  const status = document.getElementById("config-save-status");
+  if(status) status.textContent = "saving…";
+  try{
+    const r = await fetch("/api/v1/completions/config?"+AUTH, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(completionsCfg)
+    });
+    const j = await r.json();
+    if(r.ok && j.ok){
+      if(status) status.textContent = "✓ saved!";
+      setTimeout(()=>{if(status) status.textContent = "";}, 1500);
+      updateAgentUI();
+    } else {
+      if(status) status.textContent = "err: " + (j.error || r.status);
+    }
+  }catch(e){
+    if(status) status.textContent = "err: " + e.message;
+  }
+}
+
+document.getElementById("btn-save-config").addEventListener("click", async ()=>{
+  completionsCfg.endpoint = document.getElementById("cfg-endpoint").value.trim() || "http://localhost:11434";
+  completionsCfg.model = document.getElementById("cfg-model").value.trim();
+  completionsCfg.api_key = document.getElementById("cfg-apikey").value.trim();
+  completionsCfg.system_prompt = document.getElementById("cfg-sysprompt").value.trim();
+  await saveCompletionsConfig();
+  setTimeout(()=>configModal.classList.remove("open"), 800);
 });
 
 // FEDERATED SHELL LOGIC
@@ -583,11 +944,11 @@ function renderSessionsList(sessions, now){
   host.innerHTML = rows;
 }
 
-// SCOPED BINS ARCHITECTURE
+// CROSS-MACHINE FEDERATED BINS ARCHITECTURE
 const binIds = [1,2,3];
 const dirty = {};
 let currentBinScope = "user";
-let currentBinScopeLabel = "user (global)";
+let currentBinScopeLabel = "user (global mesh)";
 
 function buildBins(){
   const host = document.getElementById("bins");
@@ -598,7 +959,7 @@ function buildBins(){
     const title = document.createElement("b");title.id = "btitle-" + id;title.textContent = "BIN " + id;
     const meta = document.createElement("span");meta.className = "bmeta dim";meta.id = "bmeta-" + id;meta.textContent = "loading…";
     head.appendChild(title);head.appendChild(meta);
-    const ta = document.createElement("textarea");ta.id = "ta-" + id;ta.spellcheck = false;ta.placeholder = "paste content for agents here (keys, specs, instructions) — agents publish via write_bin";
+    const ta = document.createElement("textarea");ta.id = "ta-" + id;ta.spellcheck = false;ta.placeholder = "paste content for cross-machine agents here (keys, specs, instructions) — replicated across all machines";
     const btns = document.createElement("div");btns.className = "bbtns";
     const save = document.createElement("button");save.id = "save-" + id;save.textContent = "Save";
     const copy = document.createElement("button");copy.id = "copy-" + id;copy.textContent = "Copy";
@@ -611,7 +972,7 @@ function buildBins(){
   }
 
   // Bind scope tabs
-  document.getElementById("btn-scope-user").addEventListener("click", ()=>switchBinScope("user", "user (global)"));
+  document.getElementById("btn-scope-user").addEventListener("click", ()=>switchBinScope("user", "user (global mesh)"));
   document.getElementById("btn-scope-active-chat").addEventListener("click", function(){
     const sc = this.getAttribute("data-scope");
     if(sc) switchBinScope(sc, this.textContent.replace("💬 ", ""));
@@ -623,22 +984,12 @@ function buildBins(){
   document.getElementById("scope-dropdown").addEventListener("change", function(){
     switchBinScope(this.value, this.value);
   });
-  const laneBinsBtn = document.getElementById("btn-open-lane-bins");
-  if(laneBinsBtn){
-    laneBinsBtn.addEventListener("click", ()=>{
-      if(currentLaneId){
-        const sess = currentSessions.find(s=>s.id === currentLaneId);
-        openChatBins(currentLaneId, sess ? (sess.name||currentLaneId) : currentLaneId);
-      }
-    });
-  }
 }
 
 function updateScopeDropdown(scopes){
   const sel = document.getElementById("scope-dropdown");
   if(!sel || !scopes) return;
-  const curr = sel.value;
-  let html = '<option value="user">user (global courier)</option>';
+  let html = '<option value="user">user (global mesh)</option>';
   for(const sc of scopes){
     if(sc === "user") continue;
     let label = sc;
@@ -702,18 +1053,6 @@ function openChatBins(sessionId, sessionName){
   document.getElementById("bins-sec").scrollIntoView({behavior:"smooth"});
 }
 
-function openMachineBins(machName){
-  const machScope = "machine:" + machName;
-  const machBtn = document.getElementById("btn-scope-active-mach");
-  if(machBtn){
-    machBtn.style.display = "inline-block";
-    machBtn.setAttribute("data-scope", machScope);
-    machBtn.textContent = "💻 Machine Bins (~/" + machName + ")";
-  }
-  switchBinScope(machScope, "machine:" + machName);
-  document.getElementById("bins-sec").scrollIntoView({behavior:"smooth"});
-}
-
 function renderBins(bins, now){
   if(!bins) return;
   for(const b of bins){
@@ -745,7 +1084,6 @@ async function saveBin(id){
     if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status));
     dirty[id] = false;btn.classList.remove("dirty");btn.textContent = "Saved";
     setTimeout(()=>{btn.textContent = "Save";}, 1500);
-    // Refresh scopes dropdown if newly created scope
     fetch("/api/v1/bins?"+AUTH).then(res=>res.json()).then(data=>{
       if(data.scopes) updateScopeDropdown(data.scopes);
     }).catch(()=>{});
@@ -767,6 +1105,7 @@ function copyBin(id){
 function boot(){
   buildBins();
   loadMachines();
+  fetchCompletionsConfig();
   fetch("/api/v1/state?"+AUTH)
     .then(r=>{if(!r.ok)throw 0;return r.json();})
     .then(render)
@@ -778,7 +1117,6 @@ function boot(){
   es.onopen = ()=>{dot.classList.add("on");};
   es.onerror = ()=>{dot.classList.remove("on");};
 
-  // Poll active lane chat periodically
   setInterval(()=>{
     if(currentLaneId) loadLaneChat(currentLaneId);
   }, 4000);

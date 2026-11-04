@@ -558,7 +558,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Probe THIS machine's agent-CLI surface (omp / hermes / freeclaude tmux sessions, versions, os/arch) and register it on the hub so other machines can discover capabilities. Presence + versions only — never API keys or credentials.",
+                        "Probe THIS machine's agent tooling state (selected agent: hermes/pi, completions provider, os/arch, wtf version) and register it on the hub so other machines can discover capabilities. Presence + status only — never API keys or credentials.",
                     ),
                 ),
                 (
@@ -575,7 +575,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Discover agent-CLI capabilities across ALL connected machines: who has omp, hermes, and which FreeClaudeCode tmux sessions are running. Use to pick the right executor for a task or to check a remote machine's setup before configuring it.",
+                        "Discover agent tooling capabilities across ALL connected machines: which machines have active hermes or pi agents, provider setups, and OS platforms. Use to pick the right executor or check cluster configuration.",
                     ),
                 ),
                 (
@@ -884,7 +884,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Chat with the operator-run local-router (OpenAI-compatible http://127.0.0.1:11434/v1/chat/completions) from this machine. Model defaults to passive discovery from the router's live /v1/models catalog (llama.cpp qwen3 abliterated first). This system NEVER spawns local-router, fcc-server, or fcc-dsh — if :11434 is down the tool fails with a message telling the operator to start it.",
+                        "Chat with the operator-run completions backend (OpenAI or Anthropic compatible, defaulting to local-router at http://127.0.0.1:11434/v1). Supports tooling agents 'hermes' (OpenAI) and 'pi' (Anthropic). Model defaults to configured or auto-discovered model. wtf NEVER spawns local-router, fcc-server, or fcc-dsh.",
                     ),
                 ),
                 (
@@ -895,8 +895,10 @@ impl Bridge {
                             "properties",
                             Value::obj(vec![
                                 ("prompt", Self::prop("the user prompt to send")),
-                                ("model", Self::prop("optional model id (default: discovered preferred model)")),
+                                ("model", Self::prop("optional model id (default: configured/discovered preferred model)")),
                                 ("system", Self::prop("optional system preamble")),
+                                ("agent", Self::prop("optional tooling agent selection: 'hermes' or 'pi'")),
+                                ("provider", Self::prop("optional completions provider: 'openai' or 'anthropic'")),
                             ]),
                         ),
                         ("required", Value::arr(vec![Value::from("prompt")])),
@@ -1213,13 +1215,17 @@ impl Bridge {
     }
 
     /// Probe THIS machine's environment for cluster discovery: os/arch +
-    /// wtf version only. No agent-CLI inventory (harness logic removed,
-    /// 2026-09-07); NEVER API keys or credentials.
+    /// wtf version, active agent (hermes/pi), and completions provider.
+    /// NEVER API keys or credentials.
     fn collect_env_report(&self) -> Value {
+        let cfg = crate::chat::load_completions_config();
         Value::obj(vec![
             ("os", Value::from(std::env::consts::OS)),
             ("arch", Value::from(std::env::consts::ARCH)),
             ("wtf_version", Value::from(crate::VERSION)),
+            ("selected_agent", Value::from(cfg.selected_agent)),
+            ("provider", Value::from(cfg.provider)),
+            ("router_alive", Value::from(crate::chat::router_alive())),
         ])
     }
 
@@ -1251,14 +1257,16 @@ impl Bridge {
                         false,
                     );
                 }
-                let mut out = String::from("env reports (device · os/arch · wtf):\n");
+                let mut out = String::from("env reports (device · agent/provider · os/arch · wtf):\n");
                 for d in devices {
                     let dev = d.get("device").and_then(|x| x.as_str()).unwrap_or("?");
                     let rep = d.get("report").unwrap_or(&Value::Null);
                     let os = rep.get("os").and_then(|x| x.as_str()).unwrap_or("?");
                     let arch = rep.get("arch").and_then(|x| x.as_str()).unwrap_or("?");
                     let ver = rep.get("wtf_version").and_then(|x| x.as_str()).unwrap_or("?");
-                    out.push_str(&format!("  {dev} · {os}/{arch} · wtf {ver}\n"));
+                    let agent = rep.get("selected_agent").and_then(|x| x.as_str()).unwrap_or("hermes");
+                    let prov = rep.get("provider").and_then(|x| x.as_str()).unwrap_or("openai");
+                    out.push_str(&format!("  {dev} · [{agent}/{prov}] · {os}/{arch} · wtf {ver}\n"));
                 }
                 (out, false)
             }
@@ -1387,6 +1395,7 @@ impl Bridge {
         crate::identity::load_or_create()
     }
 
+    #[allow(dead_code)]
     fn ek_hex(&self) -> Result<String, String> {
         Ok(crate::util::hex_encode(&self.identity()?.ek))
     }
@@ -1597,7 +1606,7 @@ impl Bridge {
             }
         }
         // Fetch sealed packages addressed to our ek fingerprint.
-        let fp = crate::session_crypto::ek_fp(&ek_hex);
+        let _fp = crate::session_crypto::ek_fp(&ek_hex);
         let seals = self.api_get_session(&format!("/api/v1/sessions/{sid}/seals"));
         let Ok(sv) = seals else {
             return (format!("seal fetch failed: {}", seals.unwrap_err()), true);
@@ -2022,10 +2031,10 @@ impl Bridge {
         (out, false)
     }
 
-    /// chat { prompt, model?, system? }: one OpenAI-compatible completion
-    /// against the operator-run local-router (127.0.0.1:11434/v1).
-    /// Passive-only: never spawns router infra; fails closed with an
-    /// actionable message when :11434 is down.
+    /// chat { prompt, model?, system?, agent?, provider? }: completion
+    /// against the configured provider (OpenAI or Anthropic compatible),
+    /// defaulting to local-router (127.0.0.1:11434/v1).
+    /// Passive-only: never spawns router infra.
     fn tool_chat(&self, args: &Value) -> (String, bool) {
         let Some(prompt) = arg_str(args, "prompt") else {
             return ("missing required argument: prompt".into(), true);
@@ -2035,20 +2044,30 @@ impl Bridge {
         }
         let model = arg_str(args, "model");
         let system = arg_str(args, "system");
-        let model_used = model
-            .map(str::to_string)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| crate::chat::preferred_model(&crate::chat::router_models()));
-        match crate::chat::chat_completion(prompt, model, system) {
-            Ok(content) => {
-                let mut out = format!("model: {model_used}\n---\n{content}");
+        let mut cfg = crate::chat::load_completions_config();
+        if let Some(agent) = arg_str(args, "agent") {
+            let normalized = crate::chat::normalize_agent(agent);
+            cfg.selected_agent = normalized.to_string();
+            if normalized == crate::chat::AGENT_PI && arg_str(args, "provider").is_none() && cfg.provider != "openai" {
+                cfg.provider = "anthropic".to_string();
+            }
+        }
+        if let Some(prov) = arg_str(args, "provider") {
+            let p = prov.trim().to_lowercase();
+            if p == "anthropic" || p == "openai" {
+                cfg.provider = p;
+            }
+        }
+        match crate::chat::chat_completion_with_config(prompt, &cfg, model, system) {
+            Ok((content, model_used)) => {
+                let mut out = format!("agent: {}\nprovider: {}\nmodel: {model_used}\n---\n{content}", cfg.selected_agent, cfg.provider);
                 if out.len() > 16_000 {
                     out.truncate(16_000);
                     out.push_str("\n…[truncated]");
                 }
                 (out, false)
             }
-            Err(e) => (format!("chat failed (model {model_used}): {e}"), true),
+            Err(e) => (format!("chat failed (agent {}, provider {}): {e}", cfg.selected_agent, cfg.provider), true),
         }
     }
 

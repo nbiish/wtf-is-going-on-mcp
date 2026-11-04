@@ -6,7 +6,7 @@
 //!   wtf agent            run the MCP stdio bridge (what MCP clients launch)
 //!   wtf status           print current hub state as text
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use wtf::client;
@@ -191,10 +191,11 @@ fn cmd_serve(args: &[String]) -> i32 {
     let fed_arc = Arc::new(Mutex::new(fed.clone()));
     let fed_name_for_rep = fed.name.clone();
     let rep_store = Arc::clone(&store);
+    let rep_bins = Arc::clone(&bins);
     let rep_fed = Arc::clone(&fed_arc);
     let rep_peers = fed.peers.len();
     if rep_peers > 0 {
-        wtf::replicate::spawn(rep_store, fed_name_for_rep, rep_fed);
+        wtf::replicate::spawn(rep_store, rep_bins, fed_name_for_rep, rep_fed);
     }
 
     let sessions = wtf::sessions::Sessions::load();
@@ -240,16 +241,21 @@ fn cmd_serve(args: &[String]) -> i32 {
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
 
-    let listener = match TcpListener::bind(SocketAddr::from((ip, port))) {
-        Ok(l) => l,
+    let (listener, bound_port) = match util::bind_with_fallback(ip, port, 100) {
+        Ok((l, p)) => {
+            if p != port {
+                println!("notice: port {port} in use; auto-fallback bound to available port {p}");
+            }
+            (l, p)
+        }
         Err(e) => {
-            eprintln!("error: cannot bind {ip}:{port}: {e}");
+            eprintln!("error: {e}");
             return 1;
         }
     };
     let local = listener
         .local_addr()
-        .unwrap_or(SocketAddr::from((ip, port)));
+        .unwrap_or(SocketAddr::from((ip, bound_port)));
     let display_ip = if ip == Ipv4Addr::UNSPECIFIED {
         util::lan_ip()
     } else {
@@ -312,7 +318,7 @@ fn cmd_key(args: &[String]) -> i32 {
             };
             let hub_url = HubConfig::load_or_create()
                 .map(|c| c.lan_url())
-                .unwrap_or_else(|_| "http://<hub-host>:7800".to_string());
+                .unwrap_or_else(|_| format!("http://<hub-host>:{}", config::DEFAULT_PORT));
             if has_flag(args, "--json") {
                 let v = json::Value::obj(vec![
                     ("hub_url", json::Value::from(hub_url.as_str())),
@@ -395,7 +401,10 @@ fn cmd_setup(args: &[String]) -> i32 {
         flag_value(args, "--key"),
     );
     let (Some(url), Some(name), Some(key)) = (url, name, key) else {
-        eprintln!("usage: wtf setup --url http://HUB:7800 --name DEVICE --key KEYHEX");
+        eprintln!(
+            "usage: wtf setup --url http://HUB:{} --name DEVICE --key KEYHEX",
+            config::DEFAULT_PORT
+        );
         return 2;
     };
     let cfg = BridgeConfig {
@@ -561,7 +570,7 @@ fn cmd_enroll_token(args: &[String]) -> i32 {
     };
     let hub_url = HubConfig::load_or_create()
         .map(|c| c.lan_url())
-        .unwrap_or_else(|_| "http://<hub-host>:7800".to_string());
+        .unwrap_or_else(|_| format!("http://<hub-host>:{}", config::DEFAULT_PORT));
     if has_flag(args, "--json") {
         let v = json::Value::obj(vec![
             ("hub_url", json::Value::from(hub_url.as_str())),
@@ -592,7 +601,10 @@ fn cmd_enroll(args: &[String]) -> i32 {
     let url = match flag_value(args, "--url") {
         Some(u) => u.trim_end_matches('/').to_string(),
         None => {
-            eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE (--token TOKEN | --psk SECRET)");
+            eprintln!(
+                "usage: wtf enroll --url http://HUB:{} --name DEVICE (--token TOKEN | --psk SECRET)",
+                config::DEFAULT_PORT
+            );
             return 2;
         }
     };
@@ -629,7 +641,10 @@ fn cmd_enroll(args: &[String]) -> i32 {
             }
         },
         (None, None) => {
-            eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE (--token TOKEN | --psk SECRET)");
+            eprintln!(
+                "usage: wtf enroll --url http://HUB:{} --name DEVICE (--token TOKEN | --psk SECRET)",
+                config::DEFAULT_PORT
+            );
             return 2;
         }
     };
@@ -1091,6 +1106,7 @@ fn cmd_federate(args: &[String]) -> i32 {
                 last_warn: Mutex::new(std::collections::HashMap::new()),
                 push_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 wake: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                bins: None,
             };
             match wtf::replicate::anti_entropy(&rep, &peer, &rep.push_gen) {
                 Ok(_) => {
