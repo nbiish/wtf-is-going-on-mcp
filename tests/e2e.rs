@@ -159,7 +159,27 @@ fn hub_bridge_end_to_end() {
         .unwrap()
         .as_arr()
         .unwrap();
-    assert_eq!(tools.len(), 20); // 19 hub/session tools + chat + router_status
+    // The exact tool roster is the contract: no paste-bins, no harness spawners.
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t| t.get("name").unwrap().as_str().unwrap())
+        .collect();
+    for required in [
+        "check_in",
+        "log_event",
+        "wtf_is_going_on",
+        "hub_info",
+        "chat",
+        "router_status",
+        "session_create",
+        "session_send",
+        "comms_post",
+    ] {
+        assert!(names.contains(&required), "missing tool {required}: {names:?}");
+    }
+    for retired in ["read_bin", "write_bin", "list_bins"] {
+        assert!(!names.contains(&retired), "retired tool {retired} still listed");
+    }
 
     rpc_write(
         &mut agent,
@@ -301,170 +321,6 @@ fn hub_bridge_end_to_end() {
     assert!(events
         .iter()
         .any(|e| e.get("message").and_then(|v| v.as_str()) == Some("e2e event fired")));
-    // State JSON carries the three paste-bins for live dashboards.
-    assert_eq!(sv.get("bins").unwrap().as_arr().unwrap().len(), 3);
-
-    // 7. Paste-bins: dashboard-key write, authenticated reads, rejections.
-    let put = wtf::client::request(
-        &format!("{url}/api/v1/bins/1?cap={cap}"),
-        "PUT",
-        &[("Content-Type".to_string(), "application/json".to_string())],
-        br#"{"content":"work from this bin: e2e spec"}"#,
-    )
-    .unwrap();
-    assert_eq!(put.status, 200);
-    assert!(put.text().contains("\"ok\":true"));
-
-    let anon_put = wtf::client::request(
-        &format!("{url}/api/v1/bins/1"),
-        "PUT",
-        &[],
-        br#"{"content":"nope"}"#,
-    )
-    .unwrap();
-    assert_eq!(anon_put.status, 401);
-
-    // Unknown bin id is an unknown path: 404, never a panic. v0.15.0:
-    // ids 4..=255 are dynamic bins (per-connection bins materialize on
-    // write), so the negative case moved to 0/256.
-    let bad_bin = wtf::client::request(
-        &format!("{url}/api/v1/bins/256?cap={cap}"),
-        "PUT",
-        &[],
-        br#"{"content":"x"}"#,
-    )
-    .unwrap();
-    assert_eq!(bad_bin.status, 404);
-
-    // Oversized paste is rejected, not truncated.
-    let big = format!("{{\"content\":\"{}\"}}", "x".repeat(70_000));
-    let too_big = wtf::client::request(
-        &format!("{url}/api/v1/bins/2?cap={cap}"),
-        "PUT",
-        &[],
-        big.as_bytes(),
-    )
-    .unwrap();
-    assert_eq!(too_big.status, 400);
-
-    let got =
-        wtf::client::request(&format!("{url}/api/v1/bins/1?cap={cap}"), "GET", &[], b"").unwrap();
-    assert_eq!(got.status, 200);
-    assert!(got.text().contains("work from this bin: e2e spec"));
-
-    let all =
-        wtf::client::request(&format!("{url}/api/v1/bins?cap={cap}"), "GET", &[], b"").unwrap();
-    assert_eq!(all.status, 200);
-    assert_eq!(
-        all.json()
-            .unwrap()
-            .get("bins")
-            .unwrap()
-            .as_arr()
-            .unwrap()
-            .len(),
-        3
-    );
-
-    // 8. Bridge tools expose the bins to agents on any machine.
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":1}}}"#,
-    );
-    let rb = rpc_read(&mut reader);
-    let rbres = rb.get("result").unwrap();
-    assert_eq!(rbres.get("isError").and_then(|v| v.as_bool()), Some(false));
-    let rbtext = rbres.get("content").unwrap().as_arr().unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(
-        rbtext.contains("work from this bin: e2e spec"),
-        "read_bin text: {rbtext}"
-    );
-
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":9}}}"#,
-    );
-    let badrb = rpc_read(&mut reader);
-    assert_eq!(
-        badrb
-            .get("result")
-            .unwrap()
-            .get("isError")
-            .and_then(|v| v.as_bool()),
-        Some(true)
-    );
-
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"list_bins","arguments":{}}}"#,
-    );
-    let lb = rpc_read(&mut reader);
-    let lbres = lb.get("result").unwrap();
-    assert_eq!(lbres.get("isError").and_then(|v| v.as_bool()), Some(false));
-    let lbtext = lbres.get("content").unwrap().as_arr().unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(lbtext.contains("BIN 1"), "list_bins text: {lbtext}");
-
-    // wtf_is_going_on surfaces non-empty bins so agents notice them.
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"wtf_is_going_on","arguments":{}}}"#,
-    );
-    let st2 = rpc_read(&mut reader);
-    let st2text = st2
-        .get("result")
-        .unwrap()
-        .get("content")
-        .unwrap()
-        .as_arr()
-        .unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(
-        st2text.contains("BIN 1"),
-        "state text should list bins: {st2text}"
-    );
-
-    // 8b. Bridge write_bin: the agent publishes to a shared bin with a
-    // device-signed PUT; the hub attributes it to the device.
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"write_bin","arguments":{"bin":2,"content":"agent findings: e2e wrote this from the bridge"}}}"#,
-    );
-    let wb = rpc_read(&mut reader);
-    let wbres = wb.get("result").unwrap();
-    assert_eq!(wbres.get("isError").and_then(|v| v.as_bool()), Some(false));
-    let wbtext = wbres.get("content").unwrap().as_arr().unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(wbtext.contains("BIN 2 updated"), "write_bin text: {wbtext}");
-
-    // Empty content is refused client-side (bins have no delete).
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"write_bin","arguments":{"bin":2,"content":""}}}"#,
-    );
-    let wbempty = rpc_read(&mut reader);
-    assert_eq!(
-        wbempty
-            .get("result")
-            .unwrap()
-            .get("isError")
-            .and_then(|v| v.as_bool()),
-        Some(true)
-    );
-
     // hub_info: the operator's "what's the address" tool. Reports the hub
     // URL and device identity; the dashboard key never appears.
     rpc_write(
@@ -491,82 +347,6 @@ fn hub_bridge_end_to_end() {
         !hitext.contains("?k="),
         "dashboard key must never travel over MCP: {hitext}"
     );
-
-    // The device write is durable and attributed: dashboard-key GET shows
-    // the content with the device as last writer.
-    let got2 =
-        wtf::client::request(&format!("{url}/api/v1/bins/2?cap={cap}"), "GET", &[], b"").unwrap();
-    assert_eq!(got2.status, 200);
-    let bin2 = got2.json().expect("bin 2 json");
-    assert!(
-        bin2.get("content")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("e2e wrote this from the bridge"),
-        "device write must persist: {bin2:?}"
-    );
-    assert_eq!(
-        bin2.get("updated_by").and_then(|v| v.as_str()),
-        Some("box2"),
-        "device write must be attributed to the device"
-    );
-
-    // 8c. Scoped bins: chat and machine bins isolation, MCP read/write with scope.
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"write_bin","arguments":{"bin":1,"scope":"chat:e2e-session-1","content":"chat secret key: e2e test"}}}"#,
-    );
-    let wb_scoped = rpc_read(&mut reader);
-    let wb_scoped_res = wb_scoped.get("result").unwrap();
-    assert_eq!(wb_scoped_res.get("isError").and_then(|v| v.as_bool()), Some(false));
-    let wb_scoped_text = wb_scoped_res.get("content").unwrap().as_arr().unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(wb_scoped_text.contains("chat:e2e-session-1"), "scoped write response: {wb_scoped_text}");
-
-    // Read back via MCP read_bin with scope
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":1,"scope":"chat:e2e-session-1"}}}"#,
-    );
-    let rb_scoped = rpc_read(&mut reader);
-    let rb_scoped_res = rb_scoped.get("result").unwrap();
-    assert_eq!(rb_scoped_res.get("isError").and_then(|v| v.as_bool()), Some(false));
-    let rb_scoped_text = rb_scoped_res.get("content").unwrap().as_arr().unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(rb_scoped_text.contains("chat secret key: e2e test"), "scoped read: {rb_scoped_text}");
-
-    // Verify isolation: user bin 1 is unaffected
-    let user_bin1 = wtf::client::request(&format!("{url}/api/v1/bins/1?cap={cap}"), "GET", &[], b"").unwrap();
-    assert_eq!(user_bin1.status, 200);
-    assert!(user_bin1.text().contains("work from this bin: e2e spec"));
-    assert!(!user_bin1.text().contains("chat secret key"));
-
-    // Verify API scoped GET
-    let api_scoped = wtf::client::request(&format!("{url}/api/v1/bins/1?cap={cap}&scope=chat:e2e-session-1"), "GET", &[], b"").unwrap();
-    assert_eq!(api_scoped.status, 200);
-    assert!(api_scoped.text().contains("chat secret key: e2e test"));
-
-    // Verify list_bins with scope
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"list_bins","arguments":{"scope":"chat:e2e-session-1"}}}"#,
-    );
-    let lb_scoped = rpc_read(&mut reader);
-    let lb_scoped_res = lb_scoped.get("result").unwrap();
-    assert_eq!(lb_scoped_res.get("isError").and_then(|v| v.as_bool()), Some(false));
-    let lb_scoped_text = lb_scoped_res.get("content").unwrap().as_arr().unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(lb_scoped_text.contains("chat:e2e-session-1"), "list_bins scoped text: {lb_scoped_text}");
 
     // `wtf dashboard-url` on the hub machine prints the clickable link
     // (localhost + LAN) — the operator-side counterpart to hub_info.
@@ -868,12 +648,12 @@ fn skill_install_distributes_portable_skill() {
     let path = home
         .join(".agents")
         .join("skills")
-        .join("wtf-mcp-mastery")
+        .join("wtf-is-going-on-mcp")
         .join("SKILL.md");
     let text = std::fs::read_to_string(&path).expect("installed skill");
-    assert!(text.contains("name: wtf-mcp-mastery"), "frontmatter: {text}");
+    assert!(text.contains("name: wtf-is-going-on-mcp"), "frontmatter: {text}");
     assert!(
-        text.contains("write_bin") && text.contains("hub_info"),
+        text.contains("hub_info") && text.contains("wtf_is_going_on"),
         "current tool set: {text}"
     );
 
@@ -895,7 +675,7 @@ fn skill_install_distributes_portable_skill() {
     assert!(forced.status.success());
     assert!(std::fs::read_to_string(&path)
         .unwrap()
-        .contains("name: wtf-mcp-mastery"));
+        .contains("name: wtf-is-going-on-mcp"));
 
     // `wtf skill print` emits exactly the embedded skill.
     let printed = Command::new(env!("CARGO_BIN_EXE_wtf"))
@@ -1021,180 +801,6 @@ fn revocation_is_instant() {
     assert_eq!(
         denied.status, 401,
         "revoked device must be rejected instantly"
-    );
-
-    let _ = hub.kill();
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-#[test]
-fn device_signed_bin_write_auth_matrix() {
-    let home = temp_home("binwrite");
-    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
-    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["serve", "--bind", &bind, "--no-open"])
-        .env("WTF_HOME", &home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn hub");
-    let hub_out = hub.stdout.take().unwrap();
-    let mut hub_lines = BufReader::new(hub_out);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = hub_lines.read_line(&mut line).expect("hub stdout");
-        assert!(n > 0, "hub exited before listening");
-        if line.contains("listening") {
-            break;
-        }
-    }
-    let url = line
-        .split_whitespace()
-        .rev()
-        .find(|t| t.starts_with("http://"))
-        .expect("hub url in listening line")
-        .to_string();
-
-    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["key", "issue", "boxw"])
-        .env("WTF_HOME", &home)
-        .output()
-        .expect("key issue");
-    assert!(
-        out.status.success(),
-        "key issue failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let keys_text = std::fs::read_to_string(home.join("keys.json")).unwrap();
-    let keys = wtf::json::parse(&keys_text).unwrap();
-    let secret = keys.get("devices").unwrap().as_arr().unwrap()[0]
-        .get("secret")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let head = |device: &str, ts: u64, nonce: &str, sig: &str| -> Vec<(String, String)> {
-        vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("X-Wtf-Device".to_string(), device.to_string()),
-            ("X-Wtf-Timestamp".to_string(), ts.to_string()),
-            ("X-Wtf-Nonce".to_string(), nonce.to_string()),
-            ("X-Wtf-Signature".to_string(), sig.to_string()),
-        ]
-    };
-    let body = b"{\"content\":\"device-signed write from boxw\"}".to_vec();
-    let path = "/api/v1/bins/3";
-    let ts = wtf::util::now_secs();
-    let nonce = wtf::rand::hex(16);
-    let sig = wtf::auth::sign(&secret, "PUT", path, ts, &nonce, &body).unwrap();
-
-    // 1. Valid device-signed PUT succeeds.
-    let ok = wtf::client::request(
-        &format!("{url}{path}"),
-        "PUT",
-        &head("boxw", ts, &nonce, &sig),
-        &body,
-    )
-    .unwrap();
-    assert_eq!(ok.status, 200, "device-signed bin write must pass");
-    let okv = ok.json().expect("write json");
-    assert_eq!(okv.get("ok").and_then(|v| v.as_bool()), Some(true));
-    assert!(
-        okv.get("event").and_then(|v| v.as_i64()).unwrap_or(0) > 0,
-        "write must land in the event feed"
-    );
-
-    // 2. Device-signed GET reads it back, attributed to the device.
-    let gts = wtf::util::now_secs();
-    let gnonce = wtf::rand::hex(16);
-    let gsig = wtf::auth::sign(&secret, "GET", path, gts, &gnonce, b"").unwrap();
-    let got = wtf::client::request(
-        &format!("{url}{path}"),
-        "GET",
-        &head("boxw", gts, &gnonce, &gsig),
-        b"",
-    )
-    .unwrap();
-    assert_eq!(got.status, 200, "device-signed bin read must pass");
-    let gotv = got.json().expect("bin json");
-    assert_eq!(
-        gotv.get("content").and_then(|v| v.as_str()),
-        Some("device-signed write from boxw")
-    );
-    assert_eq!(
-        gotv.get("updated_by").and_then(|v| v.as_str()),
-        Some("boxw")
-    );
-
-    // 3. Wrong signature is rejected.
-    let wts = wtf::util::now_secs();
-    let wnonce = wtf::rand::hex(16);
-    let wrong = wtf::auth::sign(&secret, "PUT", "/api/v1/bins/2", wts, &wnonce, &body).unwrap();
-    let r = wtf::client::request(
-        &format!("{url}{path}"),
-        "PUT",
-        &head("boxw", wts, &wnonce, &wrong),
-        &body,
-    )
-    .unwrap();
-    assert_eq!(r.status, 401, "signature over a different path must fail");
-
-    // 4. Tampered body is rejected: signature was computed over a different
-    // payload than the one on the wire.
-    let tts = wtf::util::now_secs();
-    let tnonce = wtf::rand::hex(16);
-    let tsig = wtf::auth::sign(&secret, "PUT", path, tts, &tnonce, &body).unwrap();
-    let r = wtf::client::request(
-        &format!("{url}{path}"),
-        "PUT",
-        &head("boxw", tts, &tnonce, &tsig),
-        b"{\"content\":\"tampered\"}",
-    )
-    .unwrap();
-    assert_eq!(r.status, 401, "tampered body must fail");
-
-    // 5. Replay of the exact first request is rejected (nonce cache).
-    let r = wtf::client::request(
-        &format!("{url}{path}"),
-        "PUT",
-        &head("boxw", ts, &nonce, &sig),
-        &body,
-    )
-    .unwrap();
-    assert_eq!(r.status, 401, "replayed request must fail");
-
-    // 6. Unsigned PUT is rejected.
-    let r = wtf::client::request(
-        &format!("{url}{path}"),
-        "PUT",
-        &[("Content-Type".to_string(), "application/json".to_string())],
-        &body,
-    )
-    .unwrap();
-    assert_eq!(r.status, 401, "unsigned bin write must fail");
-
-    // 7. The capability path writes the same bin.
-    let cap = std::fs::read_to_string(home.join("dashboard_capability")).unwrap();
-    let r = wtf::client::request(
-        &format!("{url}{path}?cap={cap}"),
-        "PUT",
-        &[],
-        b"{\"content\":\"dashboard overwrote bin 3\"}",
-    )
-    .unwrap();
-    assert_eq!(r.status, 200, "dashboard-key write must still pass");
-    let r = wtf::client::request(&format!("{url}{path}?cap={cap}"), "GET", &[], b"").unwrap();
-    assert_eq!(r.status, 200);
-    let v = r.json().expect("bin json");
-    assert_eq!(
-        v.get("content").and_then(|x| x.as_str()),
-        Some("dashboard overwrote bin 3")
-    );
-    assert_eq!(
-        v.get("updated_by").and_then(|x| x.as_str()),
-        Some("dashboard")
     );
 
     let _ = hub.kill();
@@ -1989,13 +1595,6 @@ fn psk_handshake_end_to_end() {
     let _ = std::fs::remove_dir_all(&dev3);
 }
 
-/// The v0.10.0 operator-courier lane: an operator on a machine with NO wtf
-/// state (empty home) pastes content into a hub bin using only --url and the
-/// dashboard key, and the other side pulls it back byte-exact — pre-setup
-/// bootstrap and general cross-machine copy/paste. A wrong key is refused
-/// with the uniform 401. Finally, an enrolled agent (device auth, no
-/// dashboard key) sees the same payload through the MCP read_bin tool.
-
 #[test]
 fn session_pairing_key_end_to_end() {
     // Pairing-key flow: A creates a repo-tagged chat and gets a pairing key
@@ -2410,175 +2009,6 @@ fn federation_two_hub_end_to_end() {
     ag_b.kill().unwrap();
     hub_a2.kill().unwrap();
     hub_b2.kill().unwrap();
-}
-
-#[test]
-fn bin_operator_courier_end_to_end() {
-    let home = temp_home("bin");
-    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
-    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["serve", "--bind", &bind, "--no-open"])
-        .env("WTF_HOME", &home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn hub");
-    let mut hub_lines = BufReader::new(hub.stdout.take().unwrap());
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = hub_lines.read_line(&mut line).expect("hub stdout");
-        assert!(n > 0, "hub exited before listening");
-        if line.contains("listening") {
-            break;
-        }
-    }
-    let url = line
-        .split_whitespace()
-        .rev()
-        .find(|t| t.starts_with("http://"))
-        .expect("hub url")
-        .to_string();
-
-    // The operator holds the capability token; read it from the hub's own
-    // capability the way the operator does after `wtf dashboard-url`.
-    let key = std::fs::read_to_string(home.join("dashboard_capability"))
-        .unwrap()
-        .trim()
-        .to_string();
-    assert_eq!(key.len(), 64);
-
-    // Remote simulation: an empty operator home (no bridge.json/config.json)
-    // and no env credentials — every run below must authenticate via --url
-    // and --k alone.
-    let op = temp_home("operator");
-    let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_wtf"))
-            .args(args)
-            .env("WTF_HOME", &op)
-            .env("WTF_HUB_URL", "")
-            .env("WTF_DASHBOARD_KEY", "")
-            .env("WTF_CAPABILITY", "")
-            .output()
-            .expect("wtf bin")
-    };
-
-    // put by argv, get back byte-exact (raw stdout, no added newline).
-    let payload = "paste me into the other agent";
-    let put = run(&["bin", "put", "1", payload, "--url", &url, "--k", &key]);
-    assert!(
-        put.status.success(),
-        "bin put failed: {}",
-        String::from_utf8_lossy(&put.stderr)
-    );
-    let get = run(&["bin", "get", "1", "--url", &url, "--k", &key]);
-    assert!(
-        get.status.success(),
-        "bin get failed: {}",
-        String::from_utf8_lossy(&get.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&get.stdout), payload);
-
-    // put by stdin (`-`), get back byte-exact including the embedded newline.
-    let mut putin = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["bin", "put", "2", "-", "--url", &url, "--k", &key])
-        .env("WTF_HOME", &op)
-        .env("WTF_HUB_URL", "")
-        .env("WTF_DASHBOARD_KEY", "")
-        .env("WTF_CAPABILITY", "")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bin put -");
-    putin
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"line one\nline two")
-        .unwrap();
-    drop(putin.stdin.take());
-    let putin = putin.wait_with_output().expect("wait bin put -");
-    assert!(
-        putin.status.success(),
-        "stdin put failed: {}",
-        String::from_utf8_lossy(&putin.stderr)
-    );
-    let get2 = run(&["bin", "get", "2", "--url", &url, "--k", &key]);
-    assert!(get2.status.success());
-    assert_eq!(String::from_utf8_lossy(&get2.stdout), "line one\nline two");
-
-    // ls lists both bins without leaking content.
-    let ls = run(&["bin", "ls", "--url", &url, "--k", &key]);
-    assert!(
-        ls.status.success(),
-        "bin ls failed: {}",
-        String::from_utf8_lossy(&ls.stderr)
-    );
-    let lstext = String::from_utf8_lossy(&ls.stdout);
-    assert!(lstext.contains("bin 1:"), "ls missing bin 1: {lstext}");
-    assert!(lstext.contains("bin 2:"), "ls missing bin 2: {lstext}");
-    assert!(!lstext.contains(payload), "ls must not leak bin content");
-
-    // A wrong key is refused uniformly (401) with a nonzero exit.
-    let bad = run(&["bin", "get", "1", "--url", &url, "--k", &"f".repeat(64)]);
-    assert!(!bad.status.success(), "wrong key must fail");
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&bad.stderr).contains("401"),
-        "wrong key must report 401: {}",
-        String::from_utf8_lossy(&bad.stderr)
-    );
-
-    // The other side of the courier: an enrolled agent reads the same bin
-    // through MCP with plain device auth — no dashboard key involved.
-    let issue = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["key", "issue", "--json", "courier-agent"])
-        .env("WTF_HOME", &home)
-        .output()
-        .expect("key issue");
-    assert!(
-        issue.status.success(),
-        "key issue failed: {}",
-        String::from_utf8_lossy(&issue.stderr)
-    );
-    let jline = String::from_utf8_lossy(&issue.stdout)
-        .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .expect("key issue json line")
-        .to_string();
-    let jv = wtf::json::parse(jline.trim()).expect("key issue json valid");
-    let agent_key = jv.get("key").unwrap().as_str().unwrap().to_string();
-    let agent_name = jv.get("device").unwrap().as_str().unwrap().to_string();
-
-    let mut agent = Command::new(env!("CARGO_BIN_EXE_wtf"))
-        .args(["agent"])
-        .env("WTF_HUB_URL", &url)
-        .env("WTF_DEVICE_NAME", &agent_name)
-        .env("WTF_DEVICE_KEY", &agent_key)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn agent");
-    let mut reader = BufReader::new(agent.stdout.take().unwrap());
-    rpc_write(
-        &mut agent,
-        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_bin","arguments":{"bin":1}}}"#,
-    );
-    let rb = rpc_read(&mut reader);
-    assert!(
-        rb.to_json().contains(payload),
-        "read_bin must see the courier payload: {}",
-        rb.to_json()
-    );
-
-    let _ = agent.kill();
-    let _ = hub.kill();
-    let _ = agent.wait();
-    let _ = hub.wait();
-    let _ = std::fs::remove_dir_all(&home);
-    let _ = std::fs::remove_dir_all(&op);
 }
 
 #[test]

@@ -125,26 +125,6 @@ pub fn format_state(state: &Value, hub_label: &str) -> String {
     out.push_str(&format!("WTF IS GOING ON — hub {hub_label}\n"));
     let agents = state.get("agents").and_then(|v| v.as_arr()).unwrap_or(&[]);
     let events = state.get("events").and_then(|v| v.as_arr()).unwrap_or(&[]);
-    let bins = state.get("bins").and_then(|v| v.as_arr()).unwrap_or(&[]);
-    if bins
-        .iter()
-        .any(|b| b.get("size").and_then(|x| x.as_i64()).unwrap_or(0) > 0)
-    {
-        out.push_str("\nBINS (shared; read_bin to fetch, write_bin to publish)\n");
-        for b in bins {
-            let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
-            if size == 0 {
-                continue;
-            }
-            let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
-            let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
-            let at = b.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
-            out.push_str(&format!(
-                "  BIN {id} — {size} chars — updated {} ago by {by}\n",
-                rel_age(now, at)
-            ));
-        }
-    }
     out.push_str(&format!(
         "{} agent(s) tracked · showing {} recent event(s)\n",
         agents.len(),
@@ -467,93 +447,6 @@ impl Bridge {
                 ),
             ]),
             Value::obj(vec![
-                ("name", Value::from("read_bin")),
-                (
-                    "description",
-                    Value::from(
-                        "Read a paste-bin (BIN 1-3) in the specified scope (defaults to 'user'): prompts, notes, secrets, or knowledge placed there by the user or other agents/machines. When the user or a peer says 'work from bin N', fetch it with this tool before starting.",
-                    ),
-                ),
-                (
-                    "inputSchema",
-                    Value::obj(vec![
-                        ("type", Value::from("object")),
-                        (
-                            "properties",
-                            Value::obj(vec![
-                                (
-                                    "bin",
-                                    int_prop("bin number: 1, 2, or 3"),
-                                ),
-                                (
-                                    "scope",
-                                    Self::prop("optional bin scope (defaults to 'user'; or e.g. 'chat:<session_id>', 'machine:<device_name>')"),
-                                ),
-                            ]),
-                        ),
-                        ("required", Value::arr(vec![Value::from("bin")])),
-                        ("additionalProperties", Value::from(false)),
-                    ]),
-                ),
-            ]),
-            Value::obj(vec![
-                ("name", Value::from("write_bin")),
-                (
-                    "description",
-                    Value::from(
-                        "Write content to a paste-bin (BIN 1-3) in the specified scope (defaults to 'user') so other agents on other machines/harnesses can read it with read_bin — cross-agent/cross-machine handoff of prompts, findings, and credentials. Replaces the whole bin (last writer wins); read it first, keep writes purposeful.",
-                    ),
-                ),
-                (
-                    "inputSchema",
-                    Value::obj(vec![
-                        ("type", Value::from("object")),
-                        (
-                            "properties",
-                            Value::obj(vec![
-                                ("bin", int_prop("bin number: 1, 2, or 3")),
-                                (
-                                    "content",
-                                    Self::prop("full text to place in the bin (replaces existing content; max 65,536 chars)"),
-                                ),
-                                (
-                                    "scope",
-                                    Self::prop("optional bin scope (defaults to 'user'; or e.g. 'chat:<session_id>', 'machine:<device_name>')"),
-                                ),
-                            ]),
-                        ),
-                        (
-                            "required",
-                            Value::arr(vec![Value::from("bin"), Value::from("content")]),
-                        ),
-                        ("additionalProperties", Value::from(false)),
-                    ]),
-                ),
-            ]),
-            Value::obj(vec![
-                ("name", Value::from("list_bins")),
-                (
-                    "description",
-                    Value::from(
-                        "List paste-bins (sizes, last writer, age) for a given scope (defaults to 'user') without full content; fetch a specific bin with read_bin.",
-                    ),
-                ),
-                (
-                    "inputSchema",
-                    Value::obj(vec![
-                        ("type", Value::from("object")),
-                        (
-                            "properties",
-                            Value::obj(vec![(
-                                "scope",
-                                Self::prop("optional bin scope filter (defaults to 'user'; e.g. 'chat:<session_id>', 'machine:<device_name>')"),
-                            )]),
-                        ),
-                        ("additionalProperties", Value::from(false)),
-                    ]),
-                ),
-            ]),
-            Value::obj(vec![
                 ("name", Value::from("env_report")),
                 (
                     "description",
@@ -785,7 +678,7 @@ impl Bridge {
                 (
                     "description",
                     Value::from(
-                        "Post a structured entry to an encrypted agent-to-agent COMMS ledger channel — the fast, cross-repo/cross-machine form of the AGENTS/{date}.COMMS.md protocol (repos, worktrees, subagents, subtasks). Entries are end-to-end encrypted (ML-KEM-768 sealed keys, AES-256-GCM) and the hub stores ciphertext only, so this is the ONLY surface where secrets may travel between agents — bins and the event feed are public. Join the channel with session_join first.",
+                        "Post a structured entry to an encrypted agent-to-agent COMMS ledger channel — the fast, cross-repo/cross-machine form of the AGENTS/{date}.COMMS.md protocol (repos, worktrees, subagents, subtasks). Entries are end-to-end encrypted (ML-KEM-768 sealed keys, AES-256-GCM) and the hub stores ciphertext only, so this is the ONLY surface where secrets may travel between agents — the event feed is public. Join the channel with session_join first.",
                     ),
                 ),
                 (
@@ -936,9 +829,6 @@ impl Bridge {
             "check_in" => self.tool_check_in(args),
             "log_event" => self.tool_log_event(args),
             "wtf_is_going_on" => self.tool_state(args),
-            "read_bin" => self.tool_read_bin(args),
-            "write_bin" => self.tool_write_bin(args),
-            "list_bins" => self.tool_list_bins(args),
             "ping" => self.tool_ping(),
             "hub_info" => self.tool_hub_info(),
             "env_report" => self.tool_env_report(),
@@ -1058,163 +948,6 @@ impl Bridge {
         }
     }
 
-    fn tool_read_bin(&self, args: &Value) -> (String, bool) {
-        let id = match args.get("bin").and_then(|v| v.as_i64()) {
-            Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
-            Some(other) => return (format!("invalid bin {other}; must be 1, 2, or 3"), true),
-            None => return ("missing required argument: bin".into(), true),
-        };
-        let scope = arg_str(args, "scope").unwrap_or("user");
-        let query_scope = if scope == "user" {
-            String::new()
-        } else {
-            format!("?scope={}", crate::util::percent_encode(scope))
-        };
-        match self.api_get(&format!("/api/v1/bins/{id}{query_scope}")) {
-            Ok(v) => {
-                let size = v.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
-                let scope_label = if scope == "user" {
-                    String::new()
-                } else {
-                    format!(" [{scope}]")
-                };
-                if size == 0 {
-                    return (format!("BIN {id}{scope_label} is empty"), false);
-                }
-                let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
-                let by = v.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
-                let at = v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
-                (
-                    format!(
-                        "BIN {id}{scope_label} — {size} chars — updated {} ago by {by}\n\n{content}",
-                        rel_age(now_secs(), at)
-                    ),
-                    false,
-                )
-            }
-            Err(e) => (e, true),
-        }
-    }
-
-    /// Agents publish to paste-bins with a device-signed PUT; the hub
-    /// records the device as `updated_by`, so cross-machine writes are
-    /// attributable in the dashboard.
-    fn tool_write_bin(&self, args: &Value) -> (String, bool) {
-        let id = match args.get("bin").and_then(|v| v.as_i64()) {
-            Some(n) if crate::bins::Bins::valid_id(n) => n as u8,
-            Some(other) => return (format!("invalid bin {other}; must be 1, 2, or 3"), true),
-            None => return ("missing required argument: bin".into(), true),
-        };
-        let content =
-            match arg_str(args, "content") {
-                Some(c) if !c.is_empty() => c.to_string(),
-                Some(_) => return (
-                    "content must not be empty (bins have no delete; leave that to the operator)"
-                        .into(),
-                    true,
-                ),
-                None => return ("missing required argument: content".into(), true),
-            };
-        if content.chars().count() > crate::bins::MAX_BIN_CHARS {
-            return (
-                format!(
-                    "bin content too large (max {} chars)",
-                    crate::bins::MAX_BIN_CHARS
-                ),
-                true,
-            );
-        }
-        let scope = arg_str(args, "scope").unwrap_or("user");
-        let body = Value::obj(vec![
-            ("content", Value::from(content.as_str())),
-            ("scope", Value::from(scope)),
-        ]);
-        let query_scope = if scope == "user" {
-            String::new()
-        } else {
-            format!("?scope={}", crate::util::percent_encode(scope))
-        };
-        match self.api_put(&format!("/api/v1/bins/{id}{query_scope}"), &body) {
-            Ok(v) => {
-                let bid = v.get("id").and_then(|x| x.as_i64()).unwrap_or(id as i64);
-                let ev = v.get("event").and_then(|x| x.as_i64()).unwrap_or(0);
-                let scope_label = if scope == "user" {
-                    String::new()
-                } else {
-                    format!(" [{scope}]")
-                };
-                (
-                    format!(
-                        "BIN {bid}{scope_label} updated ({} chars, by {}) — event #{ev}; peers can fetch it with read_bin",
-                        content.chars().count(),
-                        self.cfg.device_name
-                    ),
-                    false,
-                )
-            }
-            Err(e) => (e, true),
-        }
-    }
-
-    fn tool_list_bins(&self, args: &Value) -> (String, bool) {
-        let scope = arg_str(args, "scope").unwrap_or("user");
-        let query_scope = if scope == "user" {
-            String::new()
-        } else {
-            format!("?scope={}", crate::util::percent_encode(scope))
-        };
-        match self.api_get(&format!("/api/v1/bins{query_scope}")) {
-            Ok(v) => {
-                let bins = v
-                    .get("bins")
-                    .and_then(|x| x.as_arr())
-                    .unwrap_or(&[])
-                    .to_vec();
-                let scope_label = if scope == "user" {
-                    "user (global)"
-                } else {
-                    scope
-                };
-                let mut out =
-                    format!("paste-bins for scope '{scope_label}' (read_bin to fetch, write_bin to publish):\n");
-                for b in &bins {
-                    let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
-                    let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
-                    let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
-                    let at = b.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0) as u64;
-                    if size == 0 {
-                        out.push_str(&format!("  BIN {id}: (empty)\n"));
-                    } else {
-                        let content = b.get("content").and_then(|x| x.as_str()).unwrap_or("");
-                        let mut preview: String = content.chars().take(60).collect();
-                        if content.chars().count() > 60 {
-                            preview.push('…');
-                        }
-                        out.push_str(&format!(
-                            "  BIN {id}: {size} chars, updated {} ago by {by} — {preview}\n",
-                            rel_age(now_secs(), at)
-                        ));
-                    }
-                }
-                if let Some(scopes) = v.get("scopes").and_then(|x| x.as_arr()) {
-                    let other_scopes: Vec<&str> = scopes
-                        .iter()
-                        .filter_map(|s| s.as_str())
-                        .filter(|s| *s != scope)
-                        .collect();
-                    if !other_scopes.is_empty() {
-                        out.push_str(&format!("\nother active scopes: {}\n", other_scopes.join(", ")));
-                    }
-                }
-                (out, false)
-            }
-            Err(e) => (e, true),
-        }
-    }
-
-    /// Probe THIS machine's environment for cluster discovery: os/arch +
-    /// wtf version only. No agent-CLI inventory (harness logic removed,
-    /// 2026-09-07); NEVER API keys or credentials.
     fn collect_env_report(&self) -> Value {
         Value::obj(vec![
             ("os", Value::from(std::env::consts::OS)),

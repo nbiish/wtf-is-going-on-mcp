@@ -22,7 +22,7 @@ Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence; R3
   `chat_session_lifecycle` tools, `/api/v1/term/*` and `/api/v1/agents/`
   routes, and the executor-era dashboard dispatch; Studio is now a router-chat
   pane; the two wtf skills consolidated into singular
-  `.agents/skills/wtf-mcp-mastery/`. wtf = observability + federated lanes +
+  `.agents/skills/wtf-is-going-on-mcp/`. wtf = observability + federated lanes +
   shell + router chat. Nothing else.
 
 ## Open defects

@@ -10,7 +10,6 @@
 //! origin and are deduped on (origin, origin_id). Pre-federation events
 //! replay with origin "" and remain first-class.
 
-use crate::bins::Bins;
 use crate::json::Value;
 use crate::util::{clamp, now_secs};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -519,7 +518,7 @@ impl Store {
         true
     }
 
-    pub fn to_state_json(&self, started_at: u64, bins: &Bins) -> Value {
+    pub fn to_state_json(&self, started_at: u64) -> Value {
         let now = now_secs();
         let (agents, events) = self.snapshot();
         let agents_v: Vec<Value> = agents
@@ -565,16 +564,6 @@ impl Store {
             ),
             ("agents", Value::Arr(agents_v)),
             ("events", Value::Arr(events_v)),
-            ("bins", bins.to_state_json()),
-            (
-                "bin_scopes",
-                Value::Arr(
-                    bins.scopes()
-                        .iter()
-                        .map(|s| Value::from(s.as_str()))
-                        .collect(),
-                ),
-            ),
             ("sessions", self.sessions_v()),
             ("router", crate::chat::router_state_json()),
         ])

@@ -23,8 +23,8 @@ use wtf::VERSION;
 
 /// The portable hub skill, embedded at build time so the single binary can
 /// distribute it anywhere (`wtf skill install`). Kept byte-identical with
-/// `.agents/skills/wtf-mcp-mastery/SKILL.md` and the ainish-coder mirror.
-const MASTER_SKILL: &str = include_str!("../.agents/skills/wtf-mcp-mastery/SKILL.md");
+/// `.agents/skills/wtf-is-going-on-mcp/SKILL.md` and the ainish-coder original.
+const MASTER_SKILL: &str = include_str!("../.agents/skills/wtf-is-going-on-mcp/SKILL.md");
 
 fn main() {
     std::process::exit(run());
@@ -41,7 +41,6 @@ fn run() -> i32 {
         Some("enroll-token") => cmd_enroll_token(&args[1..]),
         Some("enroll") => cmd_enroll(&args[1..]),
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
-        Some("bin") => cmd_bin(&args[1..]),
         Some("sessions") => cmd_sessions(&args[1..]),
         Some("federate") => cmd_federate(&args[1..]),
         Some("agent") => cmd_agent(),
@@ -83,13 +82,6 @@ fn print_help() {
         "  wtf enroll --url URL --name N --psk S      signed-handshake enroll (key arrives sealed)"
     );
     println!("  wtf enroll-secret [--rotate] [--json]      print/rotate the site enrollment secret (hub)");
-    println!("  wtf bin ls [--url U] [--k K] [--json]      operator bin courier: list bins");
-    println!(
-        "  wtf bin get N [-o F] [--url U] [--k K]     read a bin raw to stdout (pre-setup OK)"
-    );
-    println!(
-        "  wtf bin put N TEXT|--file F|- [--url U] [--k K]   write a bin (dashboard-key gated)"
-    );
     println!("  wtf federate add <name> --url URL --psk SECRET [--as DEV]  link a peer hub (one secret copy per edge)");
     println!("  wtf federate list                         show the federation peer table");
     println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
@@ -146,7 +138,6 @@ fn cmd_serve(args: &[String]) -> i32 {
         }
     };
     let store_for_sessions = Arc::clone(&store);
-    let bins = Arc::new(wtf::bins::Bins::load());
     let capability = match wtf::federation::load_or_create_capability() {
         Ok(c) => c,
         Err(e) => {
@@ -202,7 +193,6 @@ fn cmd_serve(args: &[String]) -> i32 {
 
     let hub = Arc::new(wtf::api::Hub {
         store,
-        bins,
         keys: Mutex::new(keys),
         nonces: Mutex::new(wtf::auth::NonceCache::new()),
         dashboard_key: cfg.dashboard_key.clone(),
@@ -469,7 +459,7 @@ fn cmd_skill(args: &[String]) -> i32 {
             let target = base
                 .join(".agents")
                 .join("skills")
-                .join("wtf-mcp-mastery")
+                .join("wtf-is-going-on-mcp")
                 .join("SKILL.md");
             if target.exists() {
                 let existing = std::fs::read_to_string(&target).unwrap_or_default();
@@ -495,7 +485,7 @@ fn cmd_skill(args: &[String]) -> i32 {
                 Ok(_) => {
                     println!("skill installed: {}", target.display());
                     println!();
-                    println!("point agents at .agents/skills/wtf-mcp-mastery/SKILL.md, then register the bridge:");
+                    println!("point agents at .agents/skills/wtf-is-going-on-mcp/SKILL.md, then register the bridge:");
                     println!(r#"  {{ "command": "<absolute path to>/wtf", "args": ["agent"] }}"#);
                     0
                 }
@@ -792,7 +782,7 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
 /// to which repo and hand out pairing keys. On the machine that CREATED a
 /// chat (the creator's session_keys.json holds its pairing key), the local
 /// pairing keys are printed too — that is the key the operator copies to
-/// the other machine/agent. Hub URL + key resolve like `wtf bin`.
+/// the other machine/agent. Hub URL + key resolve like every other CLI command.
 fn cmd_sessions(args: &[String]) -> i32 {
     let rest = &args[..];
     let url_flag = flag_value(rest, "--url");
@@ -1104,274 +1094,6 @@ fn cmd_federate(args: &[String]) -> i32 {
                     0
                 }
             }
-        }
-        _ => {
-            eprintln!("{usage}");
-            2
-        }
-    }
-}
-
-/// Operator bin courier: read/write the hub's three paste-bins with the
-/// dashboard key — no enrolled agent required, so this works pre-setup on
-/// any machine or harness (the hub records "dashboard" as the last writer).
-/// `get` prints raw content to stdout (pipe/copy friendly); `put` takes a
-/// positional TEXT, `--file F`, or `-` for stdin. Hub URL resolves from
-/// --url, $WTF_HUB_URL, bridge.json, or the local hub config; the key from
-/// --k, $WTF_DASHBOARD_KEY, or the local hub config. Prefer the env var:
-/// a key passed as --k can leak through shell history.
-fn cmd_bin(args: &[String]) -> i32 {
-    let usage = "usage:\n  wtf bin ls [--scope S] [--url U] [--cap K] [--json]\n  wtf bin get N [--scope S] [-o FILE] [--url U] [--cap K]\n  wtf bin put N (TEXT | --file F | -) [--scope S] [--url U] [--cap K] [--json]";
-    let Some(op) = args.first().map(|s| s.as_str()) else {
-        eprintln!("{usage}");
-        return 2;
-    };
-    if !matches!(op, "ls" | "get" | "put") {
-        eprintln!("{usage}");
-        return 2;
-    }
-    let rest = &args[1..];
-    let url_flag = flag_value(rest, "--url");
-    let k_flag = flag_value(rest, "--cap").or_else(|| flag_value(rest, "--k"));
-    let out_flag = flag_value(rest, "-o");
-    let file_flag = flag_value(rest, "--file");
-    let scope_flag = flag_value(rest, "--scope");
-    let scope = scope_flag.as_deref().unwrap_or("user");
-    let as_json = rest.iter().any(|a| a == "--json");
-
-    let home = config::home();
-    let hub_url = match url_flag {
-        Some(u) => Some(u.trim_end_matches('/').to_string()),
-        None => match std::env::var("WTF_HUB_URL") {
-            Ok(u) if !u.trim().is_empty() => Some(u.trim().trim_end_matches('/').to_string()),
-            _ => {
-                let bridge = home.join("bridge.json");
-                let cfg = home.join("config.json");
-                if bridge.exists() {
-                    read_json_field(&bridge, "hub_url")
-                } else if cfg.exists() {
-                    HubConfig::load_or_create_at(&cfg).map(|c| c.lan_url()).ok()
-                } else {
-                    None
-                }
-            }
-        },
-    };
-    let Some(hub_url) = hub_url else {
-        eprintln!("error: no hub URL: pass --url, set WTF_HUB_URL, or run where bridge.json/config.json exists");
-        return 2;
-    };
-
-    let key = match k_flag {
-        Some(k) => Some(k),
-        None => match std::env::var("WTF_CAPABILITY").or_else(|_| std::env::var("WTF_DASHBOARD_KEY")) {
-            Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
-            _ => {
-                let cap_file = home.join("dashboard_capability");
-                if cap_file.exists() {
-                    std::fs::read_to_string(&cap_file).ok().map(|s| s.trim().to_string())
-                } else {
-                    None
-                }
-            }
-        },
-    };
-    let Some(key) = key else {
-        eprintln!("error: no capability token: pass --cap, --k or set WTF_CAPABILITY (argv can leak via shell history; prefer the env var)");
-        return 2;
-    };
-
-    let bin_id = |rest: &[String]| -> Option<u8> {
-        rest.first()
-            .and_then(|s| s.parse::<u8>().ok())
-            .filter(|n| (1..=3).contains(n))
-    };
-
-    match op {
-        "ls" => {
-            let scope_query = if scope == "user" {
-                String::new()
-            } else {
-                format!("&scope={}", util::percent_encode(scope))
-            };
-            let resp =
-                match client::request(&format!("{hub_url}/api/v1/bins?cap={key}{scope_query}"), "GET", &[], b"") {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("error: cannot reach hub: {e}");
-                        return 1;
-                    }
-                };
-            if resp.status != 200 {
-                eprintln!(
-                    "error: hub refused (HTTP {}): {}",
-                    resp.status,
-                    resp.text().trim()
-                );
-                return 1;
-            }
-            let Some(v) = resp.json() else {
-                eprintln!("error: hub returned a non-JSON response");
-                return 1;
-            };
-            if as_json {
-                println!("{}", v.to_json());
-                return 0;
-            }
-            let bins = v.get("bins").and_then(|x| x.as_arr()).unwrap_or(&[]);
-            if scope != "user" {
-                println!("bins for scope '{scope}':");
-            }
-            for b in bins {
-                let id = b.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
-                let size = b.get("size").and_then(|x| x.as_i64()).unwrap_or(0);
-                let by = b.get("updated_by").and_then(|x| x.as_str()).unwrap_or("?");
-                let sc = b.get("scope").and_then(|x| x.as_str()).unwrap_or(scope);
-                if sc == "user" {
-                    println!("bin {id}: {size} chars, by {by}");
-                } else {
-                    println!("bin {id} [{sc}]: {size} chars, by {by}");
-                }
-            }
-            if let Some(scopes) = v.get("scopes").and_then(|x| x.as_arr()) {
-                let other_scopes: Vec<&str> = scopes
-                    .iter()
-                    .filter_map(|s| s.as_str())
-                    .filter(|s| *s != scope)
-                    .collect();
-                if !other_scopes.is_empty() {
-                    println!("other active scopes: {}", other_scopes.join(", "));
-                }
-            }
-            0
-        }
-        "get" => {
-            let Some(id) = bin_id(rest) else {
-                eprintln!("{usage}");
-                return 2;
-            };
-            let scope_query = if scope == "user" {
-                String::new()
-            } else {
-                format!("&scope={}", util::percent_encode(scope))
-            };
-            let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins/{id}?cap={key}{scope_query}"),
-                "GET",
-                &[],
-                b"",
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("error: cannot reach hub: {e}");
-                    return 1;
-                }
-            };
-            if resp.status != 200 {
-                eprintln!(
-                    "error: hub refused (HTTP {}): {}",
-                    resp.status,
-                    resp.text().trim()
-                );
-                return 1;
-            }
-            let Some(content) = resp.json().and_then(|v| {
-                v.get("content")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string())
-            }) else {
-                eprintln!("error: hub response missing content");
-                return 1;
-            };
-            match out_flag {
-                Some(f) => {
-                    if let Err(e) = std::fs::write(&f, &content) {
-                        eprintln!("error: cannot write {f}: {e}");
-                        return 1;
-                    }
-                    println!("wrote {} chars to {f}", content.chars().count());
-                }
-                None => print!("{content}"),
-            }
-            0
-        }
-        "put" => {
-            let Some(id) = bin_id(rest) else {
-                eprintln!("{usage}");
-                return 2;
-            };
-            let content = if let Some(f) = file_flag {
-                match std::fs::read_to_string(&f) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("error: cannot read {f}: {e}");
-                        return 1;
-                    }
-                }
-            } else if rest.get(1).map(|s| s.as_str()) == Some("-") {
-                let mut s = String::new();
-                use std::io::Read;
-                if let Err(e) = std::io::stdin().read_to_string(&mut s) {
-                    eprintln!("error: cannot read stdin: {e}");
-                    return 1;
-                }
-                s
-            } else if let Some(t) = rest.get(1) {
-                t.clone()
-            } else {
-                eprintln!("{usage}");
-                return 2;
-            };
-            if content.chars().count() > 65_536 {
-                eprintln!(
-                    "error: content is {} chars; bins hold at most 65,536",
-                    content.chars().count()
-                );
-                return 1;
-            }
-            let scope_query = if scope == "user" {
-                String::new()
-            } else {
-                format!("&scope={}", util::percent_encode(scope))
-            };
-            let body = json::Value::obj(vec![
-                ("content", json::Value::from(content.as_str())),
-                ("scope", json::Value::from(scope)),
-            ]);
-            let resp = match client::request(
-                &format!("{hub_url}/api/v1/bins/{id}?cap={key}{scope_query}"),
-                "PUT",
-                &[],
-                body.to_json().as_bytes(),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("error: cannot reach hub: {e}");
-                    return 1;
-                }
-            };
-            if resp.status != 200 {
-                eprintln!(
-                    "error: hub refused (HTTP {}): {}",
-                    resp.status,
-                    resp.text().trim()
-                );
-                return 1;
-            }
-            if as_json {
-                println!("{}", resp.text().trim());
-            } else {
-                let scope_label = if scope == "user" {
-                    String::new()
-                } else {
-                    format!(" [{scope}]")
-                };
-                println!(
-                    "bin {id}{scope_label} updated ({} chars, by dashboard)",
-                    content.chars().count()
-                );
-            }
-            0
         }
         _ => {
             eprintln!("{usage}");
