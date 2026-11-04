@@ -38,10 +38,6 @@ pub fn events_path() -> PathBuf {
     home().join("events.jsonl")
 }
 
-pub fn bins_path() -> PathBuf {
-    home().join("bins.json")
-}
-
 pub fn sessions_path() -> PathBuf {
     home().join("sessions.json")
 }

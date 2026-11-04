@@ -68,16 +68,6 @@ button.primary:hover{opacity:.9}
 .lv.warn{color:var(--warn)}
 .lv.info{color:var(--info)}
 
-/* Bins */
-#bins{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:16px;padding:0}
-@media(max-width:1100px){#bins{grid-template-columns:1fr}}
-.bin textarea{width:100%;min-height:120px;margin-top:6px;background:var(--bg);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:8px;font:inherit;resize:vertical}
-.bhead{display:flex;gap:8px;align-items:baseline}
-.bmeta{margin-left:auto;font-size:11px}
-.bmeta .who{color:var(--info)}
-.bbtns{display:flex;gap:8px;margin-top:6px}
-.bbtns button.dirty{border-color:var(--warn);color:var(--warn)}
-
 /* Sessions card */
 .sess{padding:8px 0;border-bottom:1px dashed var(--edge);cursor:pointer}
 .sess:hover{background:rgba(74,163,255,.06)}
@@ -85,7 +75,6 @@ button.primary:hover{opacity:.9}
   .scope-tab { background: var(--card, #1a1d24); border: 1px solid var(--edge, #2d333f); color: var(--fg, #e6edf3); border-radius: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer; transition: all 0.15s ease; }
   .scope-tab:hover { border-color: var(--accent, #58a6ff); }
   .scope-tab.active { background: var(--accent, #58a6ff); color: #0d1117; font-weight: bold; border-color: var(--accent, #58a6ff); }
-  .sess-bin-btn { padding: 1px 7px; font-size: 10px; margin-left: 6px; border-radius: 3px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -170,27 +159,10 @@ Type 'ls ~' or 'cd <machine>' to navigate.</div>
     </div>
   </section>
 
-  <!-- SESSIONS & BINS -->
+  <!-- SESSIONS -->
   <section>
     <h2>SESSIONS · federated agent chats</h2>
     <div id="sessions" class="card"><span class="dim">no chats yet</span></div>
-  </section>
-
-  <section id="bins-sec">
-    <div class="bar" style="align-items:center;flex-wrap:wrap;gap:8px">
-      <h2>SHARED BINS · paste here for agents · agents publish back with write_bin</h2>
-      <span id="bins-scope-pill" class="pill working" style="margin-left:auto">scope: user (global)</span>
-    </div>
-    <div class="bar" id="bin-scope-bar" style="margin:6px 0 10px 0;flex-wrap:wrap;gap:6px">
-      <span class="dim" style="font-size:11px;align-self:center">Scope:</span>
-      <button class="scope-tab active" id="btn-scope-user" data-scope="user">👤 User Bins (global)</button>
-      <button class="scope-tab" id="btn-scope-active-chat" style="display:none" data-scope="">💬 Chat Bins</button>
-      <button class="scope-tab" id="btn-scope-active-mach" style="display:none" data-scope="">💻 Machine Bins</button>
-      <select id="scope-dropdown" style="font-size:11px;padding:2px 6px;margin-left:auto;max-width:240px">
-        <option value="user">user (global courier)</option>
-      </select>
-    </div>
-    <div id="bins"></div>
   </section>
 </main>
 
@@ -272,8 +244,6 @@ function render(s){
   currentSessions = s.sessions || [];
   renderLaneSelector(currentSessions);
   renderSessionsList(currentSessions, now);
-  if(s.bin_scopes) updateScopeDropdown(s.bin_scopes);
-  if(currentBinScope === "user") renderBins(s.bins, now);
 
   // Local Router Status (passive probe — wtf never spawns/restarts the router)
   if(s.router){
@@ -335,14 +305,6 @@ function updateActiveLaneUI(){
     document.getElementById("lane-scope-chip").textContent = sess.repo || "none";
     document.getElementById("lane-members-text").textContent = (sess.members || 0) + " member(s)";
     loadLaneChat(sid);
-    const chatScope = "chat:" + sid;
-    const chatName = sess.name || sid.slice(0, 12);
-    const chatBtn = document.getElementById("btn-scope-active-chat");
-    if(chatBtn){
-      chatBtn.style.display = "inline-block";
-      chatBtn.setAttribute("data-scope", chatScope);
-      chatBtn.textContent = "💬 Chat Bins (" + chatName + ")";
-    }
   } else {
     document.getElementById("lane-scope-chip").textContent = "-";
     document.getElementById("lane-members-text").textContent = "-";
@@ -498,13 +460,6 @@ function renderMachineChips(machines){
     if(m.lkgl) btn.title = "Arch: " + (m.arch||"unknown") + " | LKGL: " + m.lkgl;
     btn.addEventListener("click", ()=>{
       switchCwd("~/" + m.name);
-      const machScope = "machine:" + m.name;
-      const machBtn = document.getElementById("btn-scope-active-mach");
-      if(machBtn){
-        machBtn.style.display = "inline-block";
-        machBtn.setAttribute("data-scope", machScope);
-        machBtn.textContent = "💻 Machine Bins (~/" + m.name + ")";
-      }
     });
     bar.appendChild(btn);
   }
@@ -578,194 +533,12 @@ function renderSessionsList(sessions, now){
       +'<div class="bar"><b style="color:var(--info)">'+esc(x.name||x.id)+'</b>'
       +(x.repo?'<span class="repo">'+esc(x.repo)+'</span>':"")
       +'<span class="dim" style="margin-left:auto;font-size:11px">'+esc(x.msg_count)+' msg(s) · '+esc(x.members)+' member(s)</span></div>'
-      +'<div class="bar" style="font-size:11px"><span class="dim">'+esc(x.id)+'</span><button class="sess-bin-btn" onclick="openChatBins(\''+esc(x.id)+'\', \''+esc(x.name||x.id)+'\')" style="margin-left:auto">📦 Chat Bins</button></div></div>';
+      +'<div class="bar" style="font-size:11px"><span class="dim">'+esc(x.id)+'</span></div></div>';
   }
   host.innerHTML = rows;
 }
 
-// SCOPED BINS ARCHITECTURE
-const binIds = [1,2,3];
-const dirty = {};
-let currentBinScope = "user";
-let currentBinScopeLabel = "user (global)";
-
-function buildBins(){
-  const host = document.getElementById("bins");
-  host.innerHTML = "";
-  for(const id of binIds){
-    const card = document.createElement("div");card.className = "card bin";
-    const head = document.createElement("div");head.className = "bhead";
-    const title = document.createElement("b");title.id = "btitle-" + id;title.textContent = "BIN " + id;
-    const meta = document.createElement("span");meta.className = "bmeta dim";meta.id = "bmeta-" + id;meta.textContent = "loading…";
-    head.appendChild(title);head.appendChild(meta);
-    const ta = document.createElement("textarea");ta.id = "ta-" + id;ta.spellcheck = false;ta.placeholder = "paste content for agents here (keys, specs, instructions) — agents publish via write_bin";
-    const btns = document.createElement("div");btns.className = "bbtns";
-    const save = document.createElement("button");save.id = "save-" + id;save.textContent = "Save";
-    const copy = document.createElement("button");copy.id = "copy-" + id;copy.textContent = "Copy";
-    save.addEventListener("click", ()=>saveBin(id));
-    copy.addEventListener("click", ()=>copyBin(id));
-    ta.addEventListener("input", ()=>{dirty[id] = true;save.classList.add("dirty");});
-    btns.appendChild(save);btns.appendChild(copy);
-    card.appendChild(head);card.appendChild(ta);card.appendChild(btns);
-    host.appendChild(card);
-  }
-
-  // Bind scope tabs
-  document.getElementById("btn-scope-user").addEventListener("click", ()=>switchBinScope("user", "user (global)"));
-  document.getElementById("btn-scope-active-chat").addEventListener("click", function(){
-    const sc = this.getAttribute("data-scope");
-    if(sc) switchBinScope(sc, this.textContent.replace("💬 ", ""));
-  });
-  document.getElementById("btn-scope-active-mach").addEventListener("click", function(){
-    const sc = this.getAttribute("data-scope");
-    if(sc) switchBinScope(sc, this.textContent.replace("💻 ", ""));
-  });
-  document.getElementById("scope-dropdown").addEventListener("change", function(){
-    switchBinScope(this.value, this.value);
-  });
-  const laneBinsBtn = document.getElementById("btn-open-lane-bins");
-  if(laneBinsBtn){
-    laneBinsBtn.addEventListener("click", ()=>{
-      if(currentLaneId){
-        const sess = currentSessions.find(s=>s.id === currentLaneId);
-        openChatBins(currentLaneId, sess ? (sess.name||currentLaneId) : currentLaneId);
-      }
-    });
-  }
-}
-
-function updateScopeDropdown(scopes){
-  const sel = document.getElementById("scope-dropdown");
-  if(!sel || !scopes) return;
-  const curr = sel.value;
-  let html = '<option value="user">user (global courier)</option>';
-  for(const sc of scopes){
-    if(sc === "user") continue;
-    let label = sc;
-    if(sc.startsWith("chat:")) label = "💬 " + sc;
-    else if(sc.startsWith("machine:")) label = "💻 " + sc;
-    html += '<option value="'+esc(sc)+'">'+esc(label)+'</option>';
-  }
-  sel.innerHTML = html;
-  if(scopes.includes(currentBinScope)){
-    sel.value = currentBinScope;
-  }
-}
-
-async function switchBinScope(scope, optLabel){
-  currentBinScope = scope || "user";
-  currentBinScopeLabel = optLabel || currentBinScope;
-
-  const pill = document.getElementById("bins-scope-pill");
-  if(pill) pill.textContent = "scope: " + currentBinScopeLabel;
-
-  document.querySelectorAll(".scope-tab").forEach(t=>{
-    if(t.getAttribute("data-scope") === currentBinScope){
-      t.classList.add("active");
-    } else {
-      t.classList.remove("active");
-    }
-  });
-
-  const sel = document.getElementById("scope-dropdown");
-  if(sel && Array.from(sel.options).some(o=>o.value === currentBinScope)){
-    sel.value = currentBinScope;
-  }
-
-  for(const id of binIds){
-    const t = document.getElementById("btitle-" + id);
-    if(t) t.textContent = "BIN " + id + (currentBinScope === "user" ? "" : " [" + currentBinScope + "]");
-    const m = document.getElementById("bmeta-" + id);
-    if(m) m.textContent = "loading " + currentBinScope + "…";
-    delete dirty[id];
-  }
-
-  try{
-    const r = await fetch("/api/v1/bins?scope="+encodeURIComponent(currentBinScope)+"&"+AUTH);
-    if(r.ok){
-      const j = await r.json();
-      renderBins(j.bins, Math.floor(Date.now()/1000));
-      if(j.scopes) updateScopeDropdown(j.scopes);
-    }
-  }catch(e){}
-}
-
-function openChatBins(sessionId, sessionName){
-  const chatScope = "chat:" + sessionId;
-  const chatBtn = document.getElementById("btn-scope-active-chat");
-  if(chatBtn){
-    chatBtn.style.display = "inline-block";
-    chatBtn.setAttribute("data-scope", chatScope);
-    chatBtn.textContent = "💬 Chat Bins (" + (sessionName||sessionId.slice(0,12)) + ")";
-  }
-  switchBinScope(chatScope, "chat:" + (sessionName||sessionId));
-  document.getElementById("bins-sec").scrollIntoView({behavior:"smooth"});
-}
-
-function openMachineBins(machName){
-  const machScope = "machine:" + machName;
-  const machBtn = document.getElementById("btn-scope-active-mach");
-  if(machBtn){
-    machBtn.style.display = "inline-block";
-    machBtn.setAttribute("data-scope", machScope);
-    machBtn.textContent = "💻 Machine Bins (~/" + machName + ")";
-  }
-  switchBinScope(machScope, "machine:" + machName);
-  document.getElementById("bins-sec").scrollIntoView({behavior:"smooth"});
-}
-
-function renderBins(bins, now){
-  if(!bins) return;
-  for(const b of bins){
-    const ta = document.getElementById("ta-" + b.id);
-    if(!ta) continue;
-    if(!dirty[b.id] && ta.value !== (b.content || "")){ta.value = b.content || "";}
-    const m = document.getElementById("bmeta-" + b.id);
-    if(b.content && b.content.length > 0){
-      const byAgent = b.updated_by && b.updated_by !== "dashboard";
-      m.innerHTML = (b.size||b.content.length)+" chars · updated "+ago(b.updated_at,now)+" ago by "
-        +(byAgent?'<span class="who">✎ '+esc(b.updated_by)+'</span>':esc(b.updated_by||"unknown"));
-    } else {
-      m.textContent = "0 chars · empty (" + esc(b.scope||currentBinScope) + ")";
-    }
-  }
-}
-
-async function saveBin(id){
-  const ta = document.getElementById("ta-" + id);
-  const btn = document.getElementById("save-" + id);
-  btn.disabled = true;btn.textContent = "Saving…";
-  try{
-    const r = await fetch("/api/v1/bins/"+id+"?scope="+encodeURIComponent(currentBinScope)+"&"+AUTH, {
-      method:"PUT",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({content:ta.value, scope:currentBinScope})
-    });
-    const j = await r.json();
-    if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status));
-    dirty[id] = false;btn.classList.remove("dirty");btn.textContent = "Saved";
-    setTimeout(()=>{btn.textContent = "Save";}, 1500);
-    // Refresh scopes dropdown if newly created scope
-    fetch("/api/v1/bins?"+AUTH).then(res=>res.json()).then(data=>{
-      if(data.scopes) updateScopeDropdown(data.scopes);
-    }).catch(()=>{});
-  }catch(e){
-    document.getElementById("bmeta-" + id).textContent = "save failed: " + esc(String(e.message||e));
-    btn.textContent = "Save";
-  }
-  btn.disabled = false;
-}
-
-function copyBin(id){
-  const ta = document.getElementById("ta-" + id);
-  const btn = document.getElementById("copy-" + id);
-  const done = ()=>{btn.textContent = "Copied";setTimeout(()=>{btn.textContent = "Copy";}, 1200);};
-  if(navigator.clipboard && navigator.clipboard.writeText){navigator.clipboard.writeText(ta.value).then(done).catch(()=>{ta.select();document.execCommand("copy");done();});}
-  else{ta.select();document.execCommand("copy");done();}
-}
-
 function boot(){
-  buildBins();
   loadMachines();
   fetch("/api/v1/state?"+AUTH)
     .then(r=>{if(!r.ok)throw 0;return r.json();})

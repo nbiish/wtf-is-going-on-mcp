@@ -7,7 +7,6 @@
 pub mod aes;
 pub mod api;
 pub mod auth;
-pub mod bins;
 pub mod client;
 pub mod comms;
 pub mod config;
