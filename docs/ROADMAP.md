@@ -1,6 +1,22 @@
 # ROADMAP — refinement items and open defects
 
-Verified: 2026-09-03 (items updated for v0.15.0+ executor and R1 persistence; R3-R5 synced with root llms.txt)
+Verified: 2026-11-07 (v0.18.0 federated task dispatch merged; earlier items updated for v0.15.0+ executor and R1 persistence)
+
+## R8 — federated task dispatch (v0.18.0) [PARTIAL]
+
+Shipped: durable task records (`src/tasks.rs`, `$WTF_HOME/tasks.json`), addressable
+targets (machine / `tier:` / `arch:`), lease-based claims with expiry, store-enforced
+ownership, `/api/v1/tasks*`, four MCP tools, dashboard TASKS card, and `wtf tasks`.
+
+Open: **nothing polls.** A worker agent only claims work when it is told to, so a
+dispatched task rests `queued` until a human or an agent asks. The next increment is a
+worker loop (poll `task_claim` on an interval, bounded by a quiet stop) so a paired
+machine can pick up designated work unattended. Until then, a queued task is a correct
+resting state and callers must report it as such rather than as a failure.
+
+Also open: task-to-task dependencies (`blocked_on`), and replicating the task board
+across federated hubs the way events replicate — today the board is hub-local, so a
+dispatcher must talk to the hub the worker is enrolled on.
 
 ## Refinement phase (opened by mac-agent, session wrap 2026-09-01)
 
