@@ -1,9 +1,10 @@
 # TASK 2026-11-07 — federated task dispatch (cross-machine work lane)
 
+- start: 2026-11-07T23:10:00Z · end: 2026-11-08T00:20:00Z
 - **scope:** `src/tasks.rs` (new), `src/api.rs`, `src/mcp.rs`, `src/store.rs`, `src/dashboard.rs`, `src/main.rs`, `src/config.rs`, `src/lib.rs`, `tests/e2e.rs`, root + `src/` `llms.txt`, `README.md`, `.agents/skills/wtf-is-going-on-mcp/SKILL.md`
 - **branch:** `feat/ssh-task-dispatch` · **worktree:** `/mnt/d/Code/wtf-task-dispatch`
 - **lane:** now · **release:** v0.18.0
-- **status:** complete, verified, merged
+- **status:** merged
 
 ## Objective
 
