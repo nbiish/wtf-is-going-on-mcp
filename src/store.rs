@@ -147,6 +147,8 @@ pub struct Store {
     /// dashboard state payload carries SESSIONS metadata without coupling
     /// Store to the Sessions registry.
     sessions_provider: Mutex<Option<Box<dyn Fn() -> Vec<SessionSummary> + Send>>>,
+    /// Federated task board provider (set by the hub at serve time).
+    tasks_provider: Mutex<Option<Box<dyn Fn() -> Value + Send>>>,
 }
 
 /// "3m ago" style relative age.
@@ -235,6 +237,7 @@ impl Store {
             generation: AtomicU64::new(1),
             origin_name: Mutex::new(String::new()),
             sessions_provider: Mutex::new(None),
+            tasks_provider: Mutex::new(None),
         })
     }
 
@@ -565,8 +568,27 @@ impl Store {
             ("agents", Value::Arr(agents_v)),
             ("events", Value::Arr(events_v)),
             ("sessions", self.sessions_v()),
+            ("tasks", self.tasks_v()),
             ("router", crate::chat::router_state_json()),
         ])
+    }
+
+    /// Federated task-dispatch summary for the dashboard / state payload.
+    /// Sourced from the hub's live TaskStore, wired in at serve time
+    /// (default = empty board, so pre-wiring callers stay correct).
+    fn tasks_v(&self) -> Value {
+        let p = self.tasks_provider.lock().unwrap();
+        match p.as_ref() {
+            Some(f) => f(),
+            None => Value::obj(vec![
+                ("total", Value::from(0)),
+                ("tasks", Value::arr(vec![])),
+            ]),
+        }
+    }
+
+    pub fn set_tasks_provider(&self, provider: Box<dyn Fn() -> Value + Send>) {
+        *self.tasks_provider.lock().unwrap() = Some(provider);
     }
 
     /// Dashboard session summaries: metadata only (no ciphertext, no

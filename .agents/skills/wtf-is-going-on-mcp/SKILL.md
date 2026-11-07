@@ -1,7 +1,7 @@
 ---
 name: wtf-is-going-on-mcp
-description: Coordinate AI coding agents across machines with wtf-is-going-on-mcp. Herdr owns agent sessions; wtf records who is doing what and carries messages between machines. Use when starting or resuming work on a machine, checking what agents elsewhere are doing, asking another machine's agent a question, handing a task to a peer, or reporting progress/blockers. Covers start-the-hub-if-needed, MCP wiring, agent-to-agent chat, and cross-machine status.
-whenToUse: Use when an operator or agent needs cross-machine awareness (who is working on what, right now), a peer agent's answer on another machine, a task handoff, or a progress/blocker report that other machines must see. Use Herdr for the agent session itself; use wtf for the shared record and the cross-machine link.
+description: Coordinate AI coding agents across machines with wtf-is-going-on-mcp. Herdr owns agent sessions; wtf records who is doing what, carries messages between machines, and dispatches addressable work to a paired machine's own agent. Use when starting or resuming work on a machine, checking what agents elsewhere are doing, asking another machine's agent a question, designating a task for a peer machine and reading the result back, or reporting progress/blockers. Covers start-the-hub-if-needed, MCP wiring, agent-to-agent chat, federated task dispatch, and cross-machine status.
+whenToUse: Use when an operator or agent needs cross-machine awareness (who is working on what, right now), a peer agent's answer on another machine, work delegated to another machine's tooling/keys/checkout, or a progress/blocker report that other machines must see. Use Herdr for the agent session itself; use wtf for the shared record, the cross-machine link, and the task board.
 ---
 
 # wtf-is-going-on-mcp
@@ -19,6 +19,7 @@ files. Herdr does that.
 | Run, watch, or steer an agent session | **Herdr** (`herdr`) |
 | See who is doing what on every machine | **wtf** `wtf_is_going_on` |
 | Ask an agent on another machine; get an answer back | **wtf** `session_*` / `comms_*` |
+| **Designate work for another machine and get the result back** | **wtf** `task_*` |
 | Move a file, run a remote command | `ssh` / `scp` |
 | Anything binary, pastebin-like, or scratch | Write it to a file and `scp` it |
 
@@ -37,7 +38,7 @@ Enroll a new machine once — it persists across restarts:
 
 ```bash
 wtf enroll-token <name>                                    # on the hub: single-use token
-wtf enroll --url http://HUB:47820 --name <name> --token T   # on the new machine
+wtf enroll --url http://HUB:7800 --name <name> --token T   # on the new machine
 wtf join user@host                                         # or over ssh, self-serve
 ```
 
@@ -52,7 +53,7 @@ Keys print once. They live in `$WTF_HOME` (default `~/.config/wtf-mcp`).
 Credentials resolve from `$WTF_HOME/bridge.json`, or `WTF_HUB_URL` /
 `WTF_DEVICE_NAME` / `WTF_DEVICE_KEY`.
 
-## 3. Tools (18)
+## 3. Tools (22)
 
 **Presence & record**
 
@@ -81,6 +82,22 @@ Credentials resolve from `$WTF_HOME/bridge.json`, or `WTF_HUB_URL` /
 |---|---|---|
 | `chat` | `prompt`, `model?`, `system?`, `agent?` | Completion via the operator-run router at `127.0.0.1:11434`. `hermes` (OpenAI) or `pi` (Anthropic). Fails closed when the router is down — wtf never starts it. |
 | `router_status` | — | Passive probe of :11434. |
+
+**Designating work on another machine**
+
+| Tool | Args | Use |
+|---|---|---|
+| `task_dispatch` | `title`, `detail?`, `target?`, `session?`, `repo?` | Queue work for a paired machine. `target` is a machine name/alias, `any`, `tier:heavy\|tier:standard\|tier:edge`, or `arch:<os>-<arch>`. Returns a task id. |
+| `task_claim` | `machine?`, `tier?`, `arch?`, `task?` | **Worker side.** Take the oldest queued task this machine can serve. Empty queue is a normal answer, not an error. |
+| `task_report` | `task`, `state`, `result?`, `error?` | `running` = heartbeat (extends the 15-minute lease), `done` with the deliverable in `result`, `failed`, or `blocked`. Only the claiming device may report. |
+| `task_status` | `task?`, `state?` | The board, or one task's full record + result. How a dispatcher reads back what it asked for. |
+
+`task_*` is **pull-based**: the hub queues the record and an agent already
+running on the target machine picks it up. Nothing is spawned over `ssh` and no
+remote session is driven. A task that stays `queued` means no agent on that
+machine is polling — report that to the user instead of treating it as a
+failure. Bind a chat with `session` so the operator watches the same work in
+the dashboard; report into that chat with `comms_post` as you go.
 
 Write in chain-of-draft: five words per status line, not paragraphs. The feed is
 public inside the cluster; keep prose in your own notes.
@@ -124,9 +141,34 @@ Handing off to a peer machine:
 
 ```bash
 session_create {"name": "hand-off-audit"}
-session_send  {"session": "<id>", "message": "take the retry fix on windows; hub is :47820"}
+session_send  {"session": "<id>", "message": "take the retry fix on windows; hub is :7800"}
 # peer: session_list → session_join → session_read
 ```
+
+**Designating work on a peer machine (the task lane).** Use this instead of
+ad-hoc `ssh` when the work belongs to another machine's own tooling, keys, or
+repo checkout:
+
+```bash
+# dispatcher (any machine):
+task_dispatch {"title": "reindex the vector store",
+               "detail": "run the indexer, report chunk count",
+               "target": "tier:heavy",
+               "session": "<chat id>"}          # → task id
+task_status   {"task": "<task id>"}             # read the result when it lands
+
+# worker (an agent already running ON the target machine):
+task_claim  {"machine": "mac", "tier": "heavy", "arch": "darwin-arm64"}
+# → the claimed task + its `detail` = the instructions
+# ... run it locally ...
+task_report {"task": "<task id>", "state": "running"}        # heartbeat, long jobs
+task_report {"task": "<task id>", "state": "done", "result": "48,120 chunks"}
+```
+
+`wtf tasks` prints the same board from any machine. Claims expire after 15
+minutes of silence, so a crashed worker returns its task to the queue rather
+than stranding it; only the claiming device may finish a task, and only the
+dispatcher may cancel one.
 
 Never leave `working` open without `check_in done` or `blocked`. A stale lane is
 worse than none.
@@ -154,7 +196,7 @@ wtf_call() { local m=$1 p=$2 b=${3:-}; local ts n bh sig
 - Secrets cross machines only via encrypted sessions — the event feed is public.
 - `wtf` never spawns `local-router`, `fcc-server`, or any agent harness.
 - Dashboard lives at one unguessable path, `/w/<64-hex>`. Wrong path = 404.
-- Default port `47820`, auto-falling back up to `+100` if busy.
+- Default port `7800` (set in `wtf serve --bind IP:PORT` or `config.json`).
 
 ## 8. Troubleshooting
 
@@ -164,6 +206,9 @@ wtf_call() { local m=$1 p=$2 b=${3:-}; local ts n bh sig
 | 401 on signed call | Key revoked/wrong, clock off >300s, or signature input mismatch. |
 | 404 on `/` or `/w/...` | Capability token wrong — run `wtf dashboard-url` on the hub. |
 | `chat` fails, router offline | Start the router yourself. wtf never will. |
-| Port busy | wtf auto-falls back within `47820`–`47920`. |
+| Task stays `queued` | No agent on the target machine is calling `task_claim`. Start one there, or dispatch to a machine that has one. |
+| `task_claim` says nothing matched | The selector is exact: check the machine name vs `target`, and pass `tier`/`arch` so `tier:`/`arch:` targets can match. |
+| `finish failed: … claimed by …` | Another device holds the claim. Let its lease expire (15 min) or ask the dispatcher to cancel and re-dispatch. |
+| Port busy | Pick another port: `wtf serve --bind 127.0.0.1:7801`. There is no auto-fallback. |
 | Agent not visible in Herdr | It isn't in a Herdr pane. Launch it with `herdr agent start`. |
 | Peer machine silent | `env_probe` — is it enrolled and reporting? |

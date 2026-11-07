@@ -1,0 +1,96 @@
+---
+description: Agent Communication System protocol template. Deployed by `ainish-coder --rules` as `.agents/comms/{date}-team.txt` (one file per UTC date — the day's whole history is one read). Merge-safe: agents deploying updates must preserve all entry blocks below the PROTOCOL section; only the PROTOCOL block itself may be refreshed from this template.
+---
+
+# AGENT COMMS — 2026-11-07
+
+<PROTOCOL>
+## PROTOCOL (binding — follow like AGENTS.md)
+
+**When:** ≥1 agent or subagent is working at once (multiple branches, features, updates, bugs, docs). Solo? Still check in/out — the ledger is the audit trail.
+
+**Two channels:**
+- **This file** (`.agents/comms/{date}-team.txt`) — one file per UTC date; committed, append-only durable ledger. Never rotate per session or per hour. Updated via your task-branch commits; reaches everyone at merge.
+- **Live board** (`.agents/comms/{date}-team.live.txt`) — gitignored, at the **main repo path**. Append here by absolute path for immediate in-flight visibility. Never `git commit` it; never `git add` it. Main stays clean.
+
+**Read:** this file + the live board — at start, before any merge, and whenever blocked.
+
+**Write:** for every lifecycle event, append one entry block to **both** the live board (immediate) and this file in your worktree (durable — commit it). One writer per branch. Subagents do not write the shared files directly: report results to your orchestrator, who logs on your behalf with `parent:` set.
+
+**Skill distribution (persisted per-repo selection):** which `.agents/skills/` packs distribute to this repo is governed by the operator's persisted selection (`~/.config/ainish-coder/skills-selection.json`). `ainish-coder --rules` asks on a real terminal the FIRST time a repo has no saved selection, then applies that saved choice on every later run; `ainish-coder --select-skills [DIR]` reopens the choice and `ainish-coder --skills-list [DIR] [--json]` shows it. Agents and CI MUST use the headless path — `ainish-coder --rules <dir> --headless` or `ainish-coder --skills-sync <dir> --headless` — which applies the saved selection with no prompts. Do not hand-edit the selection file; run the interactive toggle instead. Scroll-channel packs (`8thfire-scrolls`, `ghost-layer-injector`, raw `.scrolls*/` payload) are never selectable here — explicit `--scrolls` only.
+
+**Timestamps — mandatory, bracketed, ISO-8601 (UTC `Z` form on this ledger):**
+- `start:` the instant the agent **begins** the action (input received / work begun).
+- `end:` the instant the agent **finishes** it (output produced / work handed off or halted).
+- **Every** entry has both. Abandoned mid-action → still close with `end:` + `status: abandoned`.
+
+\*\*Entry block:\*\*
+
+~~~
+### [<ISO-8601 timestamp>] <EVENT> | branch:<branch> | wt:<worktree-path>
+- start:<ISO-8601>               # input received / work began
+- end:<ISO-8601>                 # output produced / work ended
+- parent:<orchestrator>          # subagents only
+- scope:<paths/modules>
+- provenance:<source_commit=XXXXXXXXXXXX manifest_sha256=XXXXXXXXXXXX>   # optional but recommended
+- objective:<one line>
+- input:<one line — what was received or requested>
+- output:<one line — what was produced or handed off>
+- status:<new|in-progress|blocked|verifying|merged|abandoned>
+- blockers:<none | description>
+~~~
+
+**Provenance stamp (recommended on `checkin`):** embed the ainish-coder root commit SHA and the target's deployment-manifest digest so every work session is auditable against the exact ruleset it ran under. Generate it with `ainish-coder --rules-provenance <dir>`, which emits `source_commit=… manifest_sha256=…`. Verify every target's manifest signature with `ainish-coder --rules-verify [--json]`.
+
+</PROTOCOL>
+
+---
+### [2026-11-08T00:10:00Z] CHECKIN | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+- start:2026-11-07T23:10:00Z
+- end:2026-11-07T23:12:00Z
+- scope:src/tasks.rs, src/api.rs, src/mcp.rs, src/store.rs, src/dashboard.rs, src/main.rs, tests/e2e.rs, llms.txt, README.md, .agents/skills/wtf-is-going-on-mcp/SKILL.md
+- objective:Federated task dispatch — designate cross-machine work, claim/execute locally, report the result back, review on the dashboard
+- input:Operator directive: focus the system on ssh-paired agent communication via MCP, plus a localhost dashboard to review the federated work
+- output:Scope + lane (now) recorded; worktree created from main
+- status:in-progress
+- blockers:none
+
+### [2026-11-08T00:12:00Z] UPDATE | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+- start:2026-11-07T23:12:00Z
+- end:2026-11-07T23:58:00Z
+- scope:src/tasks.rs (new), src/api.rs, src/mcp.rs, src/store.rs, src/dashboard.rs, src/main.rs, src/config.rs, src/lib.rs
+- objective:v0.18.0 task lane implemented
+- input:Addressed work items (machine / tier / arch), lease-based claims, per-device ownership
+- output:TaskStore + 4 MCP tools (task_dispatch, task_claim, task_report, task_status) + /api/v1/tasks* + dashboard TASKS card + `wtf tasks` CLI
+- status:verifying
+- blockers:none
+
+### [2026-11-08T00:14:00Z] UPDATE | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+- start:2026-11-07T23:58:00Z
+- end:2026-11-08T00:05:00Z
+- scope:verification
+- objective:Prove the loop on the real surface, not by inspection
+- input:117 unit + 13 e2e tests; two-device loopback hub with real MCP bridges
+- output:Full loop proven (dispatch -> tier-gated claim -> report -> read-back); hijack rejected with an explicit ownership error; tasks.json 0600 persisted. Two real defects found and fixed by the smoke test: 201 rejected by bridge decode, and a bare-record-on-success wire shape that read as "no work" while the task was claimed.
+- status:verified
+- blockers:none
+
+### [2026-11-08T00:16:00Z] INTENT-MERGE | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+- start:2026-11-08T00:06:00Z
+- end:2026-11-08T00:07:00Z
+- scope:v0.18.0 federated task dispatch
+- objective:Merge feat/ssh-task-dispatch to main
+- input:Additive release: 17 -> 22 MCP tools, new /api/v1/tasks* routes, new `tasks` state field, new `wtf tasks` verb, new $WTF_HOME/tasks.json
+- output:compat window and rollback path recorded in .agents/tasks/TASK.2026-11-07.federated-task-dispatch.md
+- status:merging
+- blockers:none
+
+### [2026-11-08T00:20:00Z] CHECKOUT | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+- start:2026-11-07T23:10:00Z
+- end:2026-11-08T00:20:00Z
+- scope:v0.18.0 federated task dispatch
+- objective:Ship the cross-machine work lane
+- input:Complete, tested implementation
+- output:Merged to main; worktree removed; branch deleted; skill distributed from the ainish-coder source it deploys from
+- status:merged
+- blockers:none

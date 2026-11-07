@@ -29,6 +29,7 @@ pub mod session_crypto;
 pub mod sessions;
 pub mod sha256;
 pub mod store;
+pub mod tasks;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

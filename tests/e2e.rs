@@ -2168,3 +2168,205 @@ fn federated_shell_and_singular_capability_dashboard_end_to_end() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Federated task dispatch across two devices: one designates work for a
+/// machine class the other matches, the worker claims it, runs it, and the
+/// dispatcher reads the result back. Also proves the ownership and routing
+/// guards that keep a task from being stolen or mis-delivered.
+#[test]
+fn federated_task_dispatch_end_to_end() {
+    let home = temp_home("tasks");
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    // Two devices: "mac-box" dispatches, "win-box" works, "third-box" is an
+    // outsider that must not be able to finish or cancel someone else's task.
+    let mut secrets = std::collections::HashMap::new();
+    for dev in ["mac-box", "win-box", "third-box"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["key", "issue", dev])
+            .env("WTF_HOME", &home)
+            .output()
+            .expect("key issue");
+        assert!(out.status.success());
+        let keys = wtf::json::parse(&std::fs::read_to_string(home.join("keys.json")).unwrap())
+            .unwrap();
+        let secret = keys
+            .get("devices")
+            .unwrap()
+            .as_arr()
+            .unwrap()
+            .iter()
+            .find(|d| d.get("name").and_then(|v| v.as_str()) == Some(dev))
+            .unwrap()
+            .get("secret")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        secrets.insert(dev.to_string(), secret);
+    }
+
+    let mut agents = Vec::new();
+    for dev in ["mac-box", "win-box", "third-box"] {
+        let dev_home = temp_home(&format!("tasks-{dev}"));
+        let child = Command::new(env!("CARGO_BIN_EXE_wtf"))
+            .args(["agent"])
+            .env("WTF_HUB_URL", &url)
+            .env("WTF_DEVICE_NAME", dev)
+            .env("WTF_DEVICE_KEY", secrets[dev].clone())
+            .env("WTF_HOME", &dev_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn bridge");
+        agents.push((dev.to_string(), dev_home, child));
+    }
+    let mut readers = vec![
+        BufReader::new(agents[0].2.stdout.take().unwrap()),
+        BufReader::new(agents[1].2.stdout.take().unwrap()),
+        BufReader::new(agents[2].2.stdout.take().unwrap()),
+    ];
+
+    let mut id = 900u64;
+    macro_rules! call {
+        ($idx:expr, $tool:expr, $args:expr) => {{
+            id += 1;
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
+                id, $tool, $args
+            );
+            rpc_write(&mut agents[$idx].2, &req);
+            let resp = rpc_read(&mut readers[$idx]);
+            let res = resp.get("result").unwrap().clone();
+            let is_err = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let text = res
+                .get("content")
+                .and_then(|c| c.as_arr())
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (is_err, text)
+        }};
+    }
+
+    // 1. Dispatch work addressed to the heavy tier.
+    let (err, text) = call!(
+        0,
+        "task_dispatch",
+        r#"{"title":"reindex vectors","detail":"run the indexer","target":"tier:heavy","repo":"rag"}"#
+    );
+    assert!(!err, "task_dispatch failed: {text}");
+    let task_id = text
+        .split_whitespace()
+        .find(|t| t.len() == 16 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .expect("task id in dispatch reply")
+        .to_string();
+
+    // 2. A worker that does not match the tier gets nothing.
+    let (err, text) = call!(
+        1,
+        "task_claim",
+        r#"{"machine":"win-box","tier":"standard","arch":"linux-x86_64"}"#
+    );
+    assert!(!err);
+    assert!(
+        text.contains("no queued work"),
+        "a standard-tier worker must not take heavy-tier work: {text}"
+    );
+
+    // 3. The matching worker claims it and sees the instructions.
+    let (err, text) = call!(
+        1,
+        "task_claim",
+        r#"{"machine":"win-box","tier":"heavy","arch":"linux-x86_64"}"#
+    );
+    assert!(!err, "claim failed: {text}");
+    assert!(text.contains(&task_id), "claim should name the task: {text}");
+    assert!(text.contains("run the indexer"), "claim carries detail: {text}");
+
+    // 4. The same worker cannot claim it twice.
+    let (_, text) = call!(
+        1,
+        "task_claim",
+        r#"{"machine":"win-box","tier":"heavy","arch":"linux-x86_64"}"#
+    );
+    assert!(text.contains("no queued work"), "double claim: {text}");
+
+    // 5. An outsider cannot finish a task it did not claim.
+    let (err, text) = call!(
+        2,
+        "task_report",
+        &format!(r#"{{"task":"{task_id}","state":"done","result":"stolen"}}"#)
+    );
+    assert!(err, "a foreign device must not finish the task");
+    assert!(text.contains("claimed by"), "ownership error is explicit: {text}");
+
+    // 6. The real worker reports done with its deliverable.
+    let (err, text) = call!(
+        1,
+        "task_report",
+        &format!(r#"{{"task":"{task_id}","state":"done","result":"48120 chunks indexed"}}"#)
+    );
+    assert!(!err, "finish failed: {text}");
+
+    // 7. The dispatcher reads the result back.
+    let (err, text) = call!(0, "task_status", &format!(r#"{{"task":"{task_id}"}}"#));
+    assert!(!err, "status failed: {text}");
+    assert!(text.contains("[done]"), "final state: {text}");
+    assert!(text.contains("48120 chunks indexed"), "result returned: {text}");
+
+    // 8. The hub persisted the record for replay after a restart.
+    let saved = std::fs::read_to_string(home.join("tasks.json")).expect("tasks.json written");
+    assert!(saved.contains(&task_id), "task persisted: {saved}");
+    assert!(saved.contains("48120 chunks indexed"), "result persisted: {saved}");
+
+    // 9. The operator CLI renders the same board.
+    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["tasks", "--url", &url, "--cap", &{
+            std::fs::read_to_string(home.join("dashboard_capability"))
+                .unwrap()
+                .trim()
+                .to_string()
+        }])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("run wtf tasks");
+    assert!(out.status.success(), "wtf tasks failed");
+    let board = String::from_utf8_lossy(&out.stdout);
+    assert!(board.contains(&task_id), "CLI board shows the task: {board}");
+    assert!(board.contains("reindex vectors"), "CLI board shows title: {board}");
+
+    for (_, _, child) in agents.iter_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = hub.kill();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}

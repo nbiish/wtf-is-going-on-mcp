@@ -15,6 +15,13 @@
 //! - `/api/v1/sessions/{id}` — GET: capability OR device
 //! - `/api/v1/sessions/{id}/{join,seal,seals,send,recv}` — device auth only;
 //!   seal/seals/send/recv additionally require session membership.
+//! - `/api/v1/tasks` — GET board: capability OR device; POST dispatch: device
+//!   auth only (the record is stamped with the dispatching device).
+//! - `/api/v1/tasks/{id}` — GET: capability OR device.
+//! - `/api/v1/tasks/{id}/{claim,start,finish,block,bind}` — device auth only.
+//!   A device may only act on a task it claimed (finish/start/block), and
+//!   only the dispatching device (or the capability holder) may cancel.
+//! - `/api/v1/tasks/board` — GET board: capability OR device (dashboard).
 //! - `/api/v1/enroll` — NO device HMAC: two credential modes. (1) a one-time
 //!   enrollment token (v0.8.0; SHA-256-hashed at rest, single-use, short
 //!   TTL); (2) a signed PSK handshake (v0.9.0): an HMAC proof of possession
@@ -46,6 +53,8 @@ pub struct Hub {
     pub identities: Mutex<Vec<(String, String)>>,
     /// Encrypted agent-to-agent session channels.
     pub sessions: Sessions,
+    /// Federated task-dispatch records (cross-machine work queue).
+    pub tasks: crate::tasks::TaskStore,
     /// Sliding window of enroll attempt timestamps (rate limiter state).
     pub enroll_hits: Mutex<Vec<u64>>,
     /// PSK-handshake replay guard: (nonce, first-seen ts), pruned past 600 s.
@@ -77,6 +86,8 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/identity"
             | "/api/v1/devices"
             | "/api/v1/sessions"
+            | "/api/v1/tasks"
+            | "/api/v1/tasks/board"
             | "/api/v1/enroll"
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
@@ -89,6 +100,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
     ) || req.path == "/w"
         || req.path.starts_with("/w/")
         || req.path.starts_with("/api/v1/sessions/")
+        || req.path.starts_with("/api/v1/tasks/")
         || req.path == "/api/v1/chat/completions";
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => HandlerResult::Respond(healthz(hub)),
@@ -119,6 +131,13 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("POST", "/api/v1/sessions") => HandlerResult::Respond(session_create(hub, req)),
         (_, p) if p == "/api/v1/sessions" || p.starts_with("/api/v1/sessions/") => {
             HandlerResult::Respond(session_single(hub, req))
+        }
+        ("GET", "/api/v1/tasks/board") => HandlerResult::Respond(tasks_board(hub, req)),
+        ("GET", "/api/v1/tasks") => HandlerResult::Respond(tasks_board(hub, req)),
+        ("POST", "/api/v1/tasks") => HandlerResult::Respond(task_dispatch(hub, req)),
+        ("POST", "/api/v1/tasks/claim") => HandlerResult::Respond(task_claim(hub, req)),
+        (_, p) if p == "/api/v1/tasks" || p.starts_with("/api/v1/tasks/") => {
+            HandlerResult::Respond(task_single(hub, req))
         }
         _ if known_path => HandlerResult::Respond(Response::error(405, "method not allowed")),
         _ => HandlerResult::Respond(Response::error(404, "not found")),
@@ -336,6 +355,199 @@ fn heartbeat(hub: &Arc<Hub>, req: &Request) -> Response {
     };
     hub.store.heartbeat(&device, &agent);
     Response::json(200, &Value::obj(vec![("ok", Value::from(true))]))
+}
+
+// ---------- federated task dispatch ----------
+
+/// Split a `/api/v1/tasks/{id}[/{action}]` path into (id, action).
+fn task_path(req: &Request) -> Option<(&str, Option<&str>)> {
+    let rest = req.path.strip_prefix("/api/v1/tasks/")?;
+    if rest.is_empty() || rest == "board" || rest == "claim" {
+        return None;
+    }
+    Some(match rest.split_once('/') {
+        Some((id, act)) => (id, Some(act)),
+        None => (rest, None),
+    })
+}
+
+/// POST /api/v1/tasks/claim {machine?, tier?, arch?, task?} — take the oldest
+/// queued task this machine can serve. 200 with `null` when nothing matches:
+/// an empty queue is a normal answer, not an error.
+fn task_claim(hub: &Arc<Hub>, req: &Request) -> Response {
+    let device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => {
+            if req.body.is_empty() {
+                Value::Obj(vec![])
+            } else {
+                return r;
+            }
+        }
+    };
+    let sget = |k: &str| body.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let machine = {
+        let m = sget("machine");
+        if m.is_empty() { device.clone() } else { m }
+    };
+    let tier = sget("tier");
+    let arch = sget("arch");
+    let prefer = sget("task");
+    let prefer = if prefer.is_empty() { None } else { Some(prefer.as_str()) };
+    match hub.tasks.claim(&device, &machine, &tier, &arch, prefer) {
+        // One stable wire shape for both outcomes — `{task: record|null}`.
+        // A bare record on success and a wrapper on empty would force every
+        // caller to branch on shape, and a mis-branch reads as "no work"
+        // while the task was in fact claimed.
+        Ok(Some(t)) => Response::json(
+            200,
+            &Value::obj(vec![("ok", Value::from(true)), ("task", t.to_json())]),
+        ),
+        Ok(None) => Response::json(
+            200,
+            &Value::obj(vec![("ok", Value::from(true)), ("task", Value::Null)]),
+        ),
+        Err(e) => Response::error(400, &e),
+    }
+}
+
+/// POST /api/v1/tasks {title, detail?, repo?, target?, session?} — queue a
+/// work item for another paired machine. Device auth only: the record is
+/// stamped with the dispatching device so only it may later cancel.
+fn task_dispatch(hub: &Arc<Hub>, req: &Request) -> Response {
+    let device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(title) = body.get("title").and_then(|v| v.as_str()) else {
+        return Response::error(400, "missing 'title'");
+    };
+    let detail = body.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+    let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+    let target = body.get("target").and_then(|v| v.as_str()).unwrap_or("any");
+    let session = body.get("session").and_then(|v| v.as_str()).unwrap_or("");
+    let agent = body
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&device)
+        .to_string();
+
+    // A bound chat must exist — a dangling session id would mislead the
+    // reviewer into looking for a conversation that is not there.
+    if !session.is_empty() && hub.sessions.get(session).is_none() {
+        return Response::error(404, &format!("unknown session '{session}'"));
+    }
+
+    match hub
+        .tasks
+        .create(title, detail, repo, target, &device, &agent, session)
+    {
+        Ok(t) => {
+            // Announce on the open event feed so peers watching the board
+            // see work arrive without polling the task route.
+            hub.store.log_event(
+                &device,
+                &agent,
+                "info",
+                &format!("task dispatched: {} -> {}", t.id, t.target),
+                repo,
+            );
+            Response::json(201, &t.to_json())
+        }
+        Err(e) => Response::error(400, &e),
+    }
+}
+
+/// GET /api/v1/tasks — the whole board (counts + newest 200 records).
+fn tasks_board(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
+    }
+    Response::json(200, &hub.tasks.to_state_json())
+}
+
+/// GET /api/v1/tasks/{id}, or POST /api/v1/tasks/{id}/{claim,start,finish,
+/// block,cancel,bind}. Every mutation is device-authenticated; ownership is
+/// enforced by `TaskStore` itself (a device may only finish what it claimed).
+fn task_single(hub: &Arc<Hub>, req: &Request) -> Response {
+    let Some((id, action)) = task_path(req) else {
+        return Response::error(404, "not found");
+    };
+    let action = match (req.method.as_str(), action) {
+        ("GET", None) => {
+            if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+                return Response::error(401, "provide ?cap=<capability> or device auth headers");
+            }
+            return match hub.tasks.get(id) {
+                Some(t) => Response::json(200, &t.to_json()),
+                None => Response::error(404, &format!("unknown task '{id}'")),
+            };
+        }
+        ("POST", Some(a)) => a,
+        (_, Some(_)) => return Response::error(405, "method not allowed"),
+        (_, None) => return Response::error(405, "method not allowed"),
+    };
+
+    let device = match device_auth(hub, req) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => {
+            // claim/cancel may be called with no body at all.
+            if req.body.is_empty() {
+                Value::Obj(vec![])
+            } else {
+                return r;
+            }
+        }
+    };
+    let sget = |k: &str| body.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let result = match action {
+        "start" => hub.tasks.start(id, &device).map(|t| Response::json(200, &t.to_json())),
+        "finish" => {
+            let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+            let result_text = sget("result");
+            let error = sget("error");
+            hub.tasks
+                .finish(id, &device, ok, &result_text, &error)
+                .map(|t| Response::json(200, &t.to_json()))
+        }
+        "block" => {
+            let reason = sget("reason");
+            hub.tasks
+                .block(id, &device, &reason)
+                .map(|t| Response::json(200, &t.to_json()))
+        }
+        "cancel" => hub
+            .tasks
+            .cancel(id, &device)
+            .map(|t| Response::json(200, &t.to_json())),
+        "bind" => {
+            let sid = sget("session");
+            if hub.sessions.get(&sid).is_none() {
+                return Response::error(404, &format!("unknown session '{sid}'"));
+            }
+            hub.tasks
+                .bind_session(id, &sid)
+                .map(|t| Response::json(200, &t.to_json()))
+        }
+        other => Err(format!("unknown task action '{other}'")),
+    };
+    match result {
+        Ok(resp) => resp,
+        Err(e) => Response::error(400, &e),
+    }
 }
 
 // ---------- enrollment tokens ----------
