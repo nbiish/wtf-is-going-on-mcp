@@ -42,6 +42,11 @@ pub fn sessions_path() -> PathBuf {
     home().join("sessions.json")
 }
 
+/// Federated task-dispatch record (`src/tasks.rs`). Replayed on boot.
+pub fn tasks_path() -> PathBuf {
+    home().join("tasks.json")
+}
+
 pub fn enroll_tokens_path() -> PathBuf {
     home().join("enroll_tokens.json")
 }
