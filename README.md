@@ -456,6 +456,10 @@ ciphertext — it relays bytes and cannot read a single message.
 | `session_read` | `session`, `after?` | Read + decrypt new messages |
 | `comms_post` | `session`, `event`, `note`, `scope?` | Post an encrypted COMMS ledger entry (cross-repo/cross-machine agent coordination; secrets allowed — e2e encrypted, hub stores ciphertext only) |
 | `comms_read` | `session`, `after?`, `event?` | Read + decrypt new COMMS entries as ledger lines |
+| `task_dispatch` | `title`, `detail?`, `target?`, `session?`, `repo?`, `agent?` | Queue work for a paired machine. `target` = machine name/alias, `any`, `tier:heavy\|tier:standard\|tier:edge`, or `arch:<os>-<arch>`. Returns a task id |
+| `task_claim` | `machine?`, `tier?`, `arch?`, `task?` | **Worker side.** Claim the oldest queued task this machine can serve; empty queue is a normal answer |
+| `task_report` | `task`, `state`, `result?`, `error?` | `running` (heartbeat, extends the 15-min lease), `done` + `result`, `failed`, or `blocked`. Only the claiming device may report |
+| `task_status` | `task?`, `state?` | The board, or one task's full record + result |
 
 Tool failures (bad args, hub down, revoked key) are returned as
 `isError: true` results, never as MCP protocol errors.
@@ -475,6 +479,11 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | `POST /api/v1/fed/push` | federated device (`fed-*` credential) | Peer pushes its ledger events; deduped on (origin, origin_id) |
 | `GET /api/v1/fed/pull?origin=NAME&after=N` | federated device (`fed-*`) | Events for `origin` beyond cursor `N` (anti-entropy) |
 | `GET /api/v1/fed/peers` | device auth | The hub's federation identity (used at link time) |
+| `GET /api/v1/tasks` · `/api/v1/tasks/board` | capability or device auth | The federated task board (`counts` + newest 200 records) |
+| `POST /api/v1/tasks` | device auth | Dispatch a task (`title`, `detail?`, `target?`, `session?`, `repo?`); 201 + the record |
+| `POST /api/v1/tasks/claim` | device auth | Claim the oldest queued task matching `machine`/`tier`/`arch`/`task`; always answers `{ok, task: record\|null}` |
+| `GET /api/v1/tasks/{id}` | capability or device auth | One task record, including its result |
+| `POST /api/v1/tasks/{id}/{start,finish,block,bind,cancel}` | device auth | Mutate a task; start/finish/block require the claiming device, cancel requires the dispatcher |
 
 Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
 `Transfer-Encoding` requests are rejected `501` by design.
@@ -487,6 +496,7 @@ All state lives in `$WTF_HOME` (default `~/.config/wtf-mcp`):
 - `keys.json` — device records (0600)
 - `bridge.json` — agent-side hub URL + credentials (0600)
 - `enroll_tokens.json` — pending one-time enrollment tokens, hashed (0600)
+- `tasks.json` — federated task-dispatch records, replayed on boot (0600)
 - `events.jsonl` — append-only log, rotates to `events.jsonl.old` at 10 MB
 - `sessions.json` — session channels: members, ML-KEM-768 sealed key packages, ciphertext ring per channel — never plaintext (0600)
 - `identity.json` — this bridge's ML-KEM-768 identity keypair (0600)

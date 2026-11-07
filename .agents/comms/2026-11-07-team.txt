@@ -1,0 +1,37 @@
+# COMMS — 2026-11-07
+
+### [2026-11-07T23:35:00Z] CHECKIN | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+start: 2026-11-07T23:10:00Z
+scope: src/tasks.rs (new), src/api.rs, src/mcp.rs, src/store.rs, src/dashboard.rs, src/main.rs, tests/e2e.rs, llms.txt, README.md, .agents/skills/wtf-is-going-on-mcp/SKILL.md
+objective: federated task dispatch — designate work for a paired machine, claim/execute locally, report the result back, review on the dashboard
+triage: now
+status: in-progress
+
+### [2026-11-07T23:50:00Z] UPDATE | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+start: 2026-11-07T23:10:00Z
+scope: src/tasks.rs, src/api.rs, src/mcp.rs, dashboard, CLI
+objective: v0.18.0 task lane implemented
+output: TaskStore + addressable targets (machine/tier/arch) + lease-based claims + ownership guards; 4 MCP tools; /api/v1/tasks*; dashboard TASKS card; `wtf tasks`
+status: verifying
+
+### [2026-11-07T23:58:00Z] UPDATE | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+start: 2026-11-07T23:10:00Z
+scope: verification
+objective: prove the loop on the real surface
+output: 117 unit + 13 e2e green; two-device loopback smoke proved dispatch → tier-gated claim → report → read-back, plus hijack rejection and 0600 persistence
+status: verified
+
+### [2026-11-07T00:05:00Z] INTENT-MERGE | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+start: 2026-11-07T23:10:00Z
+scope: v0.18.0 federated task dispatch
+objective: merge feat/ssh-task-dispatch to main
+output: additive release (22 MCP tools, new routes, new state field, new CLI verb); compat + rollback recorded in TASK.2026-11-07.federated-task-dispatch.md
+status: merging
+
+### [2026-11-07T00:08:00Z] CHECKOUT | branch:feat/ssh-task-dispatch | wt:/mnt/d/Code/wtf-task-dispatch
+start: 2026-11-07T23:10:00Z
+end: 2026-11-08T00:08:00Z
+scope: v0.18.0 federated task dispatch
+objective: ship the cross-machine work lane
+output: merged; worktree removed; skill distributed from ainish-coder source
+status: merged
