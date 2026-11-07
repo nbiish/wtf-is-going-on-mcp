@@ -53,6 +53,7 @@ button.primary:hover{opacity:.9}
 .pill.working{color:var(--ok);border-color:var(--ok)}
 .pill.blocked{color:var(--warn);border-color:var(--warn)}
 .pill.done{color:var(--info);border-color:var(--info)}
+.pill.error{color:var(--err);border-color:var(--err)}
 .pill.stale{opacity:.5}
 .ochip{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--info);color:var(--info);margin-right:4px}
 .repo{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--warn);color:var(--warn);margin:0 6px}
@@ -164,6 +165,13 @@ Type 'ls ~' or 'cd <machine>' to navigate.</div>
     <h2>SESSIONS · federated agent chats</h2>
     <div id="sessions" class="card"><span class="dim">no chats yet</span></div>
   </section>
+
+  <!-- TASKS -->
+  <section>
+    <h2>TASKS · work designated across machines</h2>
+    <div id="task-counts" class="bar" style="gap:6px;margin-bottom:6px"></div>
+    <div id="tasks" class="card"><span class="dim">no federated tasks yet</span></div>
+  </section>
 </main>
 
 <script>
@@ -240,10 +248,13 @@ function render(s){
   ).join("");
   feed.innerHTML = rows || '<li class="dim">no events yet</li>';
 
-  // Sessions and Bins
+  // Render Sessions Overview
   currentSessions = s.sessions || [];
   renderLaneSelector(currentSessions);
   renderSessionsList(currentSessions, now);
+
+  // Render the federated task board
+  renderTasks(s.tasks || {tasks:[], counts:{}}, now);
 
   // Local Router Status (passive probe — wtf never spawns/restarts the router)
   if(s.router){
@@ -521,8 +532,58 @@ document.getElementById("shell-input").addEventListener("keydown", (e)=>{
 });
 
 // Render Sessions Overview
-function renderSessionsList(sessions, now){
-  const host = document.getElementById("sessions");
+// Federated task board: one row per designated work item, newest first, with
+// the state chips that answer "where did my work go?" at a glance. Results
+// are collapsed behind a toggle so the board stays scannable.
+const TASK_STATE_CLASS = {queued:"idle",claimed:"working",running:"working",done:"done",failed:"error",blocked:"blocked",cancelled:"stale"};
+const TASK_OPEN = ["queued","claimed","running","blocked"];
+
+function renderTasks(board, now){
+  const host = document.getElementById("tasks");
+  const chips = document.getElementById("task-counts");
+  const list = (board.tasks||[]).slice().sort((a,b)=>(b.created_at||0)-(a.created_at||0));
+  const counts = board.counts || {};
+  if(chips){
+    const order = ["queued","claimed","running","blocked","done","failed","cancelled"];
+    let ch = "";
+    for(const k of order){
+      const n = counts[k]||0;
+      if(!n) continue;
+      ch += '<span class="pill '+esc(TASK_STATE_CLASS[k]||"idle")+'" style="font-size:10px">'+esc(k)+' '+n+'</span>';
+    }
+    chips.innerHTML = ch || '<span class="dim" style="font-size:11px">nothing in flight</span>';
+  }
+  if(!host) return;
+  if(!list.length){
+    host.innerHTML = '<span class="dim">no federated tasks yet — an agent designates work with task_dispatch {title, target}</span>';
+    return;
+  }
+  let rows = "";
+  for(const t of list){
+    const sc = TASK_STATE_CLASS[t.state]||"idle";
+    const open = TASK_OPEN.indexOf(t.state) >= 0;
+    const body = (t.result||t.error||"");
+    rows += '<div class="sess" style="padding:6px 0;border-bottom:1px dashed var(--edge)">'
+      +'<div class="bar"><span class="pill '+esc(sc)+'">'+esc(t.state)+'</span>'
+      +'<b style="color:var(--info)">'+esc(t.title)+'</b>'
+      +(t.repo?'<span class="repo">'+esc(t.repo)+'</span>':"")
+      +'<span class="dim" style="margin-left:auto;font-size:11px">'+esc(t.target)
+      +(t.assignee?' → '+esc(t.assignee):"")
+      +' · '+ago(t.updated_at||t.created_at, now)+' ago</span></div>'
+      +'<div class="bar" style="font-size:11px">'
+      +'<span class="dim">'+esc(t.id)+'</span>'
+      +(t.session?'<span class="dim">· chat '+esc((t.session||"").slice(0,8))+'</span>':"")
+      +(t.attempts>1?'<span class="dim">· '+esc(t.attempts)+' attempts</span>':"")
+      +(t.detail?'<span class="dim" style="margin-left:auto;cursor:pointer" onclick="this.parentNode.nextElementSibling.style.display=\'block\'">show detail</span>':"")
+      +'</div>'
+      +(t.detail?'<div class="dim" style="display:none;font-size:11px;white-space:pre-wrap;margin-top:4px">'+esc(t.detail)+'</div>':"")
+      +(body?'<div style="font-size:12px;white-space:pre-wrap;margin-top:4px;color:'+(t.state==="failed"?"var(--err)":"var(--ink)")+'">'+esc(body)+'</div>':"")
+      +'</div>';
+  }
+  host.innerHTML = rows;
+}
+
+function renderSessionsList(sessions, now){  const host = document.getElementById("sessions");
   if(!sessions.length){
     host.innerHTML = '<span class="dim">no chats yet — create one above or via session_create</span>';
     return;
