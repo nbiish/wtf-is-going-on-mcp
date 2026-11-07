@@ -42,6 +42,7 @@ fn run() -> i32 {
         Some("enroll") => cmd_enroll(&args[1..]),
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
         Some("sessions") => cmd_sessions(&args[1..]),
+        Some("tasks") => cmd_tasks(&args[1..]),
         Some("federate") => cmd_federate(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
@@ -85,6 +86,7 @@ fn print_help() {
     println!("  wtf federate add <name> --url URL --psk SECRET [--as DEV]  link a peer hub (one secret copy per edge)");
     println!("  wtf federate list                         show the federation peer table");
     println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
+    println!("  wtf tasks [--state S] [--url U] [--cap K]  review the federated task board (designated cross-machine work + results)");
     println!("  wtf federate remove <name>                unlink a peer hub");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
@@ -189,6 +191,7 @@ fn cmd_serve(args: &[String]) -> i32 {
     }
 
     let sessions = wtf::sessions::Sessions::load();
+    let tasks = wtf::tasks::TaskStore::load();
     let identities = Mutex::new(wtf::api::load_identities(&sessions));
 
     let hub = Arc::new(wtf::api::Hub {
@@ -199,6 +202,7 @@ fn cmd_serve(args: &[String]) -> i32 {
         started_at: util::now_secs(),
         identities,
         sessions,
+        tasks,
         enroll_hits: Mutex::new(Vec::new()),
         enroll_nonces: Mutex::new(Vec::new()),
         fed_name: fed.name.clone(),
@@ -226,6 +230,11 @@ fn cmd_serve(args: &[String]) -> i32 {
                 })
                 .collect()
         }));
+    }
+    // Dashboard TASKS card: the federated task board, read live.
+    {
+        let hub_for_tasks = Arc::clone(&hub);
+        store_for_sessions.set_tasks_provider(Box::new(move || hub_for_tasks.tasks.to_state_json()));
     }
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
@@ -774,6 +783,149 @@ fn cmd_enroll_secret(args: &[String]) -> i32 {
     println!("  wtf enroll --url {url} --name DEVICE --psk {secret}");
     println!();
     println!("rotate with `wtf enroll-secret --rotate` to invalidate every outstanding copy.");
+    0
+}
+
+/// Resolve (hub_url, capability) the way every operator CLI command does:
+/// explicit flags, then WTF_HUB_URL / WTF_CAPABILITY, then the local
+/// bridge.json / hub config.json / dashboard_capability file.
+fn resolve_hub_and_cap(
+    args: &[String],
+) -> Result<(String, String), String> {
+    let home = config::home();
+    let hub_url = match flag_value(args, "--url") {
+        Some(u) => Some(u.trim_end_matches('/').to_string()),
+        None => match std::env::var("WTF_HUB_URL") {
+            Ok(u) if !u.trim().is_empty() => Some(u.trim().trim_end_matches('/').to_string()),
+            _ => {
+                let bridge = home.join("bridge.json");
+                let cfg = home.join("config.json");
+                if bridge.exists() {
+                    read_json_field(&bridge, "hub_url")
+                } else if cfg.exists() {
+                    HubConfig::load_or_create_at(&cfg).map(|c| c.lan_url()).ok()
+                } else {
+                    None
+                }
+            }
+        },
+    };
+    let hub_url = hub_url.ok_or_else(|| {
+        "no hub URL: pass --url, set WTF_HUB_URL, or run where bridge.json/config.json exists"
+            .to_string()
+    })?;
+    let cap = match flag_value(args, "--cap").or_else(|| flag_value(args, "--k")) {
+        Some(k) => Some(k),
+        None => match std::env::var("WTF_CAPABILITY").or_else(|_| std::env::var("WTF_DASHBOARD_KEY"))
+        {
+            Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
+            _ => {
+                let cap_file = home.join("dashboard_capability");
+                if cap_file.exists() {
+                    std::fs::read_to_string(&cap_file).ok().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            }
+        },
+    };
+    let cap = cap.ok_or_else(|| {
+        "no capability token: pass --cap, --k or set WTF_CAPABILITY".to_string()
+    })?;
+    Ok((hub_url, cap))
+}
+
+/// `wtf tasks [--state S] [--url U] [--cap K]` — review the federated task
+/// board from any machine. Reads the same capability-gated route the
+/// dashboard uses, so the operator never needs the browser to see where
+/// designated work actually went.
+fn cmd_tasks(args: &[String]) -> i32 {
+    let (hub_url, cap) = match resolve_hub_and_cap(args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let want_state = flag_value(args, "--state");
+    let resp = match client::request(
+        &format!("{hub_url}/api/v1/tasks?cap={cap}"),
+        "GET",
+        &[],
+        b"",
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: cannot reach hub: {e}");
+            return 1;
+        }
+    };
+    if resp.status != 200 {
+        eprintln!(
+            "error: hub refused (HTTP {}): {}",
+            resp.status,
+            resp.text().trim()
+        );
+        return 1;
+    }
+    let Some(v) = resp.json() else {
+        eprintln!("error: hub returned a non-JSON response");
+        return 1;
+    };
+    let tasks = v.get("tasks").and_then(|x| x.as_arr()).unwrap_or(&[]);
+    let counts = v.get("counts");
+    let n = |k: &str| {
+        counts
+            .and_then(|c| c.get(k))
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0)
+    };
+    println!(
+        "FEDERATED TASKS — queued {} · claimed {} · running {} · blocked {} · done {} · failed {} · cancelled {}",
+        n("queued"),
+        n("claimed"),
+        n("running"),
+        n("blocked"),
+        n("done"),
+        n("failed"),
+        n("cancelled")
+    );
+    let shown: Vec<&wtf::json::Value> = tasks
+        .iter()
+        .filter(|t| match &want_state {
+            Some(s) => t.get("state").and_then(|x| x.as_str()) == Some(s.as_str()),
+            None => true,
+        })
+        .collect();
+    if shown.is_empty() {
+        match want_state {
+            Some(s) => println!("  (none in state '{s}')"),
+            None => println!("  (none — an agent designates work with task_dispatch)"),
+        }
+        return 0;
+    }
+    for t in shown {
+        let state = t.get("state").and_then(|x| x.as_str()).unwrap_or("?");
+        let id = t.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+        let title = t.get("title").and_then(|x| x.as_str()).unwrap_or("");
+        let target = t.get("target").and_then(|x| x.as_str()).unwrap_or("");
+        let assignee = t.get("assignee").and_then(|x| x.as_str()).unwrap_or("");
+        let repo = t.get("repo").and_then(|x| x.as_str()).unwrap_or("");
+        let session = t.get("session").and_then(|x| x.as_str()).unwrap_or("");
+        print!("  [{state}] {id} ");
+        print!("{title}");
+        if !repo.is_empty() {
+            print!(" @{repo}");
+        }
+        print!(
+            " · target {target} · assignee {}",
+            if assignee.is_empty() { "-" } else { assignee }
+        );
+        if !session.is_empty() {
+            print!(" · chat {}", &session[..session.len().min(8)]);
+        }
+        println!();
+    }
     0
 }
 

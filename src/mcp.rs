@@ -72,8 +72,22 @@ impl Bridge {
                 "hub rejected credentials for {path} (HTTP 401) — key revoked or wrong?"
             ));
         }
-        if resp.status != 200 {
-            return Err(format!("hub returned HTTP {} for {path}", resp.status));
+        // Any 2xx carries a JSON body (201 for a created task record).
+        if !(200..300).contains(&resp.status) {
+            // Surface the hub's own `error` text when it sent one: a bare
+            // status code tells an agent nothing about what to fix.
+            let detail = json::parse(&resp.text())
+                .ok()
+                .and_then(|v| {
+                    v.get("error")
+                        .and_then(|e| e.as_str())
+                        .map(|s| s.to_string())
+                })
+                .filter(|s| !s.is_empty());
+            return Err(match detail {
+                Some(msg) => format!("hub returned HTTP {} for {path}: {msg}", resp.status),
+                None => format!("hub returned HTTP {} for {path}", resp.status),
+            });
         }
         json::parse(&resp.text()).map_err(|e| format!("hub sent invalid JSON for {path}: {e}"))
     }
@@ -287,7 +301,7 @@ impl Bridge {
                     (
                         "instructions",
                         Value::from(
-                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (5) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
+                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) CROSS-MACHINE WORK — when the user wants work done on another paired machine (the mac, a Windows box, an edge Pi, a GPU/cloud node), do NOT run it over ad-hoc ssh and do NOT try to drive a remote agent session: dispatch a task instead. task_dispatch {title, detail, target, session?, repo?} addresses the work by machine name/alias, tier:heavy|tier:standard|tier:edge, or arch:<os>-<arch>; the agent on that machine finds it with task_claim, runs it with its OWN local tooling and credentials, and returns the deliverable with task_report {task, state:\"done\", result}. Read it back with task_status {task}. Dispatch is pull-based — the hub never spawns a harness or an ssh session on another box — so if a task stays queued the target machine has no agent polling (tell the user that; it is not an error). Bind the task's chat with `session` so the operator can follow the same work in the dashboard. (5) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (6) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
                         ),
                     ),
                     (
@@ -772,6 +786,146 @@ impl Bridge {
             Value::obj(vec![
                 (
                     "name",
+                    Value::from("task_dispatch"),
+                ),
+                (
+                    "description",
+                    Value::from(
+                        "Designate work for a paired machine: queue a task on the hub addressed to an exact machine name/alias, a compute class (tier:heavy|tier:standard|tier:edge), an architecture (arch:<os>-<arch>), or any machine. Returns a task id. An agent ON the target machine picks it up with task_claim, runs it with its own local tooling, and reports back with task_report — this hub never spawns a harness or an SSH session on another box. Bind a federated chat with `session` so the human-reviewable conversation and the machine result share one handle.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("title", Self::prop("one-line statement of the work, <=160 chars")),
+                                (
+                                    "detail",
+                                    Self::prop("full instructions for the remote agent: paths, commands, acceptance criteria (<=8000 chars)"),
+                                ),
+                                (
+                                    "target",
+                                    Self::prop("who should do it: a machine name/alias, any, tier:heavy|tier:standard|tier:edge, or arch:<os>-<arch> (default any)"),
+                                ),
+                                (
+                                    "repo",
+                                    Self::prop("optional repo/project label; defaults to the bridge's working directory name"),
+                                ),
+                                (
+                                    "session",
+                                    Self::prop("optional session id to bind as this task's federated chat (create one with session_create first)"),
+                                ),
+                                (
+                                    "agent",
+                                    Self::prop("optional dispatching agent name; defaults to this device"),
+                                ),
+                            ]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("title")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("task_claim")),
+                (
+                    "description",
+                    Value::from(
+                        "Claim queued work addressed to THIS machine. Pass your machine name/alias, compute tier, and architecture so tier:/arch:/name selectors resolve; omit them to claim only tasks targeted at `any`. Optionally pin a specific task id. Returns the claimed task (id + detail = what to do), or reports that the queue is empty. A claim holds a 15-minute lease — call task_report with state 'running' as a heartbeat, and if this machine dies the task automatically returns to the queue.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("machine", Self::prop("this machine's cluster name/alias — used to match name selectors (default: this device name)")),
+                                ("tier", Self::prop("this machine's compute tier: heavy, standard, or edge — used to match tier: selectors")),
+                                ("arch", Self::prop("this machine's architecture, e.g. darwin-arm64 or linux-x86_64 — used to match arch: selectors")),
+                                ("task", Self::prop("optional: claim this exact task id instead of the oldest matching one")),
+                            ]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("task_report")),
+                (
+                    "description",
+                    Value::from(
+                        "Report progress or completion for a task you claimed. state 'running' is a heartbeat that extends the lease; 'done' carries the deliverable in `result`; 'failed' carries `error`; 'blocked' records what you need from a human or peer and keeps the claim. Only the device that claimed the task may report on it. The dispatcher reads the result with task_status.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("task", Self::prop("task id from task_claim")),
+                                (
+                                    "state",
+                                    Value::obj(vec![
+                                        ("type", Value::from("string")),
+                                        (
+                                            "enum",
+                                            Value::arr(vec![
+                                                Value::from("running"),
+                                                Value::from("done"),
+                                                Value::from("failed"),
+                                                Value::from("blocked"),
+                                            ]),
+                                        ),
+                                        (
+                                            "description",
+                                            Value::from(
+                                                "running = heartbeat (extends lease); done = delivered (put it in `result`); failed = give up (put the reason in `error`); blocked = waiting on a human/peer decision",
+                                            ),
+                                        ),
+                                    ]),
+                                ),
+                                ("result", Self::prop("on 'done': the deliverable or findings (<=16000 chars)")),
+                                ("error", Self::prop("on 'failed'/'blocked': what went wrong or what you are waiting on")),
+                            ]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("task"), Value::from("state")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("task_status")),
+                (
+                    "description",
+                    Value::from(
+                        "Read the federated task board, or one task's full record including its result. Use it to check whether work you dispatched to another machine has returned. With no arguments it lists open and recent tasks with their state, target, assignee, and bound chat.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("task", Self::prop("optional: a specific task id for its full record + result")),
+                                ("state", Self::prop("optional: only tasks in this state (queued, claimed, running, done, failed, blocked, cancelled)")),
+                            ]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                (
+                    "name",
                     Value::from("chat"),
                 ),
                 (
@@ -841,6 +995,10 @@ impl Bridge {
             "session_read" => self.tool_session_read(args),
             "comms_post" => self.tool_comms_post(args),
             "comms_read" => self.tool_comms_read(args),
+            "task_dispatch" => self.tool_task_dispatch(args),
+            "task_claim" => self.tool_task_claim(args),
+            "task_report" => self.tool_task_report(args),
+            "task_status" => self.tool_task_status(args),
             "chat" => self.tool_chat(args),
             "router_status" => self.tool_router_status(args),
             other => (format!("unknown tool: {other}"), true),
@@ -1753,6 +1911,242 @@ impl Bridge {
             );
         }
         (out, false)
+    }
+
+    /// task_dispatch { title, detail?, target?, repo?, session? }: queue work
+    /// for another paired machine. This is the designate-an-agent entry
+    /// point: the record is addressed by machine name, compute tier, or
+    /// architecture, and an agent on that machine claims it.
+    fn tool_task_dispatch(&self, args: &Value) -> (String, bool) {
+        let Some(title) = arg_str(args, "title") else {
+            return ("missing required argument: title".into(), true);
+        };
+        let mut body = vec![
+            ("title".to_string(), Value::from(title)),
+            (
+                "detail".to_string(),
+                Value::from(arg_str(args, "detail").unwrap_or("")),
+            ),
+            (
+                "repo".to_string(),
+                Value::from(
+                    arg_str(args, "repo")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(repo_label),
+                ),
+            ),
+            (
+                "target".to_string(),
+                Value::from(arg_str(args, "target").unwrap_or("any")),
+            ),
+            (
+                "agent".to_string(),
+                Value::from(arg_str(args, "agent").unwrap_or(&self.cfg.device_name)),
+            ),
+        ];
+        if let Some(s) = arg_str(args, "session") {
+            body.push(("session".to_string(), Value::from(s)));
+        }
+        match self.api_post("/api/v1/tasks", &Value::Obj(body)) {
+            Ok(v) => {
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                let target = v.get("target").and_then(|x| x.as_str()).unwrap_or("any");
+                let sess = v.get("session").and_then(|x| x.as_str()).unwrap_or("");
+                let chat_note = if sess.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nchat: {sess} — post progress there with comms_post so the operator can follow it")
+                };
+                (
+                    format!(
+                        "task {id} queued for '{target}'. An agent on that machine claims it with task_claim and reports via task_report; check it with task_status {{task: \"{id}\"}}.{chat_note}"
+                    ),
+                    false,
+                )
+            }
+            Err(e) => (format!("dispatch failed: {e}"), true),
+        }
+    }
+
+    /// task_claim { machine?, tier?, arch?, task? }: take queued work
+    /// addressed to this machine.
+    fn tool_task_claim(&self, args: &Value) -> (String, bool) {
+        let machine = arg_str(args, "machine").unwrap_or(&self.cfg.device_name);
+        let tier = arg_str(args, "tier").unwrap_or("");
+        let arch = arg_str(args, "arch").unwrap_or("");
+        let body = Value::obj(vec![
+            ("machine", Value::from(machine)),
+            ("tier", Value::from(tier)),
+            ("arch", Value::from(arch)),
+        ]);
+        match self.api_post("/api/v1/tasks/claim", &body) {
+            Ok(v) => {
+                let Some(task) = v.get("task").filter(|t| !t.is_null()) else {
+                    return (
+                        format!(
+                            "no queued work for machine '{machine}'{} — nothing to do (a task addressed elsewhere stays queued for its target)",
+                            if tier.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (tier {tier})")
+                            }
+                        ),
+                        false,
+                    );
+                };
+                let id = task.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                let title = task.get("title").and_then(|x| x.as_str()).unwrap_or("");
+                let detail = task.get("detail").and_then(|x| x.as_str()).unwrap_or("");
+                let repo = task.get("repo").and_then(|x| x.as_str()).unwrap_or("");
+                let sess = task.get("session").and_then(|x| x.as_str()).unwrap_or("");
+                let mut out = format!("claimed task {id}: {title}\n");
+                if !repo.is_empty() {
+                    out.push_str(&format!("repo: {repo}\n"));
+                }
+                if !sess.is_empty() {
+                    out.push_str(&format!(
+                        "chat: {sess} — report progress there with comms_post {{session:\"{sess}\", event:\"update\", note:\"...\"}}\n"
+                    ));
+                }
+                if !detail.is_empty() {
+                    out.push_str(&format!("instructions:\n{detail}\n"));
+                }
+                out.push_str(&format!(
+                    "run it with your own local tooling, then task_report {{task:\"{id}\", state:\"done\", result:\"...\"}}. Send state:\"running\" as a heartbeat on long jobs — the claim lease is 15 minutes."
+                ));
+                (out, false)
+            }
+            Err(e) => (format!("claim failed: {e}"), true),
+        }
+    }
+
+    /// task_report { task, state, result?, error? }: heartbeat or completion
+    /// for a task this device claimed.
+    fn tool_task_report(&self, args: &Value) -> (String, bool) {
+        let Some(id) = arg_str(args, "task") else {
+            return ("missing required argument: task".into(), true);
+        };
+        let Some(state) = arg_str(args, "state") else {
+            return ("missing required argument: state".into(), true);
+        };
+        let result = arg_str(args, "result").unwrap_or("");
+        let error = arg_str(args, "error").unwrap_or("");
+        let (path, body) = match state {
+            "running" => (
+                format!("/api/v1/tasks/{id}/start"),
+                Value::Obj(vec![]),
+            ),
+            "done" | "failed" => (
+                format!("/api/v1/tasks/{id}/finish"),
+                Value::obj(vec![
+                    ("ok", Value::from(state == "done")),
+                    ("result", Value::from(result)),
+                    ("error", Value::from(error)),
+                ]),
+            ),
+            "blocked" => (
+                format!("/api/v1/tasks/{id}/block"),
+                Value::obj(vec![("reason", Value::from(error))]),
+            ),
+            other => {
+                return (
+                    format!(
+                        "invalid state '{other}'; must be one of: running, done, failed, blocked"
+                    ),
+                    true,
+                )
+            }
+        };
+        match self.api_post(&path, &body) {
+            Ok(v) => {
+                let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+                let sess = v.get("session").and_then(|x| x.as_str()).unwrap_or("");
+                let mut out = format!("task {id} -> {state} ({title})");
+                if !sess.is_empty() {
+                    out.push_str(&format!(
+                        "\nnext: post the outcome into the bound chat with comms_post {{session:\"{sess}\", event:\"{}\", note:\"...\"}} so the operator sees it in the dashboard",
+                        if state == "done" { "update" } else { "blocked" }
+                    ));
+                }
+                (out, false)
+            }
+            Err(e) => (format!("report failed: {e}"), true),
+        }
+    }
+
+    /// task_status { task?, state? }: the federated task board, or one record.
+    fn tool_task_status(&self, args: &Value) -> (String, bool) {
+        if let Some(id) = arg_str(args, "task") {
+            return match self.api_get(&format!("/api/v1/tasks/{id}")) {
+                Ok(v) => {
+                    // The route returns the record itself.
+                    let mut out = String::new();
+                    let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("?");
+                    let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+                    let target = v.get("target").and_then(|x| x.as_str()).unwrap_or("");
+                    let assignee = v.get("assignee").and_then(|x| x.as_str()).unwrap_or("");
+                    let result = v.get("result").and_then(|x| x.as_str()).unwrap_or("");
+                    let error = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
+                    let sess = v.get("session").and_then(|x| x.as_str()).unwrap_or("");
+                    out.push_str(&format!("{id} [{state}] {title}\n"));
+                    out.push_str(&format!(
+                        "target: {target} · assignee: {}\n",
+                        if assignee.is_empty() { "-" } else { assignee }
+                    ));
+                    if !sess.is_empty() {
+                        out.push_str(&format!("chat: {sess}\n"));
+                    }
+                    if !result.is_empty() {
+                        out.push_str(&format!("result:\n{result}\n"));
+                    }
+                    if !error.is_empty() {
+                        out.push_str(&format!("error: {error}\n"));
+                    }
+                    (out, false)
+                }
+                Err(e) => (e, true),
+            };
+        }
+        match self.api_get("/api/v1/tasks") {
+            Ok(v) => {
+                let tasks = v.get("tasks").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                let filter = arg_str(args, "state");
+                let picked: Vec<&Value> = tasks
+                    .iter()
+                    .filter(|t| match filter {
+                        Some(s) => t.get("state").and_then(|x| x.as_str()) == Some(s),
+                        None => t
+                            .get("terminal")
+                            .and_then(|x| x.as_bool())
+                            .map(|term| !term)
+                            .unwrap_or(true),
+                    })
+                    .collect();
+                if picked.is_empty() {
+                    return match filter {
+                        Some(s) => (format!("no tasks in state '{s}'"), false),
+                        None => (
+                            "no open federated tasks — dispatch one with task_dispatch {title, target}".into(),
+                            false,
+                        ),
+                    };
+                }
+                let mut out = String::from("federated tasks:\n");
+                for t in picked.iter().take(40) {
+                    let id = t.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                    let state = t.get("state").and_then(|x| x.as_str()).unwrap_or("?");
+                    let title = t.get("title").and_then(|x| x.as_str()).unwrap_or("");
+                    let target = t.get("target").and_then(|x| x.as_str()).unwrap_or("");
+                    let assignee = t.get("assignee").and_then(|x| x.as_str()).unwrap_or("");
+                    out.push_str(&format!(
+                        "  [{state}] {id} -> {target} ({}) {title}\n",
+                        if assignee.is_empty() { "-" } else { assignee }
+                    ));
+                }
+                (out, false)
+            }
+            Err(e) => (e, true),
+        }
     }
 
     /// chat { prompt, model?, system? }: one OpenAI-compatible completion
