@@ -133,6 +133,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             HandlerResult::Respond(session_single(hub, req))
         }
         ("GET", "/api/v1/tasks/board") => HandlerResult::Respond(tasks_board(hub, req)),
+        ("GET", "/api/v1/tasks/runners") => HandlerResult::Respond(tasks_runners(hub, req)),
         ("GET", "/api/v1/tasks") => HandlerResult::Respond(tasks_board(hub, req)),
         ("POST", "/api/v1/tasks") => HandlerResult::Respond(task_dispatch(hub, req)),
         ("POST", "/api/v1/tasks/claim") => HandlerResult::Respond(task_claim(hub, req)),
@@ -359,10 +360,147 @@ fn heartbeat(hub: &Arc<Hub>, req: &Request) -> Response {
 
 // ---------- federated task dispatch ----------
 
+/// GET /api/v1/tasks/runners — which agent runtimes are usable, with reasons.
+/// Read-only probe; lets a dispatcher see whether `orca` or `herdr` will run
+/// the work before committing a task to this machine.
+fn tasks_runners(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
+    }
+    let probed = crate::runner::probe();
+    let runners: Vec<Value> = probed
+        .iter()
+        .map(|(name, ok, reason)| {
+            Value::obj(vec![
+                ("runner", Value::from(name.as_str())),
+                ("available", Value::from(*ok)),
+                ("detail", Value::from(reason.as_str())),
+            ])
+        })
+        .collect();
+    let chosen = crate::runner::choose("auto", "")
+        .map(|p| p.runner)
+        .unwrap_or_default();
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("runners", Value::Arr(runners)),
+            ("preferred", Value::from(chosen.as_str())),
+        ]),
+    )
+}
+
+/// POST /api/v1/tasks/{id}/run {workdir?} — launch the agent that will do this
+/// task, using the runner resolved for it (Orca first, Herdr as fallback).
+///
+/// This is the step that turns a claimed record into running work. It is the
+/// only place in the hub that starts an external agent runtime, and it starts
+/// it for a task that a device has already claimed — never speculatively.
+fn task_run(hub: &Arc<Hub>, req: &Request, id: &str, device: &str) -> Response {
+    // The caller already authenticated this request. Re-running device_auth
+    // here would consume the nonce a second time and trip the replay guard,
+    // so the verified device is threaded in instead.
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => {
+            if req.body.is_empty() {
+                Value::Obj(vec![])
+            } else {
+                return r;
+            }
+        }
+    };
+    let workdir = body
+        .get("workdir")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let Some(task) = hub.tasks.get(id) else {
+        return Response::error(404, &format!("unknown task '{id}'"));
+    };
+    // Only the claimer may launch its own work, and only before it is done.
+    if !task.assignee.is_empty() && task.assignee != device {
+        return Response::error(
+            400,
+            &format!(
+                "task {id} is claimed by '{}', not '{device}'",
+                task.assignee
+            ),
+        );
+    }
+    if task.is_terminal() {
+        return Response::error(400, &format!("task {id} is already '{}'", task.state));
+    }
+    // The runner may be pinned per-request; otherwise the task's own choice.
+    let want = body
+        .get("runner")
+        .and_then(|v| v.as_str())
+        .unwrap_or(task.runner.as_str());
+    // A remote target runs on its own machine; the hub only launches locally.
+    let remote = body.get("machine").and_then(|v| v.as_str()).unwrap_or("");
+    let plan = match crate::runner::choose(want, remote) {
+        Ok(p) => p,
+        Err(e) => return Response::error(400, &e),
+    };
+    let spec = build_spec(&task);
+    let agent = body
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .unwrap_or(crate::runner::DEFAULT_ORCA_AGENT);
+    let outcome = crate::runner::start_with_agent(&plan, &spec, &workdir, 180, agent);
+    if outcome.ok {
+        let _ = hub.tasks.set_run(id, &plan.runner, &outcome.handle);
+        let _ = hub.tasks.start(id, &device);
+        hub.store.log_event(
+            &device,
+            &task.origin_agent,
+            "info",
+            &format!("task {} started via {} {}", id, plan.runner, outcome.handle),
+            &task.repo,
+        );
+    } else {
+        hub.store.log_event(
+            &device,
+            &task.origin_agent,
+            "error",
+            &format!("task {} runner {} failed", id, plan.runner),
+            &task.repo,
+        );
+    }
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("ok", Value::from(outcome.ok)),
+            ("plan", plan.to_json()),
+            ("run", outcome.to_json()),
+        ]),
+    )
+}
+
+/// Compose the instruction handed to the runner. The task's own fields are the
+/// contract: the remote agent gets the title, the detail, and the reporting
+/// call it must make so the dispatcher sees a result.
+fn build_spec(task: &crate::tasks::Task) -> String {
+    let mut spec = String::new();
+    spec.push_str(&format!("Task {}: {}\n\n", task.id, task.title));
+    if !task.repo.is_empty() {
+        spec.push_str(&format!("Repository: {}\n\n", task.repo));
+    }
+    if !task.detail.is_empty() {
+        spec.push_str(task.detail.trim());
+        spec.push_str("\n\n");
+    }
+    spec.push_str(&format!(
+        "When finished, report the outcome by running:\n  wtf agent  # then call task_report {{\"task\":\"{}\",\"state\":\"done\",\"result\":\"<what you did and found>\"}}\nUse state \"failed\" with an `error` if you cannot complete it, or \"blocked\" if you need a decision.",
+        task.id
+    ));
+    spec
+}
+
 /// Split a `/api/v1/tasks/{id}[/{action}]` path into (id, action).
 fn task_path(req: &Request) -> Option<(&str, Option<&str>)> {
     let rest = req.path.strip_prefix("/api/v1/tasks/")?;
-    if rest.is_empty() || rest == "board" || rest == "claim" {
+    if rest.is_empty() || rest == "board" || rest == "claim" || rest == "runners" {
         return None;
     }
     Some(match rest.split_once('/') {
@@ -434,6 +572,7 @@ fn task_dispatch(hub: &Arc<Hub>, req: &Request) -> Response {
     let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
     let target = body.get("target").and_then(|v| v.as_str()).unwrap_or("any");
     let session = body.get("session").and_then(|v| v.as_str()).unwrap_or("");
+    let runner = body.get("runner").and_then(|v| v.as_str()).unwrap_or("auto");
     let agent = body
         .get("agent")
         .and_then(|v| v.as_str())
@@ -448,7 +587,7 @@ fn task_dispatch(hub: &Arc<Hub>, req: &Request) -> Response {
 
     match hub
         .tasks
-        .create(title, detail, repo, target, &device, &agent, session)
+        .create(title, detail, repo, target, &device, &agent, session, runner)
     {
         Ok(t) => {
             // Announce on the open event feed so peers watching the board
@@ -541,6 +680,11 @@ fn task_single(hub: &Arc<Hub>, req: &Request) -> Response {
             hub.tasks
                 .bind_session(id, &sid)
                 .map(|t| Response::json(200, &t.to_json()))
+        }
+        "run" => {
+            // Launching needs the whole request (runner/machine/workdir), so
+            // it is handled outside the mutate-and-return shape.
+            return task_run(hub, req, id, &device);
         }
         other => Err(format!("unknown task action '{other}'")),
     };

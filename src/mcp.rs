@@ -93,10 +93,30 @@ impl Bridge {
     }
 
     pub fn api_post(&self, path: &str, body: &Value) -> Result<Value, String> {
+        self.api_post_with_timeout(path, body, 10)
+    }
+
+    /// `api_post` with a longer read timeout, for calls that start external
+    /// processes. Launching an agent runtime legitimately takes tens of
+    /// seconds; the default 10 s read would report a timeout while the work
+    /// had in fact started.
+    pub fn api_post_with_timeout(
+        &self,
+        path: &str,
+        body: &Value,
+        rw_secs: u64,
+    ) -> Result<Value, String> {
         let body_str = body.to_json();
         let headers = self.signed_headers("POST", path, body_str.as_bytes())?;
         let url = format!("{}{}", self.cfg.hub_url, path);
-        let resp = client::request(&url, "POST", &headers, body_str.as_bytes())?;
+        let resp = client::request_with_timeout(
+            &url,
+            "POST",
+            &headers,
+            body_str.as_bytes(),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(rw_secs.max(10)),
+        )?;
         self.decode(resp, path)
     }
 
@@ -301,7 +321,7 @@ impl Bridge {
                     (
                         "instructions",
                         Value::from(
-                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) CROSS-MACHINE WORK — when the user wants work done on another paired machine (the mac, a Windows box, an edge Pi, a GPU/cloud node), do NOT run it over ad-hoc ssh and do NOT try to drive a remote agent session: dispatch a task instead. task_dispatch {title, detail, target, session?, repo?} addresses the work by machine name/alias, tier:heavy|tier:standard|tier:edge, or arch:<os>-<arch>; the agent on that machine finds it with task_claim, runs it with its OWN local tooling and credentials, and returns the deliverable with task_report {task, state:\"done\", result}. Read it back with task_status {task}. Dispatch is pull-based — the hub never spawns a harness or an ssh session on another box — so if a task stays queued the target machine has no agent polling (tell the user that; it is not an error). Bind the task's chat with `session` so the operator can follow the same work in the dashboard. (5) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (6) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
+                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) CROSS-MACHINE WORK — when the user wants work done on another paired machine (the mac, a Windows box, an edge Pi, a GPU/cloud node), do NOT run it over ad-hoc ssh and do NOT try to drive a remote agent session: dispatch a task instead. task_dispatch {title, detail, target, session?, repo?} addresses the work by machine name/alias, tier:heavy|tier:standard|tier:edge, or arch:<os>-<arch>; the agent on that machine finds it with task_claim, runs it with its OWN local tooling and credentials, and returns the deliverable with task_report {task, state:\"done\", result}. Read it back with task_status {task}. Dispatch is pull-based — the hub never spawns a harness or an ssh session on another box — so if a task stays queued the target machine has no agent polling (tell the user that; it is not an error). Bind the task's chat with `session` so the operator can follow the same work in the dashboard. WORKER SIDE: `task_claim` takes matching work and `task_run {task}` starts the agent that does it — Orca (`orca orchestration worker-start`) when installed, Herdr (`herdr agent start`) otherwise; `runner_probe` tells you which this machine can run. Remote runners need preparation on the target: an Orca PAIRED ENVIRONMENT (`orca environment add --pairing-code 'orca://pair?...'`, addressed with --on) or a Herdr MACHINE (`herdr machine add user@host --label <name>`, addressed with --machine). A bare LAN IP is neither. (5) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (6) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
                         ),
                     ),
                     (
@@ -822,6 +842,10 @@ impl Bridge {
                                     "agent",
                                     Self::prop("optional dispatching agent name; defaults to this device"),
                                 ),
+                                (
+                                    "runner",
+                                    Self::prop("agent runtime to start on the target: 'auto' (Orca, else Herdr — the default), 'orca', or 'herdr'"),
+                                ),
                             ]),
                         ),
                         ("required", Value::arr(vec![Value::from("title")])),
@@ -926,6 +950,53 @@ impl Bridge {
             Value::obj(vec![
                 (
                     "name",
+                    Value::from("task_run"),
+                ),
+                (
+                    "description",
+                    Value::from(
+                        "Start the agent that will perform a task you claimed on THIS machine. Resolves the runner (Orca for supervised orchestration, Herdr for durable terminals — Orca first when both are installed), launches one worker with the task's instructions, and records the runner's handle on the task. Only the device that claimed the task may run it, and only before it is done. Requires the claim first: task_claim, then task_run, then the agent reports with task_report.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                ("task", Self::prop("task id you claimed with task_claim")),
+                                ("runner", Self::prop("optional override: auto (default), orca, or herdr")),
+                                ("workdir", Self::prop("optional working directory the agent should start in (an existing path)")),
+                                ("agent", Self::prop("optional Orca agent id to launch: codex (default), claude, or any agent Orca knows")),
+                                ("machine", Self::prop("optional: the paired Orca environment name or Herdr machine label to run on another box; omit to run locally")),
+                            ]),
+                        ),
+                        ("required", Value::arr(vec![Value::from("task")])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("runner_probe")),
+                (
+                    "description",
+                    Value::from(
+                        "Check which agent runtimes are usable on THIS machine and which one task_run would pick: Orca (supervised orchestration, needs `orca serve` plus a paired environment for remote work) or Herdr (durable terminal agents, remote via `herdr machine add`). Call before dispatching work to an unfamiliar machine so you know whether it can run anything at all.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        ("properties", Value::obj(vec![])),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                (
+                    "name",
                     Value::from("chat"),
                 ),
                 (
@@ -999,6 +1070,8 @@ impl Bridge {
             "task_claim" => self.tool_task_claim(args),
             "task_report" => self.tool_task_report(args),
             "task_status" => self.tool_task_status(args),
+            "task_run" => self.tool_task_run(args),
+            "runner_probe" => self.tool_runner_probe(args),
             "chat" => self.tool_chat(args),
             "router_status" => self.tool_router_status(args),
             other => (format!("unknown tool: {other}"), true),
@@ -1947,6 +2020,9 @@ impl Bridge {
         if let Some(s) = arg_str(args, "session") {
             body.push(("session".to_string(), Value::from(s)));
         }
+        if let Some(r) = arg_str(args, "runner") {
+            body.push(("runner".to_string(), Value::from(r)));
+        }
         match self.api_post("/api/v1/tasks", &Value::Obj(body)) {
             Ok(v) => {
                 let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
@@ -2142,6 +2218,109 @@ impl Bridge {
                         "  [{state}] {id} -> {target} ({}) {title}\n",
                         if assignee.is_empty() { "-" } else { assignee }
                     ));
+                }
+                (out, false)
+            }
+            Err(e) => (e, true),
+        }
+    }
+
+    /// task_run { task, runner?, workdir?, machine? }: launch the agent that
+    /// will do a task this device claimed.
+    fn tool_task_run(&self, args: &Value) -> (String, bool) {
+        let Some(id) = arg_str(args, "task") else {
+            return ("missing required argument: task".into(), true);
+        };
+        let mut body = vec![
+            (
+                "workdir".to_string(),
+                Value::from(arg_str(args, "workdir").unwrap_or("")),
+            ),
+            (
+                "machine".to_string(),
+                Value::from(arg_str(args, "machine").unwrap_or("")),
+            ),
+        ];
+        if let Some(r) = arg_str(args, "runner") {
+            body.push(("runner".to_string(), Value::from(r)));
+        }
+        if let Some(a) = arg_str(args, "agent") {
+            body.push(("agent".to_string(), Value::from(a)));
+        }
+        // A launch blocks while the runtime starts an agent: give it headroom.
+        match self.api_post_with_timeout(&format!("/api/v1/tasks/{id}/run"), &Value::Obj(body), 240)
+        {
+            Ok(v) => {
+                let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+                let plan = v.get("plan");
+                let runner = plan
+                    .and_then(|p| p.get("runner"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("?");
+                let reason = plan
+                    .and_then(|p| p.get("reason"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let placement = plan
+                    .and_then(|p| p.get("placement"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("local");
+                let run = v.get("run");
+                let handle = run
+                    .and_then(|r| r.get("handle"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let detail = run
+                    .and_then(|r| r.get("detail"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !ok {
+                    return (
+                        format!(
+                            "runner '{runner}' failed to start task {id}: {detail}\nThe task is still claimed; fix the runtime (see runner_probe) and call task_run again, or task_report {{task:\"{id}\", state:\"failed\", error:\"...\"}}."
+                        ),
+                        true,
+                    );
+                }
+                let handle_note = if handle.is_empty() {
+                    " (runner reported no handle)".to_string()
+                } else {
+                    format!(" handle: {handle}")
+                };
+                (
+                    format!(
+                        "task {id} started via {runner} [{placement}]{handle_note}\n{reason}\nThe agent works with its own local tooling and reports back with task_report; read it with task_status {{task:\"{id}\"}}. Send state:\"running\" heartbeats if the launch is long."
+                    ),
+                    false,
+                )
+            }
+            Err(e) => (format!("run failed: {e}"), true),
+        }
+    }
+
+    /// runner_probe {}: which runtimes this machine can start.
+    fn tool_runner_probe(&self, _args: &Value) -> (String, bool) {
+        match self.api_get("/api/v1/tasks/runners") {
+            Ok(v) => {
+                let runners = v.get("runners").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                let preferred = v
+                    .get("preferred")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let mut out = String::from("agent runners on this machine:\n");
+                for r in runners {
+                    let name = r.get("runner").and_then(|x| x.as_str()).unwrap_or("?");
+                    let ok = r.get("available").and_then(|x| x.as_bool()).unwrap_or(false);
+                    let detail = r.get("detail").and_then(|x| x.as_str()).unwrap_or("");
+                    out.push_str(&format!(
+                        "  {} {name} — {detail}\n",
+                        if ok { "OK  " } else { "MISS" }
+                    ));
+                }
+                if preferred.is_empty() {
+                    out.push_str("\nno runner can start work here: install Orca (or pair it) or Herdr.\n");
+                } else {
+                    out.push_str(&format!("\ntask_run would use: {preferred}\n"));
                 }
                 (out, false)
             }
