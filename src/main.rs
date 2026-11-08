@@ -117,6 +117,30 @@ fn parse_ip(s: &str) -> Option<Ipv4Addr> {
     }
 }
 
+/// Open `url` in the operator's browser. Best-effort: a headless box is normal.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    // `start` treats its first argument as a window title, hence the empty one.
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    };
+    let _ = cmd.spawn();
+}
+
 fn cmd_serve(args: &[String]) -> i32 {
     let cfg = match HubConfig::load_or_create() {
         Ok(c) => c,
@@ -280,7 +304,7 @@ fn cmd_serve(args: &[String]) -> i32 {
             local.port(),
             capability
         );
-        let _ = Command::new("xdg-open").arg(url).spawn();
+        open_browser(&url);
     }
 
     http::serve(listener, handler);

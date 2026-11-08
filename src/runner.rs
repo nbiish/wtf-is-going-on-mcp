@@ -94,15 +94,35 @@ pub fn which(name: &str) -> Option<String> {
     }
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            // Confirm it actually runs: a stale shim on PATH is not a runner.
-            if probe_runs(&candidate.to_string_lossy()) {
-                return Some(candidate.to_string_lossy().to_string());
+        for candidate in path_candidates(&dir, name) {
+            if candidate.is_file() {
+                // Confirm it actually runs: a stale shim on PATH is not a runner.
+                if probe_runs(&candidate.to_string_lossy()) {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
             }
         }
     }
     None
+}
+
+/// Candidate file names for `name` inside `dir`.
+///
+/// Windows needs the PATHEXT suffixes: a bare `orca-ide` never exists there,
+/// the launcher is `orca-ide.exe` (or `.cmd`/`.bat`).
+#[cfg(windows)]
+fn path_candidates(dir: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let mut out = vec![dir.join(name)];
+    for ext in exts.split(';').filter(|e| !e.is_empty()) {
+        out.push(dir.join(format!("{name}{}", ext.to_ascii_lowercase())));
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn path_candidates(dir: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    vec![dir.join(name)]
 }
 
 /// Run `<binary> --version` with a hard cap; true only on a clean exit.

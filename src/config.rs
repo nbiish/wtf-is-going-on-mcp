@@ -19,8 +19,17 @@ pub fn home() -> PathBuf {
             return PathBuf::from(h);
         }
     }
-    let hd = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Path::new(&hd).join(".config").join("wtf-mcp")
+    // HOME is not set in a stock Windows shell; USERPROFILE is the equivalent.
+    let base = std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.trim().is_empty())
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .ok()
+                .filter(|h| !h.trim().is_empty())
+        })
+        .unwrap_or_else(|| ".".to_string());
+    Path::new(&base).join(".config").join("wtf-mcp")
 }
 
 pub fn config_path() -> PathBuf {

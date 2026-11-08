@@ -705,16 +705,35 @@ fn navigate_vpath(
     }
 }
 
+/// Platform shell for one command string.
+#[cfg(windows)]
+fn shell_for(line: &str) -> Command {
+    let mut c = Command::new("cmd");
+    c.arg("/C").arg(line);
+    c
+}
+
+#[cfg(not(windows))]
+fn shell_for(line: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(line);
+    c
+}
+
+/// Prefix a command with a directory change, quoted for the platform shell.
+#[cfg(windows)]
+fn with_dir(dir: &str, cmd: &str) -> String {
+    format!("cd /d \"{dir}\" && {cmd}")
+}
+
+#[cfg(not(windows))]
+fn with_dir(dir: &str, cmd: &str) -> String {
+    format!("cd '{}' && {}", dir, cmd)
+}
+
 /// Run a command on the local machine with LKGL anchor and loopback router proxy.
 fn run_local_cmd(cmd: &str, subpath: &str, lkgl: &str, _timeout_secs: u64) -> (String, i32) {
-    let mut c = Command::new("sh");
-    c.arg("-c");
-
     // Anchor OMP and agent fleet tools to singular loopback proxy :11434
-    c.env("OLLAMA_HOST", "127.0.0.1:11434");
-    c.env("LOCAL_ROUTER_URL", "http://127.0.0.1:11434/v1");
-
-    // Resolve working directory: subpath if valid dir, else machine LKGL
     let run_dir = if subpath != "/" && !subpath.is_empty() && Path::new(subpath).is_dir() {
         subpath.to_string()
     } else if !lkgl.is_empty() && Path::new(lkgl).is_dir() {
@@ -724,11 +743,14 @@ fn run_local_cmd(cmd: &str, subpath: &str, lkgl: &str, _timeout_secs: u64) -> (S
     };
 
     let run_cmd = if !run_dir.is_empty() {
-        format!("cd '{}' && {}", run_dir, cmd)
+        with_dir(&run_dir, cmd)
     } else {
         cmd.to_string()
     };
-    c.arg(&run_cmd);
+
+    let mut c = shell_for(&run_cmd);
+    c.env("OLLAMA_HOST", "127.0.0.1:11434");
+    c.env("LOCAL_ROUTER_URL", "http://127.0.0.1:11434/v1");
 
     match c.output() {
         Ok(o) => {
