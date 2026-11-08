@@ -460,6 +460,8 @@ ciphertext — it relays bytes and cannot read a single message.
 | `task_claim` | `machine?`, `tier?`, `arch?`, `task?` | **Worker side.** Claim the oldest queued task this machine can serve; empty queue is a normal answer |
 | `task_report` | `task`, `state`, `result?`, `error?` | `running` (heartbeat, extends the 15-min lease), `done` + `result`, `failed`, or `blocked`. Only the claiming device may report |
 | `task_status` | `task?`, `state?` | The board, or one task's full record + result |
+| `task_run` | `task`, `runner?`, `workdir?`, `agent?`, `machine?` | **Worker side.** Start the agent for a claimed task: Orca (supervised) else Herdr (durable terminal); records the runner handle |
+| `runner_probe` | — | Which agent runtimes this machine can start, and which `auto` would pick |
 
 Tool failures (bad args, hub down, revoked key) are returned as
 `isError: true` results, never as MCP protocol errors.
@@ -484,6 +486,8 @@ Tool failures (bad args, hub down, revoked key) are returned as
 | `POST /api/v1/tasks/claim` | device auth | Claim the oldest queued task matching `machine`/`tier`/`arch`/`task`; always answers `{ok, task: record\|null}` |
 | `GET /api/v1/tasks/{id}` | capability or device auth | One task record, including its result |
 | `POST /api/v1/tasks/{id}/{start,finish,block,bind,cancel}` | device auth | Mutate a task; start/finish/block require the claiming device, cancel requires the dispatcher |
+| `GET /api/v1/tasks/runners` | capability or device auth | Probe which agent runtimes (orca/herdr) can start work here |
+| `POST /api/v1/tasks/{id}/run` | device auth (claiming device) | Launch the agent for a claimed task via its runner; records the handle and moves it to `running` |
 
 Limits: 32 KiB head, 1 MiB body, 100 headers, 15 s read/write timeouts.
 `Transfer-Encoding` requests are rejected `501` by design.

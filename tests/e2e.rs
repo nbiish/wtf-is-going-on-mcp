@@ -2370,3 +2370,175 @@ fn federated_task_dispatch_end_to_end() {
     let _ = hub.wait();
     let _ = std::fs::remove_dir_all(&home);
 }
+/// Task runner: dispatch with a runner, claim, launch, and record the handle.
+///
+/// A fake `orca` on PATH proves the launch path without needing a real agent
+/// runtime or a second machine: the hub resolves the runner, builds the argv,
+/// starts it, and stores the dispatch id it reported.
+#[test]
+fn task_runner_launch_end_to_end() {
+    let home = temp_home("runner");
+    // Fake Orca first on PATH: answers --version and reports a dispatch id,
+    // recording the argv it was handed.
+    let bin_dir = home.join("fakebin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let calls = home.join("calls.log");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo fake-orca; exit 0; fi\nprintf '%s\\n' \"$*\" >> '{}'\necho '{{\"ok\":true,\"result\":{{\"dispatch\":{{\"id\":\"disp-e2e\"}}}}}}'\n",
+        calls.display()
+    );
+    let orca = bin_dir.join("orca-ide");
+    std::fs::write(&orca, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&orca, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let bind = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, 0);
+    let mut hub = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["serve", "--bind", &bind, "--no-open"])
+        .env("WTF_HOME", &home)
+        .env("PATH", &path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hub");
+    let hub_out = hub.stdout.take().unwrap();
+    let mut hub_lines = BufReader::new(hub_out);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = hub_lines.read_line(&mut line).expect("hub stdout");
+        assert!(n > 0, "hub exited before listening");
+        if line.contains("listening") {
+            break;
+        }
+    }
+    let url = line
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("http://"))
+        .expect("hub url")
+        .to_string();
+
+    let dev_home = temp_home("runner-box");
+    let out = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["key", "issue", "box"])
+        .env("WTF_HOME", &home)
+        .output()
+        .expect("key issue");
+    assert!(out.status.success());
+    let keys = wtf::json::parse(&std::fs::read_to_string(home.join("keys.json")).unwrap()).unwrap();
+    let secret = keys
+        .get("devices")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .iter()
+        .find(|d| d.get("name").and_then(|v| v.as_str()) == Some("box"))
+        .unwrap()
+        .get("secret")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_wtf"))
+        .args(["agent"])
+        .env("WTF_HUB_URL", &url)
+        .env("WTF_DEVICE_NAME", "box")
+        .env("WTF_DEVICE_KEY", &secret)
+        .env("WTF_HOME", &dev_home)
+        .env("PATH", &path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bridge");
+    let mut reader = BufReader::new(bridge.stdout.take().unwrap());
+
+    let mut id = 700u64;
+    macro_rules! call {
+        ($tool:expr, $args:expr) => {{
+            id += 1;
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
+                id, $tool, $args
+            );
+            rpc_write(&mut bridge, &req);
+            let resp = rpc_read(&mut reader);
+            let res = resp.get("result").unwrap().clone();
+            let is_err = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let text = res
+                .get("content")
+                .and_then(|c| c.as_arr())
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (is_err, text)
+        }};
+    }
+
+    // The probe sees the fake runtime and would pick orca.
+    let (err, text) = call!("runner_probe", "{}");
+    assert!(!err, "runner_probe failed: {text}");
+    assert!(text.contains("orca"), "probe reports orca: {text}");
+    assert!(text.contains("task_run would use: orca"), "preference: {text}");
+
+    // Dispatch pinned to orca, then claim it.
+    let (err, text) = call!(
+        "task_dispatch",
+        r#"{"title":"audit deps","detail":"run cargo audit","target":"any","runner":"orca"}"#
+    );
+    assert!(!err, "dispatch failed: {text}");
+    let task_id = text
+        .split_whitespace()
+        .find(|t| t.len() == 16 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .expect("task id")
+        .to_string();
+    let (err, text) = call!("task_claim", r#"{"machine":"box","tier":"heavy"}"#);
+    assert!(!err, "claim failed: {text}");
+
+    // An invalid runner on a task must be refused at dispatch.
+    let (err, text) = call!(
+        "task_dispatch",
+        r#"{"title":"bad","target":"any","runner":"codex-cli"}"#
+    );
+    assert!(err, "an unknown runner must be refused: {text}");
+    assert!(text.contains("unknown runner"), "{text}");
+
+    // Launch it. The fake returns a dispatch id, which must be recorded.
+    let (err, text) = call!("task_run", &format!(r#"{{"task":"{task_id}"}}"#));
+    assert!(!err, "task_run failed: {text}");
+    assert!(text.contains("orca"), "reports the runner used: {text}");
+
+    let (err, text) = call!("task_status", &format!(r#"{{"task":"{task_id}"}}"#));
+    assert!(!err);
+    assert!(text.contains("running"), "task moved to running: {text}");
+
+    // The runner received a well-formed argv, built from the task spec.
+    let logged = std::fs::read_to_string(&calls).expect("fake orca was invoked");
+    assert!(logged.contains("orchestration"), "argv: {logged}");
+    assert!(logged.contains("worker-start"), "argv: {logged}");
+    assert!(logged.contains("--agent"), "argv must name an agent: {logged}");
+    assert!(logged.contains("--spec"), "argv must carry the spec: {logged}");
+    assert!(
+        logged.contains(&task_id),
+        "spec tells the agent which task to report: {logged}"
+    );
+
+    // The stored record carries the runner and its handle for the dashboard.
+    let saved = std::fs::read_to_string(home.join("tasks.json")).expect("tasks.json");
+    assert!(saved.contains("disp-e2e"), "handle persisted: {saved}");
+
+    let _ = bridge.kill();
+    let _ = bridge.wait();
+    let _ = hub.kill();
+    let _ = hub.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
