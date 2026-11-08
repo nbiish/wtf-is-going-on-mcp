@@ -94,3 +94,43 @@ description: Agent Communication System protocol template. Deployed by `ainish-c
 - output:Merged to main; worktree removed; branch deleted; skill distributed from the ainish-coder source it deploys from
 - status:merged
 - blockers:none
+
+### [2026-11-08T01:05:00Z] CHECKIN | branch:feat/runner-orca-herdr | wt:/mnt/d/Code/wtf-runner
+- start:2026-11-07T23:40:00Z
+- end:2026-11-07T23:45:00Z
+- scope:src/runner.rs (new), src/tasks.rs, src/api.rs, src/mcp.rs, tests/e2e.rs, llms.txt, README.md, .agents/skills/wtf-is-going-on-mcp/SKILL.md
+- objective:Let a dispatched task start an agent on the target machine — Orca first, Herdr as fallback, per operator directive
+- input:Operator: "get making the connection to the other machine and being able to run orca-cli tooling to run agents from here. If a machine doesn't have orca-cli tooling we should utilize herdr"
+- output:Scope + lane (now) recorded; both decisions taken (Orca-first preference; mac being woken by operator)
+- status:in-progress
+- blockers:mac 192.168.1.68 ARP-visible but every TCP port times out (22, 7800, 445) — no connection possible from here yet
+
+### [2026-11-08T01:20:00Z] UPDATE | branch:feat/runner-orca-herdr | wt:/mnt/d/Code/wtf-runner
+- start:2026-11-07T23:45:00Z
+- end:2026-11-08T01:00:00Z
+- scope:src/runner.rs, src/tasks.rs, src/api.rs, src/mcp.rs
+- objective:Runner resolution, argv contract, launch path
+- input:Orca worker-start contract; Herdr agent/machine contract
+- output:14 runner unit tests + task_run/runner_probe tools + /tasks/runners + /tasks/{id}/run. Three real defects found by exercising the actual Orca binary: nonce double-consumption (401), missing mandatory --agent, and a launch outliving the client read timeout.
+- status:verifying
+- blockers:mac unreachable; remote placement is code-complete but unproven against a live peer
+
+### [2026-11-08T01:28:00Z] INTENT-MERGE | branch:feat/runner-orca-herdr | wt:/mnt/d/Code/wtf-runner
+- start:2026-11-08T01:00:00Z
+- end:2026-11-08T01:02:00Z
+- scope:v0.19.0 agent runners
+- objective:merge feat/runner-orca-herdr to main
+- input:Additive: 22 -> 24 MCP tools, new /tasks/runners and /tasks/{id}/run, new runner/run_handle fields
+- output:compat window + rollback recorded in .agents/tasks/TASK.2026-11-07.agent-runners.md
+- status:merging
+- blockers:none
+
+### [2026-11-08T01:32:00Z] CHECKOUT | branch:feat/runner-orca-herdr | wt:/mnt/d/Code/wtf-runner
+- start:2026-11-07T23:40:00Z
+- end:2026-11-08T01:32:00Z
+- scope:v0.19.0 agent runners
+- objective:Ship the runner lane
+- input:Complete implementation, 132 unit + 14 e2e green
+- output:Merged; worktree removed; branch deleted; skill distributed from ainish-coder source
+- status:merged
+- blockers:live cross-machine proof still owed — blocked on mac reachability, not on code
