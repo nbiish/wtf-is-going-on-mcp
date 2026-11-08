@@ -56,6 +56,12 @@ pub struct Task {
     /// Machine selector: `any`, an exact machine name/alias, `tier:heavy`,
     /// `tier:standard`, `tier:edge`, or `arch:<os>-<arch>`.
     pub target: String,
+    /// Agent runtime to start on the target: `auto` (Orca, else Herdr),
+    /// `orca`, or `herdr`. Chosen at dispatch and reported back with the run.
+    pub runner: String,
+    /// Runner-issued handle for the started agent (Orca dispatch id or Herdr
+    /// pane id); empty until the task is actually launched.
+    pub run_handle: String,
     pub origin_device: String,
     pub origin_agent: String,
     /// Device that claimed it (`""` while queued).
@@ -88,6 +94,8 @@ impl Task {
             ("detail", Value::from(self.detail.as_str())),
             ("repo", Value::from(self.repo.as_str())),
             ("target", Value::from(self.target.as_str())),
+            ("runner", Value::from(self.runner.as_str())),
+            ("run_handle", Value::from(self.run_handle.as_str())),
             ("origin_device", Value::from(self.origin_device.as_str())),
             ("origin_agent", Value::from(self.origin_agent.as_str())),
             ("assignee", Value::from(self.assignee.as_str())),
@@ -122,6 +130,9 @@ impl Task {
         if !self.session.is_empty() {
             line.push_str(&format!(" ~chat:{}", short_id(&self.session)));
         }
+        if !self.run_handle.is_empty() {
+            line.push_str(&format!(" run:{}", self.run_handle));
+        }
         line
     }
 
@@ -132,6 +143,16 @@ impl Task {
             detail: v.get("detail").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             repo: v.get("repo").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             target: v.get("target").and_then(|x| x.as_str()).unwrap_or("any").to_string(),
+            runner: v
+                .get("runner")
+                .and_then(|x| x.as_str())
+                .unwrap_or("auto")
+                .to_string(),
+            run_handle: v
+                .get("run_handle")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             origin_device: v
                 .get("origin_device")
                 .and_then(|x| x.as_str())
@@ -341,6 +362,7 @@ impl TaskStore {
         origin_device: &str,
         origin_agent: &str,
         session: &str,
+        runner: &str,
     ) -> Result<Task, String> {
         let title = title.trim();
         if title.is_empty() {
@@ -359,6 +381,12 @@ impl TaskStore {
         }
         let target = if target.trim().is_empty() { "any" } else { target.trim() };
         valid_target(target)?;
+        let runner = if runner.trim().is_empty() {
+            "auto"
+        } else {
+            runner.trim()
+        };
+        crate::runner::valid_runner(runner)?;
 
         let now = now_secs();
         let mut tasks = self.inner.lock().unwrap();
@@ -375,6 +403,8 @@ impl TaskStore {
             detail: detail.to_string(),
             repo: repo.to_string(),
             target: target.to_string(),
+            runner: runner.to_ascii_lowercase(),
+            run_handle: String::new(),
             origin_device: origin_device.to_string(),
             origin_agent: origin_agent.to_string(),
             assignee: String::new(),
@@ -568,6 +598,26 @@ impl TaskStore {
         })
     }
 
+    /// Record the runner that actually started this task, and its handle.
+    /// Called once the agent is launched; the task stays `claimed`/`running`.
+    pub fn set_run(
+        &self,
+        id: &str,
+        runner: &str,
+        handle: &str,
+    ) -> Result<Task, String> {
+        self.mutate(id, |t| {
+            if !runner.is_empty() {
+                crate::runner::valid_runner(runner)?;
+                t.runner = runner.to_ascii_lowercase();
+            }
+            if !handle.is_empty() {
+                t.run_handle = clamp(handle, 200);
+            }
+            Ok(())
+        })
+    }
+
     /// Attach a federated chat session to an existing task.
     pub fn bind_session(&self, id: &str, session: &str) -> Result<Task, String> {
         self.mutate(id, |t| {
@@ -707,7 +757,7 @@ mod tests {
     fn dispatch_claim_and_complete_roundtrip() {
         let (store, _path) = temp_store("roundtrip");
         let t = store
-            .create("scan repo", "list branches", "proj", "mac", "box1", "agent-a", "")
+            .create("scan repo", "list branches", "proj", "mac", "box1", "agent-a", "", "auto")
             .unwrap();
         assert_eq!(t.state, "queued");
         assert_eq!(t.target, "mac");
@@ -742,7 +792,7 @@ mod tests {
     #[test]
     fn a_foreign_assignee_cannot_finish_someone_elses_task() {
         let (store, _p) = temp_store("foreign");
-        let t = store.create("t", "", "", "any", "box1", "a", "").unwrap();
+        let t = store.create("t", "", "", "any", "box1", "a", "", "auto").unwrap();
         store.claim("box2", "mac", "", "", None).unwrap().unwrap();
         let err = store.finish(&t.id, "box3", true, "x", "").unwrap_err();
         assert!(err.contains("claimed by 'box2'"));
@@ -751,7 +801,7 @@ mod tests {
     #[test]
     fn lease_expiry_requeues_abandoned_work() {
         let (store, _p) = temp_store("lease");
-        let t = store.create("t", "", "", "any", "box1", "a", "").unwrap();
+        let t = store.create("t", "", "", "any", "box1", "a", "", "auto").unwrap();
         store.claim("box2", "mac", "", "", None).unwrap().unwrap();
         // Force the lease into the past, as a crashed peer would.
         {
@@ -771,7 +821,7 @@ mod tests {
     #[test]
     fn terminal_tasks_cannot_be_cancelled_twice() {
         let (store, _p) = temp_store("cancel");
-        let t = store.create("t", "", "", "any", "box1", "a", "").unwrap();
+        let t = store.create("t", "", "", "any", "box1", "a", "", "auto").unwrap();
         let c = store.cancel(&t.id, "box1").unwrap();
         assert_eq!(c.state, "cancelled");
         assert!(store.cancel(&t.id, "box1").is_err());
@@ -780,7 +830,7 @@ mod tests {
     #[test]
     fn only_the_dispatcher_may_cancel() {
         let (store, _p) = temp_store("cancel-owner");
-        let t = store.create("t", "", "", "any", "box1", "a", "").unwrap();
+        let t = store.create("t", "", "", "any", "box1", "a", "", "auto").unwrap();
         assert!(store.cancel(&t.id, "box9").is_err());
         assert!(store.cancel(&t.id, "box1").is_ok());
     }
@@ -788,7 +838,7 @@ mod tests {
     #[test]
     fn state_survives_a_reload() {
         let (store, path) = temp_store("persist");
-        let t = store.create("durable", "d", "repo", "tier:edge", "box1", "a", "").unwrap();
+        let t = store.create("durable", "d", "repo", "tier:edge", "box1", "a", "", "auto").unwrap();
         drop(store);
         let reloaded = TaskStore::load_at(&path);
         let got = reloaded.get(&t.id).expect("task replayed from disk");
@@ -799,12 +849,12 @@ mod tests {
     #[test]
     fn caps_reject_oversize_payloads() {
         let (store, _p) = temp_store("caps");
-        assert!(store.create("", "", "", "any", "d", "a", "").is_err());
+        assert!(store.create("", "", "", "any", "d", "a", "", "auto").is_err());
         assert!(store
-            .create(&"x".repeat(MAX_TITLE_CHARS + 1), "", "", "any", "d", "a", "")
+            .create(&"x".repeat(MAX_TITLE_CHARS + 1), "", "", "any", "d", "a", "", "auto")
             .is_err());
         assert!(store
-            .create("t", &"x".repeat(MAX_DETAIL_CHARS + 1), "", "any", "d", "a", "")
+            .create("t", &"x".repeat(MAX_DETAIL_CHARS + 1), "", "any", "d", "a", "", "auto")
             .is_err());
     }
 
@@ -812,7 +862,9 @@ mod tests {
     fn board_renders_counts_and_lines() {
         let (store, _p) = temp_store("board");
         assert!(store.format_board(10).contains("no federated tasks"));
-        let t = store.create("deploy", "", "proj", "mac", "box1", "a", "sess123456").unwrap();
+        let t = store.create("deploy", "", "proj", "mac", "box1", "a", "sess123456", "orca").unwrap();
+        assert_eq!(t.runner, "orca", "runner choice is stored");
+        assert_eq!(t.run_handle, "", "no handle until launched");
         store.claim("box2", "mac", "", "", None).unwrap().unwrap();
         let board = store.format_board(10);
         assert!(board.contains("1 total"));

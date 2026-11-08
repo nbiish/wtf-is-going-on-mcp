@@ -25,6 +25,7 @@ pub mod mlkem768;
 pub mod ntt_tables;
 pub mod rand;
 pub mod replicate;
+pub mod runner;
 pub mod session_crypto;
 pub mod sessions;
 pub mod sha256;
