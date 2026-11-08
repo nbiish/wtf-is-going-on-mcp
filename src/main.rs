@@ -22,9 +22,12 @@ use wtf::util;
 use wtf::VERSION;
 
 /// The portable hub skill, embedded at build time so the single binary can
-/// distribute it anywhere (`wtf skill install`). Kept byte-identical with
-/// `.agents/skills/wtf-is-going-on-mcp/SKILL.md` and the ainish-coder original.
-const MASTER_SKILL: &str = include_str!("../.agents/skills/wtf-is-going-on-mcp/SKILL.md");
+/// distribute it anywhere (`wtf skill install`). Authored in
+/// `ainish-coder/.agents/skills/wtf-is-going-on-mcp/` and copied here verbatim.
+// The embed source lives outside `.agents/skills/`, which the ainish-coder rules
+// system owns and rewrites from its pack selection — a skill file in there can be
+// deselected and deleted, which would break the build.
+const MASTER_SKILL: &str = include_str!("../skill/wtf-is-going-on-mcp.md");
 
 fn main() {
     std::process::exit(run());

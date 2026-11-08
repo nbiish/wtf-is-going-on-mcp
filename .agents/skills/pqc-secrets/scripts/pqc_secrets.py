@@ -2,7 +2,14 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "cryptography>=45.0",
+#     # cryptography>=47 is REQUIRED, not merely preferred: `asymmetric.mlkem`
+#     # (ML-KEM-768, FIPS 203) first appears in 47.0. The floor used to read
+#     # ">=45.0", which resolves to a cryptography WITHOUT mlkem, so the
+#     # module-level `from ... import mlkem` raised ImportError and EVERY
+#     # command died before argument parsing — `list`, `export`, `store` and
+#     # `verify` included. The failure surfaced as a bare traceback, so an
+#     # operator could not tell a missing dependency from a broken store.
+#     "cryptography>=47.0",
 #     # argon2-cffi is pinned for vault.pqc identity unwrapping (vault-first
 #     # export when a vault exists — Phase 1 parity with the Rust vault core).
 #     "argon2-cffi==25.1.0",
@@ -21,14 +28,22 @@ Post-quantum encryption for API keys and private data.
            hex/base64url/base85 formats, EFF-large-list diceware passphrases, entropy
            reported on stderr, secret ONLY on stdout (pipe-safe, never logged)
   pack     Read KEY=VALUE lines from stdin, encrypt, write ~/.config/pqc-secrets/secrets.bundle.json
-  export   Decrypt bundle, output shell 'export KEY=VALUE' lines to stdout
+           (--merge preserves keys already in the bundle)
+  set      Upsert one or more keys without disturbing the rest (NAME=VALUE ... or --stdin)
+  del      Delete one or more keys, preserving the rest (NAME ...)
+  export   Decrypt bundle, output shell 'export KEY=VALUE' lines to stdout (--json for tooling)
   verify   Check bundle integrity, list key names (no values)
-  list     List secret names only (no values) — inspect what is set / needs renaming
+  list     List secret names only (no values) — inspect what is set / needs renaming (--json)
+  store    Show which bundle this platform resolves (env, host-interop, home) — --json
   rename   Rename one secret NAME (value preserved); previous bundle backed up first
+  sync     Cross-machine / cross-store sync (per-identity re-pack)
   migrate  Migrate keychain entry from old account name to new account name
 
 Environment variables:
   PQC_USE_KEYCHAIN           Set to "true" to opt-in to macOS Keychain or Linux Secret Service (default: false, uses encrypted file store)
+  PQC_CONFIG_DIR             Explicit store directory (highest precedence)
+  PQC_SECRETS_DIR            Contract alias for PQC_CONFIG_DIR
+  PQC_STORE_ISOLATED         Set to "1" to keep per-environment stores (disables WSL<->Windows host interop)
   PQC_KEYCHAIN_ACCOUNT       Keychain account name (default: pqc-secrets-key)
   PQC_KEYCHAIN_ACCOUNT_OLD   Old account name for migrate command (default: default)
   PQC_KEYCHAIN_ACCOUNT_NEW   New account name for migrate command (default: pqc-secrets-key)
@@ -43,6 +58,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -50,9 +66,36 @@ import uuid
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import mlkem as _native_mlkem
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+# ML-KEM-768 (FIPS 203) is the store's key-encapsulation primitive, so without it every command —
+# including read-only ones like `list` and `store` — is unusable. Import it defensively and explain
+# the fix, because the bare ImportError named an internal module path and read like a corrupted
+# install rather than an out-of-date dependency.
+try:
+    from cryptography.hazmat.primitives.asymmetric import mlkem as _native_mlkem
+except ImportError as _mlkem_error:  # pragma: no cover - environment guard
+    import cryptography as _cryptography
+
+    _engine = Path(__file__).resolve()
+    sys.stderr.write(
+        "pqc-secrets: the installed 'cryptography' has no ML-KEM-768 support.\n"
+        f"  installed: cryptography {getattr(_cryptography, '__version__', 'unknown')}\n"
+        "  required:  cryptography >= 47.0 (asymmetric.mlkem first shipped in 47.0)\n"
+        "\n"
+        "Fix (recommended, uses this script's pinned dependencies):\n"
+        f"  uv run --script {_engine} --help\n"
+        "\n"
+        "Or install the floor directly:\n"
+        "  python3 -m pip install --upgrade 'cryptography>=47.0'\n"
+        "\n"
+        "If the dependency is installed for a different interpreter than the one running this\n"
+        f"script, note that the active interpreter is {sys.executable}\n"
+        f"(cryptography resolved from {Path(_cryptography.__file__).parent}).\n"
+        f"\nOriginal error: {_mlkem_error}\n"
+    )
+    raise SystemExit(78)  # EX_CONFIG
 
 # ML-KEM-768 private-key material lengths (FIPS 203):
 #   64 bytes   = seed form (d || z) — stored by this engine since 2026-08-20;
@@ -103,7 +146,187 @@ def _kem_decapsulate(private_key: bytes, ciphertext: bytes) -> bytes:
         f"(expected {KEM_SEED_LEN}-byte seed or {KEM_EXPANDED_LEN}-byte expanded form)"
     )
 
-CONFIG_DIR = Path(os.environ.get("PQC_CONFIG_DIR") or (Path.home() / ".config" / "pqc-secrets"))
+def _is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        return False
+
+
+def _store_has_bundle(path: Path) -> bool:
+    return path.is_dir() and (path / "secrets.bundle.json").exists()
+
+
+def _wsl_windows_store() -> Path | None:
+    """The Windows host store as seen from WSL (/mnt/<drive>/Users/<user>)."""
+    users = Path("/mnt/c/Users")
+    if not _is_wsl() or not users.is_dir():
+        return None
+    candidates: list[Path] = []
+    preferred = os.environ.get("USER") or getpass.getuser()
+    if preferred:
+        candidates.append(users / preferred / ".config" / "pqc-secrets")
+    try:
+        for entry in sorted(users.iterdir()):
+            lowered = entry.name.lower()
+            if lowered in {"public", "default", "all users"} or entry.name.startswith("."):
+                continue
+            candidates.append(entry / ".config" / "pqc-secrets")
+    except OSError:
+        pass
+    for candidate in candidates:
+        if _store_has_bundle(candidate):
+            return candidate
+    return None
+
+
+def _decode_wsl_list(raw: bytes) -> list[str]:
+    """Distro names from `wsl.exe -l -q`, tolerant of the encoding it actually returned.
+
+    `wsl.exe` writes UTF-16-LE on some Windows builds and plain UTF-8 on others, and which one you
+    get is not something the caller controls. Decoding unconditionally as UTF-16-LE turned
+    "Ubuntu\\r\\ndocker-desktop" into mojibake (払湵畴…), so every distro name was garbage, the
+    `\\\\wsl.localhost\\<distro>\\home` probe could never match, and Windows silently saw zero keys
+    while the secrets sat in the WSL store. Detect the encoding from the byte shape instead.
+    """
+    if not raw:
+        return []
+    # UTF-16-LE ASCII text is padded with NUL bytes; UTF-8 almost never is.
+    has_nul = b"\x00" in raw
+    if has_nul:
+        text = raw.decode("utf-16-le", errors="ignore")
+    else:
+        text = raw.decode("utf-8", errors="ignore")
+    names: list[str] = []
+    for line in text.splitlines():
+        # Some builds emit a UTF-16 BOM or stray NULs even on the UTF-8 path.
+        name = line.replace("\x00", "").replace("\ufeff", "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _windows_wsl_store() -> Path | None:
+    """The WSL user store as seen from Windows (\\\\wsl.localhost\\<distro>\\home\\<user>)."""
+    if os.name != "nt":
+        return None
+    try:
+        raw = subprocess.run(
+            ["wsl.exe", "-l", "-q"],
+            capture_output=True,
+            timeout=5,
+            shell=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # Both `\\wsl.localhost` (current) and `\\wsl$` (legacy) are attempted: either may be the one
+    # the running Windows build exposes, and the legacy form still works on older builds.
+    for distro in _decode_wsl_list(raw):
+        for share in ("wsl.localhost", "wsl$"):
+            home_root = Path(f"\\\\{share}\\{distro}\\home")
+            try:
+                homes = [entry for entry in home_root.iterdir() if entry.is_dir()]
+            except OSError:
+                continue
+            for home in homes:
+                candidate = home / ".config" / "pqc-secrets"
+                if _store_has_bundle(candidate):
+                    return candidate
+    return None
+
+
+def _store_key_count(path: Path) -> int:
+    """How many secrets a store's bundle holds, or 0 when it cannot be read.
+
+    The bundle is encrypted, so counting means decrypting that store's own
+    private key and payload. This is deliberately best-effort and never raises:
+    a store whose key will not load (wrong identity, a stale Windows key, a
+    copy taken from another machine) cannot claim precedence, and the caller
+    falls through to the next candidate instead of dying during import.
+
+    Runs at import time, so it must stay cheap: it reads two small files and
+    does one ML-KEM decapsulation per candidate store.
+    """
+    bundle_path = path / "secrets.bundle.json"
+    key_path = path / "private.key.enc"
+    kek_path = path / "machine.kek"
+    if not bundle_path.is_file():
+        return 0
+    try:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        # A vault-backed store keeps its identity in vault.pqc; that read path is
+        # passphrase-gated, so such a store is treated as readable-but-unknown
+        # and only claims precedence on the existence of a bundle.
+        if (path / "vault.pqc").is_file():
+            return 1
+        if not (key_path.is_file() and kek_path.is_file()):
+            return 0
+        payload = json.loads(key_path.read_text(encoding="utf-8"))
+        nonce = base64.b64decode(payload["nonce_b64"])
+        ciphertext = base64.b64decode(payload["ciphertext_b64"])
+        kek = kek_path.read_bytes()
+        sk = AESGCM(kek).decrypt(nonce, ciphertext, b"pqc-secrets:v1:private-key")
+        decrypted = _decrypt_bundle(bundle, sk)
+        entries = decrypted.get("secrets", decrypted) if isinstance(decrypted, dict) else {}
+        return len(entries) if isinstance(entries, dict) else 0
+    except Exception:
+        return 0
+
+
+def resolve_store() -> tuple[Path, str]:
+    """Resolve the ONE store every tool on this machine should share.
+
+    Order: explicit env (PQC_CONFIG_DIR, then the contract's PQC_SECRETS_DIR
+    alias) → the local ~/.config store → host-interop store → ~/.config.
+
+    Precedence rule (2026-11-08): a store is only a candidate for "the" store
+    when it holds keys, and between two that both do, the fuller one wins. Before
+    this, WSL returned the Windows host store merely because it EXISTED. On the
+    reference machine that store held a single key while the local one held 24,
+    so `pqc-secrets pack` (the documented way to add a key) wrote to a 1-key
+    bundle the router did not treat as primary, and `pqc-secrets list` showed one
+    key next to a router reading twenty-four. That reads as "keys are not
+    persisting" and it is not survivable by any single-tool fix.
+
+    Host interop is preserved, not removed: when the local store is empty the
+    Windows store is still used, so a Windows-managed identity keeps working. The
+    difference is that an empty store no longer outranks a populated one.
+
+    PQC_STORE_ISOLATED=1 keeps per-environment stores and skips interop, which
+    is the escape hatch for intentionally separate identities.
+    """
+    explicit = os.environ.get("PQC_CONFIG_DIR") or os.environ.get("PQC_SECRETS_DIR")
+    if explicit:
+        return Path(explicit).expanduser(), "env"
+    local = Path.home() / ".config" / "pqc-secrets"
+    if os.environ.get("PQC_STORE_ISOLATED") == "1":
+        return local, "isolated"
+
+    local_has_bundle = _store_has_bundle(local)
+    local_keys = _store_key_count(local) if local_has_bundle else 0
+
+    def _prefer_host(host: Path | None) -> tuple[Path, str] | None:
+        """Host store beats local only when it actually holds more keys."""
+        if host is None:
+            return None
+        host_keys = _store_key_count(host)
+        if not local_has_bundle or host_keys > local_keys:
+            return host, "host-interop"
+        return None
+
+    if _is_wsl():
+        # A populated local store is the answer; interop only fills an empty one.
+        if local_has_bundle and local_keys > 0:
+            return local, "home"
+        return _prefer_host(_wsl_windows_store()) or (local, "home")
+    if os.name == "nt":
+        if local_has_bundle and local_keys > 0:
+            return local, "home"
+        return _prefer_host(_windows_wsl_store()) or (local, "home")
+    return local, "home"
+
+
+CONFIG_DIR, STORE_SOURCE = resolve_store()
 PUBKEY_PATH = CONFIG_DIR / "recipient.pub"
 BUNDLE_PATH = CONFIG_DIR / "secrets.bundle.json"
 PRIVATE_KEY_ENC_PATH = CONFIG_DIR / "private.key.enc"
@@ -770,8 +993,22 @@ def _load_public_key() -> bytes:
     return bytes.fromhex(raw)
 
 
-def _encrypt_entries_to_bundle(entries: dict[str, str]) -> None:
-    """Encrypt entries (AES-256-GCM payload, ML-KEM-768 keywrap) and write the bundle."""
+def _backup_bundle() -> Path | None:
+    """Copy the current bundle alongside itself before a rewrite (mode 0600)."""
+    if not BUNDLE_PATH.exists():
+        return None
+    keep = BUNDLE_PATH.with_name(BUNDLE_PATH.name + f".bak.{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
+    shutil.copy2(BUNDLE_PATH, keep)
+    keep.chmod(0o600)
+    return keep
+
+
+def _encrypt_entries_to_bundle(entries: dict[str, str]) -> Path | None:
+    """Encrypt entries (AES-256-GCM payload, ML-KEM-768 keywrap) and write the bundle atomically.
+
+    The previous bundle is backed up before the atomic replace, so a failed or
+    interrupted write can never leave the store without a readable bundle.
+    """
     pk = _load_public_key()
 
     # Generate random data key (32 bytes)
@@ -816,35 +1053,40 @@ def _encrypt_entries_to_bundle(entries: dict[str, str]) -> None:
         },
     }
 
-    BUNDLE_PATH.write_text(json.dumps(bundle, indent=2, sort_keys=True))
-    BUNDLE_PATH.chmod(0o600)
+    backup = _backup_bundle()
+    BUNDLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = BUNDLE_PATH.with_name(BUNDLE_PATH.name + f".tmp.{os.getpid()}")
+    tmp_path.write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.chmod(0o600)
+    os.replace(tmp_path, BUNDLE_PATH)
     print(f"Secrets packed: {len(entries)} keys -> {BUNDLE_PATH}")
+    if backup is not None:
+        print(f"Backup: {backup}")
+    return backup
 
 
-def cmd_pack() -> None:
-    """Read KEY=VALUE lines from stdin, encrypt via AES-256-GCM + ML-KEM-768.
+def _reject_quoted_values(quoted: list[str], command: str) -> None:
+    if not quoted:
+        return
+    print(
+        "ERROR: refused to store shell-quoted value(s) for: "
+        + ", ".join(sorted(quoted))
+        + "\n"
+        "  These values arrived wrapped in single quotes (KEY='value'); storing\n"
+        "  them as-is would keep the quote characters literally — this caused\n"
+        "  the 2026-08-30 incident where packed values contained stray quotes.\n"
+        "  Strip the shell quotes first and pass plain KEY=value input:\n"
+        f"    printf 'KEY=value\\n' | pqc-secrets {command}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
-    Produces a Rust-compatible bundle with keywrap layer and AAD.
 
-    Input hygiene (hardened 2026-08-30 after the literal-quote incident):
-    - Values arriving shell-quoted (KEY='value') are REFUSED, not stored —
-      wrapping quotes would otherwise be kept as literal value characters.
-      Pipe plain KEY=value lines.
-    - Values containing '$' or '`' are stored literally; a non-fatal
-      warning is printed because such values never expand at eval time.
-    """
-    _ensure_config_dir()
-
-    lines = sys.stdin.read().strip()
-    if not lines:
-        print("ERROR: No input provided on stdin.", file=sys.stderr)
-        sys.exit(1)
-
-    # Parse KEY=VALUE pairs
+def _parse_key_value_input(text: str) -> tuple[dict[str, str], list[str]]:
+    """Parse KEY=VALUE lines; returns (entries, shell_quoted_names)."""
     entries: dict[str, str] = {}
-    shell_quoted: list[str] = []
-    expansion_chars: list[str] = []
-    for line in lines.split("\n"):
+    quoted: list[str] = []
+    for line in text.split("\n"):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -854,40 +1096,151 @@ def cmd_pack() -> None:
         key = key.strip()
         value = value.strip()
         if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
-            shell_quoted.append(key)
-        elif "$" in value or "`" in value:
-            expansion_chars.append(key)
+            quoted.append(key)
         entries[key] = value
+    return entries, quoted
 
+
+def _warn_expansion_chars(entries: dict[str, str]) -> None:
+    expansion = sorted(name for name, value in entries.items() if "$" in value or "`" in value)
+    if not expansion:
+        return
+    print(
+        "WARNING: value(s) for "
+        + ", ".join(expansion)
+        + " contain '$' or '`'; stored literally. On export they are\n"
+        "  single-quoted, so eval will NOT expand them (that is the safe default) —\n"
+        "  re-check these values if shell expansion was intended.",
+        file=sys.stderr,
+    )
+
+
+def cmd_pack(argv: list[str] | None = None) -> None:
+    """Read KEY=VALUE lines from stdin, encrypt via AES-256-GCM + ML-KEM-768.
+
+    `--merge` preserves keys already in the bundle and overwrites only the
+    names supplied on stdin (the upsert-safe mode); the default replaces the
+    whole bundle. Input hygiene (2026-08-30): shell-quoted values are refused.
+    """
+    argv = list(argv or [])
+    merge = "--merge" in argv
+    argv = [arg for arg in argv if arg != "--merge"]
+    if argv:
+        print(f"ERROR: unknown pack option(s): {' '.join(argv)}", file=sys.stderr)
+        sys.exit(3)
+    _ensure_config_dir()
+
+    lines = sys.stdin.read().strip()
+    if not lines:
+        print("ERROR: No input provided on stdin.", file=sys.stderr)
+        sys.exit(1)
+
+    entries, shell_quoted = _parse_key_value_input(lines)
     if not entries:
         print("ERROR: No valid KEY=VALUE pairs found in input.", file=sys.stderr)
         sys.exit(1)
+    _reject_quoted_values(shell_quoted, "pack")
+    _warn_expansion_chars(entries)
 
-    if shell_quoted:
-        print(
-            "ERROR: refused to pack shell-quoted value(s) for: "
-            + ", ".join(sorted(shell_quoted))
-            + "\n"
-            "  These values arrived wrapped in single quotes (KEY='value'); packing\n"
-            "  them as-is would store the quote characters literally — this caused\n"
-            "  the 2026-08-30 incident where packed values contained stray quotes.\n"
-            "  Strip the shell quotes first and pipe plain KEY=value lines:\n"
-            "    printf 'KEY=value\\n' | pqc-secrets pack",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if expansion_chars:
-        print(
-            "WARNING: value(s) for "
-            + ", ".join(sorted(expansion_chars))
-            + " contain '$' or '`'; stored literally. On export they are\n"
-            "  single-quoted, so eval will NOT expand them (that is the safe default) —\n"
-            "  re-check these values if shell expansion was intended.",
-            file=sys.stderr,
-        )
+    if merge and BUNDLE_PATH.exists():
+        entries = {**_read_entries(), **entries}
 
     _encrypt_entries_to_bundle(entries)
+
+
+def cmd_set(argv: list[str] | None = None) -> None:
+    """Upsert one or more secrets without disturbing the rest of the bundle.
+
+    Forms:
+      pqc-secrets set NAME=VALUE [NAME2=VALUE2 ...]
+      pqc-secrets set NAME VALUE
+      printf 'NAME=VALUE\\n' | pqc-secrets set --stdin
+
+    This is the reusable-key path: run it once per key, from any platform, and
+    the store keeps every other key untouched.
+    """
+    argv = list(argv or [])
+    quiet = "--quiet" in argv
+    argv = [arg for arg in argv if arg != "--quiet"]
+
+    entries: dict[str, str] = {}
+    if argv == ["--stdin"]:
+        entries, _quoted_from_stdin = _parse_key_value_input(sys.stdin.read())
+    elif len(argv) == 2 and "=" not in argv[0]:
+        entries[argv[0].strip()] = argv[1]
+    elif argv and all("=" in arg for arg in argv):
+        for pair in argv:
+            key, _, value = pair.partition("=")
+            entries[key.strip()] = value
+    else:
+        print(
+            "Usage: pqc-secrets set NAME=VALUE [NAME2=VALUE2 ...]\n"
+            "       pqc-secrets set NAME VALUE\n"
+            "       printf 'NAME=VALUE\\n' | pqc-secrets set --stdin",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+
+    _reject_quoted_values(
+        [name for name, value in entries.items() if len(value) >= 2 and value.startswith("'") and value.endswith("'")],
+        "set",
+    )
+    invalid = sorted(name for name in entries if not _ENV_NAME_RE.match(name))
+    if invalid:
+        print(f"ERROR: invalid key name(s): {', '.join(invalid)} (must match ^[A-Z0-9_]+$)", file=sys.stderr)
+        sys.exit(1)
+    empty = sorted(name for name in entries if not entries[name])
+    if empty:
+        print(f"ERROR: empty value(s) for: {', '.join(empty)}", file=sys.stderr)
+        sys.exit(1)
+
+    _ensure_config_dir()
+    if BUNDLE_PATH.exists():
+        existing = _read_entries()
+    else:
+        existing = {}
+    added = sum(1 for name in entries if name not in existing)
+    updated = len(entries) - added
+    merged = {**existing, **entries}
+    backup = _encrypt_entries_to_bundle(merged)
+    if not quiet:
+        print(
+            f"Set {len(entries)} key(s) ({added} added, {updated} updated); "
+            f"{len(merged)} total in {BUNDLE_PATH}"
+            + (f" (backup: {backup})" if backup else "")
+        )
+
+
+def cmd_del(argv: list[str] | None = None) -> None:
+    """Delete one or more secret names, preserving every other entry.
+
+    Idempotent: names that are already absent are reported, not treated as an
+    error. Values are never printed.
+    """
+    names = [name.strip() for name in list(argv or []) if name.strip()]
+    if not names:
+        print("Usage: pqc-secrets del NAME [NAME2 ...]", file=sys.stderr)
+        sys.exit(3)
+    invalid = sorted(name for name in names if not _ENV_NAME_RE.match(name))
+    if invalid:
+        print(f"ERROR: invalid key name(s): {', '.join(invalid)} (must match ^[A-Z0-9_]+$)", file=sys.stderr)
+        sys.exit(1)
+    if not BUNDLE_PATH.exists():
+        print(_NO_BUNDLE_MSG, file=sys.stderr)
+        sys.exit(1)
+
+    entries = _read_entries()
+    removed = [name for name in names if name in entries]
+    missing = [name for name in names if name not in entries]
+    if removed:
+        for name in removed:
+            del entries[name]
+        backup = _encrypt_entries_to_bundle(entries)
+        print(f"Deleted {len(removed)} key(s): {', '.join(removed)}; {len(entries)} total" + (f" (backup: {backup})" if backup else ""))
+    else:
+        print(f"Nothing to delete: {', '.join(missing)} not present in {BUNDLE_PATH}")
+    if missing and removed:
+        print(f"Not present (skipped): {', '.join(missing)}", file=sys.stderr)
 
 
 def _decrypt_bundle(bundle: dict, sk: bytes) -> dict[str, str]:
@@ -938,8 +1291,13 @@ def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\\''") + "'"
 
 
-def cmd_export() -> None:
-    """Decrypt bundle and output shell export lines (values shell-quoted)."""
+def cmd_export(argv: list[str] | None = None) -> None:
+    """Decrypt bundle and output shell export lines (values shell-quoted).
+
+    `--json` emits `{"secrets": {NAME: VALUE}}` for tooling; values are still
+    only written to stdout (same exposure as the shell form).
+    """
+    as_json = "--json" in list(argv or [])
     if not BUNDLE_PATH.exists():
         print(_NO_BUNDLE_MSG, file=sys.stderr)
         sys.exit(1)
@@ -951,6 +1309,9 @@ def cmd_export() -> None:
     # Rust engine wraps secrets in {"secrets": {...}}; legacy packs directly
     entries = payload.get("secrets", payload) if isinstance(payload, dict) and "secrets" in payload else payload
 
+    if as_json:
+        print(json.dumps({"secrets": entries}, indent=2, sort_keys=True))
+        return
     for key, value in entries.items():
         print(f"export {key}={_shell_quote(value)}")
 
@@ -977,7 +1338,7 @@ _ENV_NAME_RE = re.compile(r"^[A-Z0-9_]+$")
 _NO_BUNDLE_MSG = (
     f"ERROR: No secrets bundle at {BUNDLE_PATH}.\n"
     "Fresh machine? First run:  pqc-secrets keygen\n"
-    "Then add keys:             printf 'K=V\\n' | pqc-secrets pack\n"
+    "Then add keys:             pqc-secrets set LOCALROUTER_ZAI_API_KEY=...\n"
     "Inspect names (no values): pqc-secrets list"
 )
 
@@ -994,17 +1355,143 @@ def _read_entries() -> dict[str, str]:
     return {str(k): str(v) for k, v in entries.items()}
 
 
-def cmd_list() -> None:
+def cmd_list(argv: list[str] | None = None) -> None:
     """List secret names only (never values) — the inspection surface for what
-    is set, what belongs to which tool prefix, and what needs renaming."""
+    is set, what belongs to which tool prefix, and what needs renaming.
+
+    `--json` emits {bundle, count, names} for tooling.
+    """
+    as_json = "--json" in list(argv or [])
     if not BUNDLE_PATH.exists():
         print(_NO_BUNDLE_MSG, file=sys.stderr)
         sys.exit(1)
     entries = _read_entries()
     names = sorted(entries.keys())
+    if as_json:
+        print(json.dumps({"bundle": str(BUNDLE_PATH), "count": len(names), "names": names}, indent=2, sort_keys=True))
+        return
     print(f"{len(names)} secret name(s) in {BUNDLE_PATH}:")
     for name in names:
         print(f"  {name}")
+
+
+def _other_store_candidates() -> list[dict]:
+    """Every other store this platform could have used, with what it holds.
+
+    Divergence visibility (2026-11-08): `store` used to report only the winner.
+    When a second store exists — the WSL<->Windows pair is the common case — an
+    operator needs to see it, because a key written to the loser looks like it
+    vanished. Each entry is name-of-store plus a key COUNT only; no values are
+    read out and none are printed.
+    """
+    seen = {str(CONFIG_DIR)}
+    out: list[dict] = []
+    local = Path.home() / ".config" / "pqc-secrets"
+    candidates: list[Path] = []
+    if _is_wsl():
+        host = _wsl_windows_store()
+        if host is not None:
+            candidates.append(host)
+        candidates.append(local)
+    elif os.name == "nt":
+        candidates.append(local)
+        wsl = _windows_wsl_store()
+        if wsl is not None:
+            candidates.append(wsl)
+    else:
+        candidates.append(local)
+
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        has_bundle = _store_has_bundle(path)
+        out.append({
+            "store": key,
+            "bundleExists": has_bundle,
+            # A foreign-identity store cannot be decrypted here, so it honestly
+            # reports 0 rather than a number it did not verify.
+            "keyCount": _store_key_count(path) if has_bundle else 0,
+            "usable": _store_key_count(path) > 0 if has_bundle else False,
+        })
+    return out
+
+
+def cmd_store(argv: list[str] | None = None) -> None:
+    """Report which store this process resolves — the cross-platform anchor.
+
+    Answers "am I reading the same bundle as the other shell/OS?" `--json` for
+    tooling. Also reports any OTHER store on this machine and whether it holds
+    keys, so a split between environments is visible instead of silent.
+    """
+    as_json = "--json" in list(argv or [])
+    bundle_exists = BUNDLE_PATH.exists()
+    names: list[str] = []
+    read_error: str | None = None
+    if bundle_exists:
+        try:
+            names = sorted(_read_entries().keys())
+        except SystemExit:
+            raise
+        except Exception as exc:  # corrupt bundle must not break `store`
+            read_error = str(exc)
+    others = _other_store_candidates()
+    # A second store that exists but cannot be read is the exact shape of the
+    # WSL/Windows split: name it explicitly so nobody has to infer it.
+    shadowed = [o for o in others if o["bundleExists"] and not o["usable"]]
+    payload = {
+        "store": str(CONFIG_DIR),
+        "source": STORE_SOURCE,
+        "platform": "wsl" if _is_wsl() else sys.platform,
+        "bundle": str(BUNDLE_PATH),
+        "bundleExists": bundle_exists,
+        "keys": names,
+        "keyCount": len(names),
+        "isolated": os.environ.get("PQC_STORE_ISOLATED") == "1",
+        "explicitEnv": bool(os.environ.get("PQC_CONFIG_DIR") or os.environ.get("PQC_SECRETS_DIR")),
+        "otherStores": others,
+    }
+    # Present only when something is worth the operator's attention.
+    if shadowed:
+        payload["shadowedStores"] = shadowed
+    if read_error:
+        payload["readError"] = read_error
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    print(f"store:      {payload['store']}")
+    print(f"source:     {payload['source']}")
+    print(f"platform:   {payload['platform']}")
+    print(f"bundle:     {payload['bundle']} ({'present' if bundle_exists else 'missing'})")
+    print(f"keys:       {len(names) if not read_error else 'unreadable'}")
+    if names:
+        print(f"names:      {', '.join(names)}")
+    # Divergence is the operator-facing half of this command: a second store on
+    # this machine that holds keys looks to the user like "my keys vanished"
+    # when the CLI writes there, so name it and say which one won.
+    if others:
+        print("also found: ")
+        for other in others:
+            if other["bundleExists"]:
+                state = (
+                    f"{other['keyCount']} key(s), not selected"
+                    if other["usable"]
+                    else "present but unreadable here (different identity)"
+                )
+                print(f"            {other['store']}  —  {state}")
+            else:
+                print(f"            {other['store']}  —  no bundle")
+        if shadowed:
+            print(
+                "            ^ this machine has more than one store. A key written with "
+                "'pqc-secrets pack' goes to the one above; copy it with "
+                "'pqc-secrets sync' if the other is the one you meant."
+            )
+    print(
+        "hint:       explicit PQC_CONFIG_DIR/PQC_SECRETS_DIR wins; "
+        "PQC_STORE_ISOLATED=1 keeps per-environment stores"
+    )
 
 
 def cmd_rename(old_name: str, new_name: str) -> None:
@@ -1041,9 +1528,254 @@ def cmd_rename(old_name: str, new_name: str) -> None:
     print(f"Renamed {old_name} -> {new_name} (backup: {backup})")
 
 
+class _ConfigDirScope:
+    """Temporarily re-point the module-level store paths at another config dir.
+
+    `sync` reads one store and writes others; every helper in this module
+    resolves paths from these globals at call time, so swapping them under a
+    context manager is the smallest safe override. Globals are always restored
+    on exit, including on exceptions.
+    """
+
+    _PATH_GLOBALS = (
+        "CONFIG_DIR", "PUBKEY_PATH", "BUNDLE_PATH",
+        "PRIVATE_KEY_ENC_PATH", "KEK_PATH", "VAULT_PATH",
+    )
+
+    def __init__(self, config_dir: Path) -> None:
+        self._dir = config_dir
+        self._saved: dict = {}
+
+    def __enter__(self) -> "_ConfigDirScope":
+        g = globals()
+        self._saved = {name: g[name] for name in self._PATH_GLOBALS}
+        g["CONFIG_DIR"] = self._dir
+        g["PUBKEY_PATH"] = self._dir / "recipient.pub"
+        g["BUNDLE_PATH"] = self._dir / "secrets.bundle.json"
+        g["PRIVATE_KEY_ENC_PATH"] = self._dir / "private.key.enc"
+        g["KEK_PATH"] = self._dir / "machine.kek"
+        g["VAULT_PATH"] = self._dir / "vault.pqc"
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        g = globals()
+        for name, value in self._saved.items():
+            g[name] = value
+
+
+def _shell_unquote(field: str) -> str:
+    """Exact inverse of _shell_quote for our own export format.
+
+    Accepts the single-quoted field produced by _shell_quote ('...') and
+    reverses the '\'' escape. Refuses anything else — sync never guesses.
+    """
+    if len(field) >= 2 and field.startswith("'") and field.endswith("'"):
+        inner = field[1:-1]
+        if "\\'" not in inner.replace("'\\''", ""):
+            return inner.replace("'\\''", "'")
+    raise ValueError("value is not in pqc-secrets export quoting format")
+
+
+_EXPORT_LINE_RE = re.compile(r"^export ([A-Z0-9_]+)=('(?:[^']|'\\'')*')$")
+
+
+def _parse_export_lines(text: str) -> dict[str, str]:
+    """Parse `export KEY='value'` lines (our own export format) into a mapping."""
+    entries: dict[str, str] = {}
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        match = _EXPORT_LINE_RE.match(line)
+        if not match:
+            print(
+                "ERROR: stdin is not in pqc-secrets export format "
+                "(expected: export KEY='value'). Refusing to guess.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        entries[match.group(1)] = _shell_unquote(match.group(2))
+    if not entries:
+        print("ERROR: no export lines found on stdin.", file=sys.stderr)
+        sys.exit(1)
+    return entries
+
+
+def cmd_sync(argv: list[str]) -> None:
+    """Re-pack one store's secrets into other stores' bundles, per-identity.
+
+    Cross-machine flow — WSL <-> Windows mounted dirs, second Linux store:
+
+        pqc-secrets sync --from ~/.config/pqc-secrets \\
+            --to /mnt/c/Users/<you>/.config/pqc-secrets
+
+    Remote machines (macOS / Linux over ssh) — values cross exactly once,
+    transport-encrypted, packed at the destination, never written to disk
+    in transit:
+
+        pqc-secrets sync --from ~/.config/pqc-secrets --stdout \\
+            | ssh host 'pqc-secrets sync --stdin --to ~/.config/pqc-secrets'
+
+    Semantics:
+    - Each target bundle is re-encrypted under ITS OWN store identity
+      (the recipient.pub in the target dir). No private key material ever
+      crosses stores or the network.
+    - Merge: target-only secrets are preserved; source wins on name
+      collisions. Existing target bundles are backed up alongside
+      themselves (mode 0600) before rewrite.
+    - Values are never printed and never touch disk in plaintext.
+    """
+    source_dir: Path | None = None
+    targets: list[Path] = []
+    from_stdin = False
+    to_stdout = False
+    dry_run = False
+    force = False
+
+    it = iter(argv)
+    for arg in it:
+        if arg == "--from":
+            source_dir = Path(next(it, ""))
+        elif arg == "--to":
+            targets.append(Path(next(it, "")))
+        elif arg == "--stdin":
+            from_stdin = True
+        elif arg == "--stdout":
+            to_stdout = True
+        elif arg == "--dry-run":
+            dry_run = True
+        elif arg == "--force":
+            force = True
+        else:
+            print(f"ERROR: unknown sync argument: {arg}", file=sys.stderr)
+            print(_SYNC_USAGE, file=sys.stderr)
+            sys.exit(1)
+
+    if from_stdin and source_dir is not None:
+        print("ERROR: --stdin and --from are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    if to_stdout and targets:
+        print("ERROR: --stdout and --to are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+
+    # ---- Source phase: resolve entries in memory, never printed ----------
+    if from_stdin:
+        entries = _parse_export_lines(sys.stdin.read())
+        source_label = "stdin"
+    else:
+        source = source_dir if source_dir is not None else CONFIG_DIR
+        if not source.exists():
+            print(f"ERROR: source store dir does not exist: {source}", file=sys.stderr)
+            sys.exit(1)
+        with _ConfigDirScope(source):
+            if not BUNDLE_PATH.exists():
+                print(
+                    f"ERROR: No secrets bundle at {BUNDLE_PATH}.\n"
+                    "Fresh store? First run:  pqc-secrets keygen\n"
+                    "Then add keys:           printf 'K=V\\n' | pqc-secrets pack",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            entries = _read_entries()
+        source_label = str(source)
+
+    # ---- --stdout lane: emit export-format lines for a remote pipe -------
+    if to_stdout:
+        for key in sorted(entries):
+            print(f"export {key}={_shell_quote(entries[key])}")
+        return
+
+    if not targets:
+        print(_SYNC_USAGE, file=sys.stderr)
+        sys.exit(1)
+
+    # ---- Target phase: merge + re-encrypt per target identity ------------
+    if dry_run:
+        print(f"sync (dry-run): {len(entries)} key(s) from {source_label}")
+    for target in targets:
+        if source_label != "stdin" and target.resolve() == Path(source_label).resolve():
+            print(f"sync: skipping {target} (source and target are the same store)")
+            continue
+        if not target.exists():
+            print(f"sync: target store dir does not exist: {target} — skipped "
+                  "(run 'pqc-secrets keygen' there first)", file=sys.stderr)
+            continue
+
+        with _ConfigDirScope(target):
+            if not PUBKEY_PATH.exists():
+                print(f"sync: no recipient.pub in {target} — skipped "
+                      "(run 'pqc-secrets keygen' there first)", file=sys.stderr)
+                continue
+
+            existing: dict[str, str] = {}
+            readable = BUNDLE_PATH.exists()
+            if readable:
+                try:
+                    existing = _read_entries()
+                except SystemExit:
+                    raise
+                except Exception as err:
+                    readable = False
+                    if not force:
+                        print(
+                            f"sync: existing bundle in {target} is not readable "
+                            f"under this store's identity ({err}); skipped. "
+                            "Re-run with --force to replace it (backup kept).",
+                            file=sys.stderr,
+                        )
+                        continue
+
+            merged = dict(existing)
+            added = sorted(set(entries) - set(existing))
+            updated = sorted(set(entries) & set(existing))
+            for key, value in entries.items():
+                merged[key] = value
+
+            if dry_run:
+                print(f"sync (dry-run) -> {target}: {len(merged)} key(s) would be "
+                      f"packed (added {len(added)}, updated {len(updated)}, "
+                      f"kept {len(existing) - len(updated)})")
+                for key in added:
+                    print(f"  + {key}")
+                for key in updated:
+                    print(f"  ~ {key}")
+                continue
+
+            backup = None
+            if BUNDLE_PATH.exists():
+                backup = BUNDLE_PATH.with_name(
+                    BUNDLE_PATH.name + f".bak.{__import__('datetime').datetime.now(__import__('datetime').UTC).strftime('%Y%m%dT%H%M%SZ')}"
+                )
+                backup.write_text(BUNDLE_PATH.read_text())
+                backup.chmod(0o600)
+
+            _encrypt_entries_to_bundle(merged)
+            detail = (
+                f"added {len(added)}, updated {len(updated)}, "
+                f"kept {len(existing) - len(updated)}"
+                + ("" if readable else " [replaced unreadable bundle]")
+            )
+            print(f"synced {len(merged)} key(s) -> {target} ({detail})")
+            if backup is not None:
+                print(f"  backup: {backup}")
+    print(f"sync: {len(entries)} key(s) from {source_label} processed")
+
+
+_SYNC_USAGE = (
+    "Usage: pqc_secrets.py sync (--from <DIR> | --stdin) [--to <DIR>]... "
+    "[--stdout] [--dry-run] [--force]\n"
+    "  --from <DIR>   source store dir (default: ambient PQC_CONFIG_DIR / ~/.config/pqc-secrets)\n"
+    "  --stdin        read source entries as export-format lines from stdin\n"
+    "  --to <DIR>     target store dir (repeatable); re-packed under the target's own identity\n"
+    "  --stdout       emit export-format lines (for an ssh pipe) instead of packing\n"
+    "  --dry-run      print the per-target plan (names only) without writing\n"
+    "  --force        replace a target bundle that is unreadable under the target identity\n"
+    "Values never touch disk in plaintext and are never printed."
+)
+
 ENGINE_NAME = "py-native-mlkem"
-ENGINE_BUILD_DATE = "2026-08-29"
-ENGINE_COMMANDS = "keygen gen pack export verify list rename migrate setup version"
+ENGINE_BUILD_DATE = "2026-10-29"
+ENGINE_COMMANDS = "keygen gen pack set del export verify list rename sync store migrate setup version"
 BUNDLE_SCHEMA = "v1 (ML-KEM-768 keywrap + AES-256-GCM data, aad)"
 
 
@@ -1089,7 +1821,7 @@ def cmd_migrate() -> None:
     print(f"Migrated keychain entry: service={KEYCHAIN_SERVICE}, account={old_account} -> {new_account}")
 
 
-USAGE_LINE = "Usage: pqc_secrets.py <keygen|gen|pack|export|verify|list|rename|migrate|version>"
+USAGE_LINE = "Usage: pqc_secrets.py <keygen|gen|pack|set|del|export|verify|list|rename|sync|store|migrate|version>"
 NAMING_LINE = "Naming:  always prefix keys with the consuming tool's name - LOCALROUTER_*_API_KEY, AINISHCODER_*_API_KEY, ..."
 
 
@@ -1105,18 +1837,26 @@ def main() -> None:
     elif cmd == "gen":
         cmd_gen(sys.argv[2:])
     elif cmd == "pack":
-        cmd_pack()
+        cmd_pack(sys.argv[2:])
+    elif cmd == "set":
+        cmd_set(sys.argv[2:])
+    elif cmd == "del":
+        cmd_del(sys.argv[2:])
     elif cmd == "export":
-        cmd_export()
+        cmd_export(sys.argv[2:])
     elif cmd == "verify":
         cmd_verify()
     elif cmd == "list":
-        cmd_list()
+        cmd_list(sys.argv[2:])
+    elif cmd == "store":
+        cmd_store(sys.argv[2:])
     elif cmd == "rename":
         if len(sys.argv) != 4:
             print("Usage: pqc_secrets.py rename <OLD_NAME> <NEW_NAME>", file=sys.stderr)
             sys.exit(1)
         cmd_rename(sys.argv[2], sys.argv[3])
+    elif cmd == "sync":
+        cmd_sync(sys.argv[2:])
     elif cmd == "migrate":
         cmd_migrate()
     elif cmd == "version":

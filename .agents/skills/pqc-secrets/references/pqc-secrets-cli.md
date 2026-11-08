@@ -67,10 +67,14 @@ Encrypt `KEY=VAL` lines and write a fresh bundle.
 
 | | |
 |---|---|
-| Args | `[--in PATH] [--bundle PATH]` |
+| Args | `[--in PATH] [--bundle PATH] [--merge]` |
 | Stdin | `KEY=VAL` lines, one per secret (stdin default if `--in` omitted) |
 | Exit codes | 0 success, 1 bundle write failed, 2 recipient.pub missing |
-| Writes | Bundle, `audit.log` (event: not emitted — pack is silent) |
+| Writes | Bundle (atomic replace), `secrets.bundle.json.bak.<UTC>`, `audit.log` (event: not emitted — pack is silent) |
+
+`--merge` decrypts the existing bundle and overlays the supplied names, so a
+pack can add or rotate one key without dropping the rest. The default remains
+replace-the-bundle for backward compatibility; `set` is the friendlier form.
 
 **Example:**
 ```bash
@@ -80,26 +84,80 @@ Wrote 2 keys to /Users/nbiish/.config/pqc-secrets/secrets.bundle.json (4 KB)
 
 **Stderr format:** single line `Wrote N keys to <path> (<size>)`.
 
+### `pqc-secrets set`
+
+Upsert one or more secrets, preserving every other key in the bundle. This is
+the **reusable-key path**: run it once per key from any platform and the store
+keeps everything else untouched.
+
+| | |
+|---|---|
+| Forms | `set NAME=VALUE [NAME2=VALUE2 ...]` · `set NAME VALUE` · `set --stdin` (KEY=VALUE lines) |
+| Flags | `--quiet` |
+| Exit codes | 0 success, 1 invalid name/empty value/quoted value, 2 recipient.pub missing, 3 usage |
+| Writes | Bundle (atomic replace), `secrets.bundle.json.bak.<UTC>` when a bundle already exists |
+| Safety | Names must match `^[A-Z0-9_]+$`; shell-quoted values are refused; values never echoed |
+
+**Example:**
+```bash
+$ printf 'LOCALROUTER_ZAI_API_KEY=...\nLOCALROUTER_XIAOMI_MIMO_API_KEY=...\n' | pqc-secrets set --stdin
+Set 2 key(s) (2 added, 0 updated); 2 total in ~/.config/pqc-secrets/secrets.bundle.json
+```
+
+### `pqc-secrets del`
+
+Delete one or more secret **names**, preserving every other entry. Idempotent:
+absent names are reported as skipped rather than failing.
+
+| | |
+|---|---|
+| Args | `NAME [NAME2 ...]` (must match `^[A-Z0-9_]+$`) |
+| Exit codes | 0 success (including already-absent names), 1 invalid name / missing bundle, 3 usage |
+| Writes | Bundle (atomic replace), `secrets.bundle.json.bak.<UTC>` when something was removed |
+
+### `pqc-secrets store`
+Show which bundle this process resolves — the cross-platform anchor that
+answers "am I reading the same store as my other shell/OS?" without decrypting
+anything.
+
+| | |
+|---|---|
+| Args | `[--json]` |
+| Exit codes | 0 always (an unreadable bundle is reported, not raised) |
+| Stdout | `store`, `source` (`env` / `host-interop` / `home` / `isolated`), `platform` (`wsl` / `win32` / `darwin` / `linux`), `bundle`, `bundleExists`, `keys`, `keyCount`, `isolated`, `explicitEnv`, `otherStores` (every other candidate store with a key count), `shadowedStores` (only when a second store cannot be read here) |
+
+Resolution order: `PQC_CONFIG_DIR` → `PQC_SECRETS_DIR` → **the local
+`~/.config/pqc-secrets` when it holds keys** → host-interop (the Windows host
+store from WSL, or a WSL store from Windows) → `~/.config/pqc-secrets`.
+`PQC_STORE_ISOLATED=1` disables interop entirely.
+
+Precedence is **by keys, not existence** (2026-11-08). Both stores existing does
+not mean either is the right one: on the reference machine the Windows store held
+a single test fixture while the WSL store held 24 provider keys, and
+existence-only precedence picked the fixture. That made `pack` write into a
+store the router treated as secondary and made `list`/`export` show one key
+beside a router reading twenty-four — indistinguishable from "my keys are not
+persisting". A store wins only when it holds keys, and between two that do, the
+fuller one wins. A store whose identity differs (a separate keypair) cannot be
+decrypted here and reports `keyCount: 0` rather than a number it never verified.
+
+When more than one store exists, `store` lists the others and says which one is
+selected. A key written to the non-selected store is not lost, but nothing will
+read it until it is copied across with `pqc-secrets sync`.
+
 ### `pqc-secrets export`
 
 Decrypt bundle and emit shell `export` lines to stdout.
 
 | | |
 |---|---|
-| Args | `[--bundle PATH]` |
+| Args | `[--bundle PATH] [--json]` |
 | Exit codes | 0 success, 1 bundle corrupt, 2 keychain entry missing |
-| Stdout | `export KEY="VALUE"` lines, double-quote escaped |
+| Stdout | `export KEY="VALUE"` lines, double-quote escaped; `--json` emits `{"secrets": {...}}` |
 | Writes | `audit.log` (event: `export`) |
 
-**Example:**
-```bash
-$ eval "$(pqc-secrets export)"
-$ echo "$STRIPE_SECRET" | head -c 12
-sk-live-AbCd...
-```
-
-**Stderr format:** silent on success; bundle corruption produces a
-one-line error to stderr.
+`--json` is for tooling that cannot use `eval` (for example Node or Rust).
+Values still go only to stdout — never compose them into files or logs.
 
 ### `pqc-secrets list`
 
@@ -108,9 +166,9 @@ the Python engine on every platform.
 
 | | |
 |---|---|
-| Args | none |
+| Args | `[--json]` |
 | Exit codes | 0 success, 1 bundle missing |
-| Stdout | `N secret name(s) in <bundle path>:` followed by one indented, alphabetically sorted name per line |
+| Stdout | `N secret name(s) in <bundle path>:` + sorted names; `--json` emits `{bundle, count, names}` |
 | Notes | On darwin the wrapper exports `PQC_USE_KEYCHAIN=true` so the keychain-resident key is readable; falls back to the encrypted file store automatically. |
 
 **Example:**

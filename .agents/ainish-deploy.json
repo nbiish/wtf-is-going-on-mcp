@@ -1,0 +1,18 @@
+{
+  "format": "ainish-coder/rules-deploy/v1",
+  "source_repo": "/d/Code/ainish-coder",
+  "source_commit": "c5cde7c171a2abd5b784b68ced17156e5dd2acad",
+  "source_agents_sha256": "74b05bad73df23d40e7b3e86a0fd14bca81f54a8bfb2315808e59e26d1d69b36",
+  "source_pack_sha256": "95f1f515cc9033872874c8fc430707e24813fdcc80d3f187ccc57f5c2292ecf8",
+  "deployed_at": "2026-11-08T15:37:25Z",
+  "auto_sync": true,
+  "managed_paths": [
+    "AGENTS.md",
+    "llms.txt",
+    ".gitignore",
+    ".agents/skills",
+    ".agents/comms",
+    ".agents/bin/ainish-rules-sync"
+  ],
+  "sync_script": ".agents/bin/ainish-rules-sync"
+}
