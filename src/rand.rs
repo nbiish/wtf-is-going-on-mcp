@@ -1,16 +1,57 @@
 //! Cryptographic randomness sourced from the kernel CSPRNG.
 //!
-//! Reads blocking-after-seeded entropy via `/dev/urandom` (Linux). Fails
-//! closed: if the kernel CSPRNG cannot be read, every caller panics rather
-//! than silently degrading to weak randomness.
+//! Unix: reads blocking-after-seeded entropy from `/dev/urandom`.
+//! Windows: `BCryptGenRandom` with the system-preferred RNG (no extra crate —
+//! the import is bound directly, keeping the crate dependency-free).
+//! Fails closed either way: if the kernel CSPRNG cannot be read, every caller
+//! panics rather than silently degrading to weak randomness.
 
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io::Read;
 
+#[cfg(unix)]
 fn read_random(buf: &mut [u8]) {
     let mut f = File::open("/dev/urandom").expect("fatal: cannot open /dev/urandom");
     f.read_exact(buf)
         .expect("fatal: short read from /dev/urandom");
+}
+
+#[cfg(windows)]
+fn read_random(buf: &mut [u8]) {
+    // BCryptGenRandom(hAlgorithm = NULL, pbBuffer, cbBuffer, dwFlags)
+    // BCRYPT_USE_SYSTEM_PREFERRED_RNG asks for the system RNG, which needs no
+    // algorithm handle and is safe for use from any thread.
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(
+            h_algorithm: *mut core::ffi::c_void,
+            pb_buffer: *mut u8,
+            cb_buffer: u32,
+            dw_flags: u32,
+        ) -> i32;
+    }
+    if buf.is_empty() {
+        return;
+    }
+    let status = unsafe {
+        BCryptGenRandom(
+            core::ptr::null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        panic!("fatal: BCryptGenRandom failed (NTSTATUS {status:#010x})");
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_random(_buf: &mut [u8]) {
+    panic!("fatal: no kernel CSPRNG binding for this target");
 }
 
 /// Fill `buf` with kernel CSPRNG bytes.

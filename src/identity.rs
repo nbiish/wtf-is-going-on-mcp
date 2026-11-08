@@ -10,6 +10,7 @@
 
 use crate::config;
 use crate::json::Value;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -101,8 +102,11 @@ mod tests {
         assert_eq!(id1.ek, id2.ek);
         assert_eq!(id1.dk, id2.dk);
         // 0600
-        let meta = std::fs::metadata(&p).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let meta = std::fs::metadata(&p).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

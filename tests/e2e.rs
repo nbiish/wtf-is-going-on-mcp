@@ -2375,6 +2375,10 @@ fn federated_task_dispatch_end_to_end() {
 /// A fake `orca` on PATH proves the launch path without needing a real agent
 /// runtime or a second machine: the hub resolves the runner, builds the argv,
 /// starts it, and stores the dispatch id it reported.
+///
+/// Unix only: the fake runner is a `#!/bin/sh` script made executable with a
+/// mode bit and found through a `:`-separated PATH.
+#[cfg(unix)]
 #[test]
 fn task_runner_launch_end_to_end() {
     let home = temp_home("runner");

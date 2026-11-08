@@ -7,6 +7,7 @@
 use crate::json::{self, Value};
 use crate::rand;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -59,6 +60,7 @@ pub fn identities_path() -> PathBuf {
 pub fn ensure_home() -> std::io::Result<PathBuf> {
     let h = home();
     std::fs::create_dir_all(&h)?;
+    #[cfg(unix)]
     std::fs::set_permissions(&h, std::fs::Permissions::from_mode(0o700))?;
     Ok(h)
 }
@@ -79,8 +81,9 @@ pub fn save_json(path: &Path, val: &Value, mode: u32) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("bad path {}", path.display()))?;
-    std::fs::create_dir_all(dir)
-        .and_then(|_| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     let tmp = path.with_extension("json.tmp");
     {
@@ -89,8 +92,10 @@ pub fn save_json(path: &Path, val: &Value, mode: u32) -> Result<(), String> {
             .and_then(|_| f.sync_all())
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
     }
+    #[cfg(unix)]
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let _ = mode; // unix-only file mode; unused on other targets
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -672,8 +677,11 @@ mod tests {
         let c2 = HubConfig::load_or_create_at(&p).unwrap();
         assert_eq!(c1.dashboard_key, c2.dashboard_key);
         assert_eq!(c1.port, DEFAULT_PORT);
-        let meta = std::fs::metadata(&p).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let meta = std::fs::metadata(&p).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -747,8 +755,11 @@ mod tests {
         assert_eq!(ts4.consume("box4", "x"), Err(TokenError::Unknown));
         assert!(!ts4.revoke("nobody"));
         // File mode is operator-only.
-        let meta = std::fs::metadata(d.join("tokens.json")).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let meta = std::fs::metadata(d.join("tokens.json")).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -763,8 +774,11 @@ mod tests {
         };
         assert!(good.validate().is_ok());
         BridgeConfig::save_at(&p, &good).unwrap();
-        let meta = std::fs::metadata(&p).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let meta = std::fs::metadata(&p).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
         // https is now accepted (TLS-terminating proxy / cloud deployment).
         let tls = BridgeConfig {
             hub_url: "https://hub.example.com".into(),
