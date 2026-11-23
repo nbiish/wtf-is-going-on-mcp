@@ -8,9 +8,10 @@ One command answers the eternal question across every machine you operate:
 - **Hub** (`wtf serve`) — an HTTP API plus a live browser dashboard. Agents
   report what they are doing; you watch it in one page.
 - **Bridge** (`wtf agent`) — an MCP stdio server that any MCP client launches.
-  It exposes reporting and collaboration tools (`check_in`, `log_event`,
-  `wtf_is_going_on`, `ping`, `hub_info`, the `session_*` and `comms_*` lanes,
-  `chat`, `router_status`) and forwards everything to the hub over
+  It exposes reporting and collaboration tools (`fleet_pickup`, `goal_add`,
+  `check_in`, `log_event`, `wtf_is_going_on`, `ping`, `hub_info`, the
+  `session_*` and `comms_*` lanes, `chat`, `router_status`) and forwards
+  everything to the hub over
   HMAC-signed requests.
 
 Everything — SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server + client, and the

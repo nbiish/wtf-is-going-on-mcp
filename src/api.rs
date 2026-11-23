@@ -55,6 +55,11 @@ pub struct Hub {
     pub sessions: Sessions,
     /// Federated task-dispatch records (cross-machine work queue).
     pub tasks: crate::tasks::TaskStore,
+    /// Goals and SSH aliases for the pickup view.
+    pub fleet: crate::fleet::FleetStore,
+    /// Bridge device name of the machine running the hub (`""` if unknown).
+    /// Used only to label the local skill probe. The device key is not kept.
+    pub local_device: String,
     /// Sliding window of enroll attempt timestamps (rate limiter state).
     pub enroll_hits: Mutex<Vec<u64>>,
     /// PSK-handshake replay guard: (nonce, first-seen ts), pruned past 600 s.
@@ -92,6 +97,9 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
             | "/api/v1/env"
+            | "/api/v1/fleet"
+            | "/api/v1/goals"
+            | "/api/v1/aliases"
             | "/api/v1/chat/completions"
             | "/api/v1/shell/machines"
             | "/api/v1/shell/config"
@@ -120,6 +128,10 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
         ("GET", "/api/v1/fed/peers") => HandlerResult::Respond(fed_peers(hub, req)),
         ("POST", "/api/v1/env") => HandlerResult::Respond(env_report(hub, req)),
         ("GET", "/api/v1/env") => HandlerResult::Respond(env_list(hub, req)),
+        ("GET", "/api/v1/fleet") => HandlerResult::Respond(fleet_get(hub, req)),
+        ("POST", "/api/v1/goals") => HandlerResult::Respond(goal_add(hub, req)),
+        ("POST", "/api/v1/goals/done") => HandlerResult::Respond(goal_done(hub, req)),
+        ("POST", "/api/v1/aliases") => HandlerResult::Respond(alias_set(hub, req)),
         ("GET", "/api/v1/shell/machines") => HandlerResult::Respond(shell_machines(hub, req)),
         ("GET", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_get(hub, req)),
         ("POST", "/api/v1/shell/config") => HandlerResult::Respond(shell_config_post(hub, req)),
@@ -994,6 +1006,159 @@ fn devices_list(hub: &Arc<Hub>, req: &Request) -> Response {
         })
         .collect();
     Response::json(200, &Value::obj(vec![("devices", Value::Arr(devices))]))
+}
+
+// ---------- pickup: goals, aliases, repos, skills ----------
+
+/// Joined view for agents and the dashboard card. Device secrets never
+/// leave `KeyStore`; only names and the revoked bit are copied.
+pub fn fleet_payload(hub: &Hub) -> Value {
+    let devices: Vec<(String, bool)> = hub
+        .keys
+        .lock()
+        .unwrap()
+        .records
+        .iter()
+        .map(|r| (r.name.clone(), r.revoked))
+        .collect();
+    let (agents, _) = hub.store.snapshot();
+    let task_rows = hub.tasks.list();
+    let sessions = hub.sessions.list();
+    let goals = hub.fleet.goals();
+    let aliases = hub.fleet.aliases();
+
+    let mut repos = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_repo = |repo: &str, device: &str, source: &str| {
+        let repo = repo.trim();
+        if repo.is_empty() {
+            return;
+        }
+        let key = format!("{source}\u{0}{device}\u{0}{repo}");
+        if seen.insert(key) {
+            repos.push(crate::fleet::RepoRef {
+                repo: repo.to_string(),
+                device: device.to_string(),
+                source: source.to_string(),
+            });
+        }
+    };
+    for g in &goals {
+        push_repo(&g.repo, &g.target, "goal");
+    }
+    for a in &agents {
+        push_repo(&a.repo, &a.device, "agent");
+    }
+    for t in &task_rows {
+        push_repo(&t.repo, &t.target, "task");
+    }
+    for s in &sessions {
+        push_repo(&s.repo, "", "session");
+    }
+
+    let tasks: Vec<crate::fleet::TaskBrief> = task_rows
+        .iter()
+        .take(50)
+        .map(|t| crate::fleet::TaskBrief {
+            id: t.id.clone(),
+            title: t.title.clone(),
+            repo: t.repo.clone(),
+            target: t.target.clone(),
+            state: t.state.clone(),
+            assignee: t.assignee.clone(),
+        })
+        .collect();
+
+    let mut skills = crate::fleet::probe_skills(&hub.local_device);
+    {
+        let reports = hub.env_reports.lock().unwrap();
+        for (device, report, _) in reports.iter() {
+            for s in crate::fleet::skills_from_report(device, report) {
+                if let Some(existing) = skills
+                    .iter_mut()
+                    .find(|e| e.device == s.device && e.name == s.name)
+                {
+                    *existing = s;
+                } else {
+                    skills.push(s);
+                }
+            }
+        }
+    }
+
+    crate::fleet::assemble(
+        &hub.fed_name,
+        &devices,
+        &goals,
+        &tasks,
+        &repos,
+        &aliases,
+        &skills,
+    )
+}
+
+fn fleet_get(hub: &Hub, req: &Request) -> Response {
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
+    }
+    Response::json(200, &fleet_payload(hub))
+}
+
+fn goal_add(hub: &Hub, req: &Request) -> Response {
+    if device_auth(hub, req).is_err() {
+        return Response::error(401, "device auth required");
+    }
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let title = body.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let detail = body.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+    let repo = body.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+    let target = body.get("target").and_then(|v| v.as_str()).unwrap_or("");
+    match hub.fleet.add_goal(title, detail, repo, target) {
+        Ok(g) => Response::json(200, &g.to_json()),
+        Err(e) => Response::error(400, &e),
+    }
+}
+
+fn goal_done(hub: &Hub, req: &Request) -> Response {
+    if device_auth(hub, req).is_err() {
+        return Response::error(401, "device auth required");
+    }
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    match hub.fleet.done_goal(id) {
+        Ok(g) => Response::json(200, &g.to_json()),
+        Err(e) => Response::error(400, &e),
+    }
+}
+
+fn alias_set(hub: &Hub, req: &Request) -> Response {
+    if device_auth(hub, req).is_err() {
+        return Response::error(401, "device auth required");
+    }
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let alias = body.get("alias").and_then(|v| v.as_str()).unwrap_or("");
+    let user = body.get("user").and_then(|v| v.as_str()).unwrap_or("");
+    let host = body.get("host").and_then(|v| v.as_str()).unwrap_or("");
+    let port = body
+        .get("port")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(22);
+    if !(1..=65535).contains(&port) {
+        return Response::error(400, "port must be 1-65535");
+    }
+    match hub.fleet.upsert_alias(alias, user, host, port as u16) {
+        Ok(a) => Response::json(200, &a.to_json()),
+        Err(e) => Response::error(400, &e),
+    }
 }
 
 // ---------- session channels ----------
