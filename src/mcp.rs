@@ -321,7 +321,7 @@ impl Bridge {
                     (
                         "instructions",
                         Value::from(
-                            "FEDERATED AGENT COORDINATION PROTOCOL: (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) CROSS-MACHINE WORK — when the user wants work done on another paired machine (the mac, a Windows box, an edge Pi, a GPU/cloud node), do NOT run it over ad-hoc ssh and do NOT try to drive a remote agent session: dispatch a task instead. task_dispatch {title, detail, target, session?, repo?} addresses the work by machine name/alias, tier:heavy|tier:standard|tier:edge, or arch:<os>-<arch>; the agent on that machine finds it with task_claim, runs it with its OWN local tooling and credentials, and returns the deliverable with task_report {task, state:\"done\", result}. Read it back with task_status {task}. Dispatch is pull-based — the hub never spawns a harness or an ssh session on another box — so if a task stays queued the target machine has no agent polling (tell the user that; it is not an error). Bind the task's chat with `session` so the operator can follow the same work in the dashboard. WORKER SIDE: `task_claim` takes matching work and `task_run {task}` starts the agent that does it — Orca (`orca orchestration worker-start`) when installed, Herdr (`herdr agent start`) otherwise; `runner_probe` tells you which this machine can run. Remote runners need preparation on the target: an Orca PAIRED ENVIRONMENT (`orca environment add --pairing-code 'orca://pair?...'`, addressed with --on) or a Herdr MACHINE (`herdr machine add user@host --label <name>`, addressed with --machine). A bare LAN IP is neither. (5) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (6) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
+                            "FEDERATED AGENT COORDINATION PROTOCOL: (0) PICKUP — call fleet_pickup first. It returns devices, goals, tasks, repos, SSH aliases (alias/user/host/port only), and which machine has herdr, orca, browsermcp, agent-desktop, or browser-skill. Record a goal with goal_add and an alias with alias_set. BrowserMCP, browser-skill, and agent-desktop stay on the machine that holds the login; dispatch a task there, do not ask the hub to start them. (1) DISCOVERY — on task start, call session_list; if a chat exists whose repo matches the current working repository, join it (session_join with the pairing key if you have it, else ask the operator/creator) and coordinate there: tasks received in that chat are executed autonomously via your local agent CLI and progress is reported back into the same chat. (2) NO-CHAT RULE — if no chat matches the current repo, do NOT create one and do NOT connect: continue the user's local work uninterrupted. Create a federated chat ONLY when the user asks for one. (3) WHEN THE USER ASKS to start a federated chat for this repo: session_create {name, repo:<repo-name>}, give the user the pairing key + the exact steps to connect another machine (LAN: wtf enroll --url http://<hub-lan-ip>:7800 --name <device> --psk <hub's wtf enroll-secret>; internet: same over a WireGuard/Tailscale overlay or TLS-terminating proxy — never raw port-forwarded HTTP). (4) CROSS-MACHINE WORK — when the user wants work done on another paired machine (the mac, a Windows box, an edge Pi, a GPU/cloud node), do NOT run it over ad-hoc ssh and do NOT try to drive a remote agent session: dispatch a task instead. task_dispatch {title, detail, target, session?, repo?} addresses the work by machine name/alias, tier:heavy|tier:standard|tier:edge, or arch:<os>-<arch>; the agent on that machine finds it with task_claim, runs it with its OWN local tooling and credentials, and returns the deliverable with task_report {task, state:\"done\", result}. Read it back with task_status {task}. Dispatch is pull-based — the hub never spawns a harness or an ssh session on another box — so if a task stays queued the target machine has no agent polling (tell the user that; it is not an error). Bind the task's chat with `session` so the operator can follow the same work in the dashboard. WORKER SIDE: `task_claim` takes matching work and `task_run {task}` starts the agent that does it — Orca (`orca orchestration worker-start`) when installed, Herdr (`herdr agent start`) otherwise; `runner_probe` tells you which this machine can run. Remote runners need preparation on the target: an Orca PAIRED ENVIRONMENT (`orca environment add --pairing-code 'orca://pair?...'`, addressed with --on) or a Herdr MACHINE (`herdr machine add user@host --label <name>`, addressed with --machine). A bare LAN IP is neither. (5) EXECUTION — headless inference goes through the `chat` tool (OpenAI-compatible completions on the operator-run local-router 127.0.0.1:11434/v1, model auto-discovered, llama.cpp qwen3 abliterated preferred); wtf never launches agent-harness CLIs and never spawns local-router/fcc-server/fcc-dsh. Record the model that served the task. (6) REPORTING — all check_in/log_event updates in chain-of-draft: terse fragments <=5 words each, no secrets, scannable and frequent.",
                         ),
                     ),
                     (
@@ -1033,6 +1033,67 @@ impl Bridge {
                     ("additionalProperties", Value::from(false)),
                 ])),
             ]),
+            Value::obj(vec![
+                ("name", Value::from("fleet_pickup")),
+                ("description", Value::from(
+                    "Read the cross-machine pickup set: enrolled devices, goals, the task board, repos, SSH aliases (alias, user, host, port — never a key path), and which machine has reported herdr, orca, browsermcp, agent-desktop, or browser-skill. Call this first when resuming work. Browser and desktop tools stay on the machine that holds the login; dispatch a task there.",
+                )),
+                ("inputSchema", Value::obj(vec![
+                    ("type", Value::from("object")),
+                    ("properties", Value::obj(vec![])),
+                    ("additionalProperties", Value::from(false)),
+                ])),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("goal_add")),
+                ("description", Value::from(
+                    "Record a federated goal on the hub so the next agent can pick it up. title is required. repo and target are optional labels (a checkout name and a machine name).",
+                )),
+                ("inputSchema", Value::obj(vec![
+                    ("type", Value::from("object")),
+                    ("properties", Value::obj(vec![
+                        ("title", Self::prop("what needs doing")),
+                        ("detail", Self::prop("optional longer note")),
+                        ("repo", Self::prop("optional repository label")),
+                        ("target", Self::prop("optional machine name this goal belongs on")),
+                    ])),
+                    ("required", Value::arr(vec![Value::from("title")])),
+                    ("additionalProperties", Value::from(false)),
+                ])),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("goal_done")),
+                ("description", Value::from("Mark a goal done by the id fleet_pickup returned.")),
+                ("inputSchema", Value::obj(vec![
+                    ("type", Value::from("object")),
+                    ("properties", Value::obj(vec![
+                        ("id", Self::prop("goal id")),
+                    ])),
+                    ("required", Value::arr(vec![Value::from("id")])),
+                    ("additionalProperties", Value::from(false)),
+                ])),
+            ]),
+            Value::obj(vec![
+                ("name", Value::from("alias_set")),
+                ("description", Value::from(
+                    "Register an SSH alias the pickup view can show: alias, user, host, and optional port. Refuses paths and key material. This does not copy a private key and does not open a connection.",
+                )),
+                ("inputSchema", Value::obj(vec![
+                    ("type", Value::from("object")),
+                    ("properties", Value::obj(vec![
+                        ("alias", Self::prop("short name, such as windows or wsl")),
+                        ("user", Self::prop("SSH user")),
+                        ("host", Self::prop("hostname or IPv4 address")),
+                        ("port", int_prop("SSH port (default 22)")),
+                    ])),
+                    ("required", Value::arr(vec![
+                        Value::from("alias"),
+                        Value::from("user"),
+                        Value::from("host"),
+                    ])),
+                    ("additionalProperties", Value::from(false)),
+                ])),
+            ]),
         ];
         Value::obj(vec![("tools", Value::Arr(tools))])
     }
@@ -1074,6 +1135,10 @@ impl Bridge {
             "runner_probe" => self.tool_runner_probe(args),
             "chat" => self.tool_chat(args),
             "router_status" => self.tool_router_status(args),
+            "fleet_pickup" => self.tool_fleet_pickup(),
+            "goal_add" => self.tool_goal_add(args),
+            "goal_done" => self.tool_goal_done(args),
+            "alias_set" => self.tool_alias_set(args),
             other => (format!("unknown tool: {other}"), true),
         }
     }
@@ -1184,6 +1249,10 @@ impl Bridge {
             ("os", Value::from(std::env::consts::OS)),
             ("arch", Value::from(std::env::consts::ARCH)),
             ("wtf_version", Value::from(crate::VERSION)),
+            (
+                "skills",
+                Value::Arr(crate::fleet::skill_report_json(&self.cfg.device_name)),
+            ),
         ])
     }
 
@@ -2376,6 +2445,82 @@ impl Bridge {
             state.to_json()
         );
         (text, !alive)
+    }
+
+    fn tool_fleet_pickup(&self) -> (String, bool) {
+        match self.api_get("/api/v1/fleet") {
+            Ok(v) => {
+                let bad = crate::fleet::forbidden_keys(&v);
+                if !bad.is_empty() {
+                    return (
+                        format!("fleet payload refused: unexpected field {}", bad[0]),
+                        true,
+                    );
+                }
+                (v.to_json(), false)
+            }
+            Err(e) => (format!("fleet pickup failed: {e}"), true),
+        }
+    }
+
+    fn tool_goal_add(&self, args: &Value) -> (String, bool) {
+        let Some(title) = arg_str(args, "title") else {
+            return ("missing required argument: title".into(), true);
+        };
+        let body = Value::obj(vec![
+            ("title", Value::from(title)),
+            ("detail", Value::from(arg_str(args, "detail").unwrap_or(""))),
+            (
+                "repo",
+                Value::from(
+                    arg_str(args, "repo")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(repo_label),
+                ),
+            ),
+            ("target", Value::from(arg_str(args, "target").unwrap_or(""))),
+        ]);
+        match self.api_post("/api/v1/goals", &body) {
+            Ok(v) => {
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                (format!("goal {id} open"), false)
+            }
+            Err(e) => (format!("goal add failed: {e}"), true),
+        }
+    }
+
+    fn tool_goal_done(&self, args: &Value) -> (String, bool) {
+        let Some(id) = arg_str(args, "id") else {
+            return ("missing required argument: id".into(), true);
+        };
+        let body = Value::obj(vec![("id", Value::from(id))]);
+        match self.api_post("/api/v1/goals/done", &body) {
+            Ok(_) => (format!("goal {id} done"), false),
+            Err(e) => (format!("goal done failed: {e}"), true),
+        }
+    }
+
+    fn tool_alias_set(&self, args: &Value) -> (String, bool) {
+        let Some(alias) = arg_str(args, "alias") else {
+            return ("missing required argument: alias".into(), true);
+        };
+        let Some(user) = arg_str(args, "user") else {
+            return ("missing required argument: user".into(), true);
+        };
+        let Some(host) = arg_str(args, "host") else {
+            return ("missing required argument: host".into(), true);
+        };
+        let port = args.get("port").and_then(|v| v.as_i64()).unwrap_or(22);
+        let body = Value::obj(vec![
+            ("alias", Value::from(alias)),
+            ("user", Value::from(user)),
+            ("host", Value::from(host)),
+            ("port", Value::from(port)),
+        ]);
+        match self.api_post("/api/v1/aliases", &body) {
+            Ok(_) => (format!("alias {alias} {user}@{host}:{port}"), false),
+            Err(e) => (format!("alias set failed: {e}"), true),
+        }
     }
 }
 

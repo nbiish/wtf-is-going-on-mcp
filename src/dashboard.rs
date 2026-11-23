@@ -166,6 +166,12 @@ Type 'ls ~' or 'cd <machine>' to navigate.</div>
     <div id="sessions" class="card"><span class="dim">no chats yet</span></div>
   </section>
 
+  <!-- PICKUP -->
+  <section>
+    <h2>PICKUP · goals, repos, machines</h2>
+    <div id="fleet" class="card"><span class="dim">no pickup yet</span></div>
+  </section>
+
   <!-- TASKS -->
   <section>
     <h2>TASKS · work designated across machines</h2>
@@ -255,6 +261,7 @@ function render(s){
 
   // Render the federated task board
   renderTasks(s.tasks || {tasks:[], counts:{}}, now);
+  renderFleet(s.fleet || {}, now);
 
   // Local Router Status (passive probe — wtf never spawns/restarts the router)
   if(s.router){
@@ -537,6 +544,64 @@ document.getElementById("shell-input").addEventListener("keydown", (e)=>{
 // are collapsed behind a toggle so the board stays scannable.
 const TASK_STATE_CLASS = {queued:"idle",claimed:"working",running:"working",done:"done",failed:"error",blocked:"blocked",cancelled:"stale"};
 const TASK_OPEN = ["queued","claimed","running","blocked"];
+
+function renderFleet(fleet, now){
+  const host = document.getElementById("fleet");
+  if(!host) return;
+  const goals = fleet.goals || [];
+  const aliases = fleet.ssh_aliases || [];
+  const repos = fleet.repos || [];
+  const devices = fleet.devices || [];
+  const skills = fleet.skills || [];
+  const openGoals = goals.filter(g => g.status !== "done");
+  let html = "";
+  html += '<div class="bar" style="margin-bottom:6px">';
+  for(const d of devices){
+    html += '<span class="pill '+(d.revoked?"stale":"done")+'">'+esc(d.name)+(d.revoked?" revoked":"")+'</span>';
+  }
+  if(!devices.length) html += '<span class="dim">no enrolled devices</span>';
+  html += '</div>';
+  html += '<div style="font-size:12px;margin:6px 0 2px"><b>goals</b></div>';
+  if(!openGoals.length){
+    html += '<div class="dim">no open goals — an agent records one with goal_add {title}</div>';
+  } else {
+    for(const g of openGoals){
+      html += '<div class="bar" style="padding:3px 0"><span class="pill working">open</span><b>'+esc(g.title)+'</b>'
+        +(g.repo?'<span class="repo">'+esc(g.repo)+'</span>':"")
+        +(g.target?'<span class="dim">'+esc(g.target)+'</span>':"")
+        +'<span class="dim" style="margin-left:auto">'+esc(g.id)+'</span></div>';
+    }
+  }
+  html += '<div style="font-size:12px;margin:8px 0 2px"><b>repos</b></div>';
+  if(!repos.length) html += '<div class="dim">no repos on the board yet</div>';
+  else {
+    const seen = {};
+    for(const r of repos){
+      const k = (r.repo||"")+"@"+(r.device||"");
+      if(seen[k]) continue;
+      seen[k] = 1;
+      html += '<div class="bar" style="font-size:12px"><span class="repo">'+esc(r.repo)+'</span><span class="dim">'
+        +esc(r.device||"")+' · '+esc(r.source||"")+'</span></div>';
+    }
+  }
+  html += '<div style="font-size:12px;margin:8px 0 2px"><b>ssh</b></div>';
+  if(!aliases.length) html += '<div class="dim">no aliases — wtf alias set &lt;alias&gt; &lt;user&gt; &lt;host&gt;</div>';
+  else {
+    for(const a of aliases){
+      html += '<div class="bar" style="font-size:12px"><b>'+esc(a.alias)+'</b><span class="dim">'
+        +esc(a.user)+"@"+esc(a.host)+":"+esc(a.port)+'</span></div>';
+    }
+  }
+  html += '<div style="font-size:12px;margin:8px 0 2px"><b>skills</b></div>';
+  const present = skills.filter(s => s.present);
+  if(!present.length) html += '<div class="dim">no external skills reported yet — an agent runs env_report</div>';
+  else {
+    for(const s of present){
+      html += '<span class="pill done" style="margin:0 4px 4px 0">'+esc(s.device)+" "+esc(s.name)+'</span>';
+    }
+  }
+  host.innerHTML = html;
+}
 
 function renderTasks(board, now){
   const host = document.getElementById("tasks");

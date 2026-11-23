@@ -149,6 +149,8 @@ pub struct Store {
     sessions_provider: Mutex<Option<Box<dyn Fn() -> Vec<SessionSummary> + Send>>>,
     /// Federated task board provider (set by the hub at serve time).
     tasks_provider: Mutex<Option<Box<dyn Fn() -> Value + Send>>>,
+    /// Pickup card provider (goals, aliases, devices, skills).
+    fleet_provider: Mutex<Option<Box<dyn Fn() -> Value + Send>>>,
 }
 
 /// "3m ago" style relative age.
@@ -238,6 +240,7 @@ impl Store {
             origin_name: Mutex::new(String::new()),
             sessions_provider: Mutex::new(None),
             tasks_provider: Mutex::new(None),
+            fleet_provider: Mutex::new(None),
         })
     }
 
@@ -569,8 +572,29 @@ impl Store {
             ("events", Value::Arr(events_v)),
             ("sessions", self.sessions_v()),
             ("tasks", self.tasks_v()),
+            ("fleet", self.fleet_v()),
             ("router", crate::chat::router_state_json()),
         ])
+    }
+
+    fn fleet_v(&self) -> Value {
+        let p = self.fleet_provider.lock().unwrap();
+        match p.as_ref() {
+            Some(f) => f(),
+            None => Value::obj(vec![
+                ("hub", Value::from("")),
+                ("devices", Value::arr(vec![])),
+                ("goals", Value::arr(vec![])),
+                ("tasks", Value::arr(vec![])),
+                ("repos", Value::arr(vec![])),
+                ("ssh_aliases", Value::arr(vec![])),
+                ("skills", Value::arr(vec![])),
+            ]),
+        }
+    }
+
+    pub fn set_fleet_provider(&self, provider: Box<dyn Fn() -> Value + Send>) {
+        *self.fleet_provider.lock().unwrap() = Some(provider);
     }
 
     /// Federated task-dispatch summary for the dashboard / state payload.

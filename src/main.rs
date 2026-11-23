@@ -46,6 +46,8 @@ fn run() -> i32 {
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
         Some("sessions") => cmd_sessions(&args[1..]),
         Some("tasks") => cmd_tasks(&args[1..]),
+        Some("goal") => cmd_goal(&args[1..]),
+        Some("alias") => cmd_alias(&args[1..]),
         Some("federate") => cmd_federate(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
@@ -90,6 +92,10 @@ fn print_help() {
     println!("  wtf federate list                         show the federation peer table");
     println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
     println!("  wtf tasks [--state S] [--url U] [--cap K]  review the federated task board (designated cross-machine work + results)");
+    println!("  wtf goal add --title T [--repo R] [--target M] [--detail D]");
+    println!("  wtf goal list | wtf goal done <id>        federated goals on the hub");
+    println!("  wtf alias set <alias> <user> <host> [--port N]");
+    println!("  wtf alias list                            SSH aliases (no key paths)");
     println!("  wtf federate remove <name>                unlink a peer hub");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
@@ -219,6 +225,10 @@ fn cmd_serve(args: &[String]) -> i32 {
 
     let sessions = wtf::sessions::Sessions::load();
     let tasks = wtf::tasks::TaskStore::load();
+    let fleet = wtf::fleet::FleetStore::load();
+    let local_device = wtf::config::BridgeConfig::load()
+        .map(|c| c.device_name)
+        .unwrap_or_default();
     let identities = Mutex::new(wtf::api::load_identities(&sessions));
 
     let hub = Arc::new(wtf::api::Hub {
@@ -230,6 +240,8 @@ fn cmd_serve(args: &[String]) -> i32 {
         identities,
         sessions,
         tasks,
+        fleet,
+        local_device,
         enroll_hits: Mutex::new(Vec::new()),
         enroll_nonces: Mutex::new(Vec::new()),
         fed_name: fed.name.clone(),
@@ -262,6 +274,12 @@ fn cmd_serve(args: &[String]) -> i32 {
     {
         let hub_for_tasks = Arc::clone(&hub);
         store_for_sessions.set_tasks_provider(Box::new(move || hub_for_tasks.tasks.to_state_json()));
+    }
+    {
+        let hub_for_fleet = Arc::clone(&hub);
+        store_for_sessions.set_fleet_provider(Box::new(move || {
+            wtf::api::fleet_payload(&hub_for_fleet)
+        }));
     }
     let handler_hub = Arc::clone(&hub);
     let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
@@ -866,6 +884,191 @@ fn resolve_hub_and_cap(
 /// board from any machine. Reads the same capability-gated route the
 /// dashboard uses, so the operator never needs the browser to see where
 /// designated work actually went.
+fn bridge_or_exit() -> Result<mcp::Bridge, i32> {
+    match BridgeConfig::load() {
+        Ok(cfg) => Ok(mcp::Bridge { cfg }),
+        Err(e) => {
+            eprintln!("error: {e}");
+            Err(1)
+        }
+    }
+}
+
+fn cmd_goal(args: &[String]) -> i32 {
+    let bridge = match bridge_or_exit() {
+        Ok(b) => b,
+        Err(c) => return c,
+    };
+    match args.first().map(|s| s.as_str()) {
+        Some("list") | None => match bridge.api_get("/api/v1/fleet") {
+            Ok(v) => {
+                let goals = v.get("goals").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                if goals.is_empty() {
+                    println!("GOALS — (none)");
+                    return 0;
+                }
+                println!("GOALS");
+                for g in goals {
+                    let id = g.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                    let status = g.get("status").and_then(|x| x.as_str()).unwrap_or("?");
+                    let title = g.get("title").and_then(|x| x.as_str()).unwrap_or("");
+                    let repo = g.get("repo").and_then(|x| x.as_str()).unwrap_or("");
+                    let target = g.get("target").and_then(|x| x.as_str()).unwrap_or("");
+                    println!("  {status} {id} {title} repo={repo} target={target}");
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+        Some("add") => {
+            let title = match flag_value(args, "--title") {
+                Some(t) => t,
+                None => {
+                    eprintln!("error: wtf goal add --title T [--repo R] [--target M] [--detail D]");
+                    return 2;
+                }
+            };
+            let body = json::Value::obj(vec![
+                ("title", json::Value::from(title.as_str())),
+                (
+                    "detail",
+                    json::Value::from(flag_value(args, "--detail").unwrap_or_default().as_str()),
+                ),
+                (
+                    "repo",
+                    json::Value::from(flag_value(args, "--repo").unwrap_or_default().as_str()),
+                ),
+                (
+                    "target",
+                    json::Value::from(flag_value(args, "--target").unwrap_or_default().as_str()),
+                ),
+            ]);
+            match bridge.api_post("/api/v1/goals", &body) {
+                Ok(v) => {
+                    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                    println!("goal {id} open");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        Some("done") => {
+            let id = match args.get(1) {
+                Some(id) if !id.starts_with('-') => id.clone(),
+                _ => {
+                    eprintln!("error: wtf goal done <id>");
+                    return 2;
+                }
+            };
+            let body = json::Value::obj(vec![("id", json::Value::from(id.as_str()))]);
+            match bridge.api_post("/api/v1/goals/done", &body) {
+                Ok(_) => {
+                    println!("goal {id} done");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!("error: unknown goal command '{other}'");
+            2
+        }
+    }
+}
+
+fn cmd_alias(args: &[String]) -> i32 {
+    let bridge = match bridge_or_exit() {
+        Ok(b) => b,
+        Err(c) => return c,
+    };
+    match args.first().map(|s| s.as_str()) {
+        Some("list") | None => match bridge.api_get("/api/v1/fleet") {
+            Ok(v) => {
+                let rows = v.get("ssh_aliases").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                if rows.is_empty() {
+                    println!("SSH ALIASES — (none — wtf alias set <alias> <user> <host>)");
+                    return 0;
+                }
+                println!("SSH ALIASES");
+                for a in rows {
+                    let alias = a.get("alias").and_then(|x| x.as_str()).unwrap_or("?");
+                    let user = a.get("user").and_then(|x| x.as_str()).unwrap_or("?");
+                    let host = a.get("host").and_then(|x| x.as_str()).unwrap_or("?");
+                    let port = a.get("port").and_then(|x| x.as_i64()).unwrap_or(22);
+                    println!("  {alias} {user}@{host}:{port}");
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+        Some("set") => {
+            let alias = match args.get(1) {
+                Some(s) => s.clone(),
+                None => {
+                    eprintln!("error: wtf alias set <alias> <user> <host> [--port N]");
+                    return 2;
+                }
+            };
+            let user = match args.get(2) {
+                Some(s) => s.clone(),
+                None => {
+                    eprintln!("error: wtf alias set <alias> <user> <host> [--port N]");
+                    return 2;
+                }
+            };
+            let host = match args.get(3) {
+                Some(s) => s.clone(),
+                None => {
+                    eprintln!("error: wtf alias set <alias> <user> <host> [--port N]");
+                    return 2;
+                }
+            };
+            let port: i64 = match flag_value(args, "--port") {
+                Some(p) => match p.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        eprintln!("error: --port must be a number");
+                        return 2;
+                    }
+                },
+                None => 22,
+            };
+            let body = json::Value::obj(vec![
+                ("alias", json::Value::from(alias.as_str())),
+                ("user", json::Value::from(user.as_str())),
+                ("host", json::Value::from(host.as_str())),
+                ("port", json::Value::from(port)),
+            ]);
+            match bridge.api_post("/api/v1/aliases", &body) {
+                Ok(_) => {
+                    println!("alias {alias} {user}@{host}:{port}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!("error: unknown alias command '{other}'");
+            2
+        }
+    }
+}
+
 fn cmd_tasks(args: &[String]) -> i32 {
     let (hub_url, cap) = match resolve_hub_and_cap(args) {
         Ok(v) => v,

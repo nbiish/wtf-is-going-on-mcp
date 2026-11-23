@@ -14,6 +14,7 @@ pub mod dashboard;
 pub mod chat;
 pub mod fed_shell;
 pub mod federation;
+pub mod fleet;
 pub mod gcm;
 pub mod hmac;
 pub mod http;

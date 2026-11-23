@@ -57,6 +57,11 @@ pub fn tasks_path() -> PathBuf {
     home().join("tasks.json")
 }
 
+/// Goals and SSH aliases for the pickup view (`src/fleet.rs`).
+pub fn fleet_path() -> PathBuf {
+    home().join("fleet.json")
+}
+
 pub fn enroll_tokens_path() -> PathBuf {
     home().join("enroll_tokens.json")
 }

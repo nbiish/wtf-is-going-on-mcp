@@ -97,13 +97,17 @@ directory is already on the user PATH, so `{"command":"wtf"}` resolves).
 Credentials resolve from `$WTF_HOME/bridge.json`, or `WTF_HUB_URL` /
 `WTF_DEVICE_NAME` / `WTF_DEVICE_KEY`.
 
-## 3. Tools (23)
+## 3. Tools (27)
 
 **Presence & record**
 
 | Tool | Args | Use |
 |---|---|---|
-| `wtf_is_going_on` | `agent?` | Start here. Who is doing what, every machine. |
+| `fleet_pickup` | — | Start here when resuming. Devices, goals, tasks, repos, SSH aliases, and which machine has which external skill. JSON. No key paths. |
+| `goal_add` | `title`, `detail?`, `repo?`, `target?` | Record a goal the next agent can pick up. |
+| `goal_done` | `id` | Close a goal. |
+| `alias_set` | `alias`, `user`, `host`, `port?` | Register an SSH alias (name, user, host, port). Refuses paths and key material. |
+| `wtf_is_going_on` | `agent?` | Who is doing what, every machine. |
 | `check_in` | `status`, `task`, `details?`, `agent?`, `repo?` | Claim/extend your lane: `working`/`blocked`/`done`/`idle`. |
 | `log_event` | `message`, `level?`, `agent?`, `repo?` | Milestones, decisions, failures. |
 | `hub_info` | — | Hub URL + this device. No secrets. |
@@ -198,11 +202,12 @@ messages that have to survive the session.
 ## 5. The loop
 
 ```bash
-wtf_is_going_on                      # 1. orient — who is on what
-check_in working "audit federation retry"    # 2. claim your lane
+fleet_pickup                         # 1. resume — goals, tasks, repos, aliases, skills
+wtf_is_going_on                      # 2. who is on what right now
+check_in working "audit federation retry"    # 3. claim your lane
 # ... do the work in Herdr ...
-log_event "federation retry audited"         # 3. record milestones
-check_in done "federation retry audited"     # 4. close, so the next agent sees truth
+log_event "federation retry audited"         # 4. record milestones
+check_in done "federation retry audited"     # 5. close, so the next agent sees truth
 ```
 
 Handing off to a peer machine:
@@ -233,6 +238,8 @@ task_run    {"task": "<task id>"}               # start the agent: Orca, else He
 task_report {"task": "<task id>", "state": "running"}        # heartbeat, long jobs
 task_report {"task": "<task id>", "state": "done", "result": "48,120 chunks"}
 ```
+
+**Pickup.** `fleet_pickup` is the resume call. It joins enrolled devices, open goals, the task board, repos attached to those records, SSH aliases, and a skill catalog (`herdr`, `orca`, `browsermcp`, `agent-desktop`, `browser-skill`). Aliases are `alias`, `user`, `host`, `port` only. BrowserMCP, browser-skill (`bsk`), and [agent-desktop](https://github.com/vercel-labs/agent-desktop) stay installed on the machine that holds the login. Dispatch a task to that machine; the hub does not start them. `env_report` publishes which of those names are on PATH. The dashboard PICKUP card shows the same set on the existing `/w/<capability>` page.
 
 `wtf tasks` prints the same board from any machine. Claims expire after 15
 minutes of silence, so a crashed worker returns its task to the queue rather
