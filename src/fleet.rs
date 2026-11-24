@@ -1,11 +1,8 @@
-//! Cross-machine pickup: goals, SSH aliases, and the joined view an agent
-//! reads to resume work.
+//! Keyless fleet pickup store: goals, SSH aliases, and PATH-based tool probes.
 //!
-//! The hub stores goals and aliases. It never stores a private key, an
-//! IdentityFile path, a dashboard capability token, or a browser cookie.
-//! External programs (BrowserMCP, browser-skill, agent-desktop, Herdr, Orca)
-//! stay on the machine that has the login; this module only records whether
-//! a name was found on that machine's PATH.
+//! Stores only non-secret pickup data in `$WTF_HOME/fleet.json` (mode 0600).
+//! Private keys, IdentityFile paths, tokens, and cookies are rejected by
+//! `valid_host` / `valid_name` and verified absent via `forbidden_keys`.
 
 use crate::config::{self, valid_name};
 use crate::json::Value;
@@ -22,7 +19,7 @@ pub const MAX_DETAIL: usize = 2_000;
 pub const MAX_REPO: usize = 128;
 pub const MAX_HOST: usize = 253;
 
-/// Reported skill name, and the executables that count as "present".
+/// Reported tool name, and the executables that count as "present".
 const SKILL_BINS: &[(&str, &[&str])] = &[
     ("herdr", &["herdr"]),
     ("orca", &["orca", "orca-ide"]),
@@ -122,28 +119,21 @@ impl SshAlias {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct TaskBrief {
-    pub id: String,
-    pub title: String,
-    pub repo: String,
-    pub target: String,
-    pub state: String,
-    pub assignee: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct RepoRef {
-    pub repo: String,
-    pub device: String,
-    pub source: String,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SkillSight {
     pub device: String,
     pub name: String,
     pub present: bool,
+}
+
+impl SkillSight {
+    pub fn to_json(&self) -> Value {
+        Value::obj(vec![
+            ("device", Value::from(self.device.as_str())),
+            ("name", Value::from(self.name.as_str())),
+            ("present", Value::from(self.present)),
+        ])
+    }
 }
 
 pub struct FleetStore {
@@ -271,6 +261,22 @@ impl FleetStore {
         Ok(out)
     }
 
+    pub fn remove_goal(&self, id: &str) -> Result<bool, String> {
+        let id = id.trim();
+        if id.is_empty() || id.len() > 32 {
+            return Err("missing goal id".into());
+        }
+        let mut goals = self.goals.lock().unwrap();
+        let before = goals.len();
+        goals.retain(|g| g.id != id);
+        let removed = goals.len() != before;
+        drop(goals);
+        if removed {
+            self.persist()?;
+        }
+        Ok(removed)
+    }
+
     pub fn upsert_alias(
         &self,
         alias: &str,
@@ -312,6 +318,22 @@ impl FleetStore {
         self.persist()?;
         Ok(row)
     }
+
+    pub fn remove_alias(&self, alias: &str) -> Result<bool, String> {
+        let alias = alias.trim();
+        if !valid_name(alias) {
+            return Err("alias must be a short name (letters, digits, . _ -)".into());
+        }
+        let mut aliases = self.aliases.lock().unwrap();
+        let before = aliases.len();
+        aliases.retain(|a| a.alias != alias);
+        let removed = aliases.len() != before;
+        drop(aliases);
+        if removed {
+            self.persist()?;
+        }
+        Ok(removed)
+    }
 }
 
 pub fn valid_host(host: &str) -> bool {
@@ -340,9 +362,9 @@ pub fn valid_host(host: &str) -> bool {
 }
 
 /// Names found on PATH. The argument list is the allowlist above; nothing
-/// from a request is passed to the process.
+/// from user or file input is passed to the process.
 pub fn probe_skills(device: &str) -> Vec<SkillSight> {
-    let device = if device.is_empty() { "hub" } else { device };
+    let device = if device.is_empty() { "local" } else { device };
     SKILL_BINS
         .iter()
         .map(|(name, bins)| SkillSight {
@@ -360,105 +382,6 @@ fn bin_present(name: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-}
-
-/// Skills an agent reported inside an env document. Unknown names are dropped.
-pub fn skills_from_report(device: &str, report: &Value) -> Vec<SkillSight> {
-    let Some(arr) = report.get("skills").and_then(|x| x.as_arr()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for item in arr {
-        let Some(name) = item.get("name").and_then(|x| x.as_str()) else {
-            continue;
-        };
-        if !SKILL_BINS.iter().any(|(n, _)| *n == name) {
-            continue;
-        }
-        let present = item.get("present").and_then(|x| x.as_bool()).unwrap_or(false);
-        out.push(SkillSight {
-            device: device.to_string(),
-            name: name.to_string(),
-            present,
-        });
-    }
-    out
-}
-
-pub fn skill_report_json(device: &str) -> Vec<Value> {
-    probe_skills(device)
-        .into_iter()
-        .map(|s| {
-            Value::obj(vec![
-                ("name", Value::from(s.name.as_str())),
-                ("present", Value::from(s.present)),
-            ])
-        })
-        .collect()
-}
-
-pub fn assemble(
-    hub: &str,
-    devices: &[(String, bool)],
-    goals: &[Goal],
-    tasks: &[TaskBrief],
-    repos: &[RepoRef],
-    aliases: &[SshAlias],
-    skills: &[SkillSight],
-) -> Value {
-    let devices_v: Vec<Value> = devices
-        .iter()
-        .map(|(name, revoked)| {
-            Value::obj(vec![
-                ("name", Value::from(name.as_str())),
-                ("revoked", Value::from(*revoked)),
-            ])
-        })
-        .collect();
-    let goals_v: Vec<Value> = goals.iter().map(Goal::to_json).collect();
-    let tasks_v: Vec<Value> = tasks
-        .iter()
-        .map(|t| {
-            Value::obj(vec![
-                ("id", Value::from(t.id.as_str())),
-                ("title", Value::from(t.title.as_str())),
-                ("repo", Value::from(t.repo.as_str())),
-                ("target", Value::from(t.target.as_str())),
-                ("state", Value::from(t.state.as_str())),
-                ("assignee", Value::from(t.assignee.as_str())),
-            ])
-        })
-        .collect();
-    let repos_v: Vec<Value> = repos
-        .iter()
-        .map(|r| {
-            Value::obj(vec![
-                ("repo", Value::from(r.repo.as_str())),
-                ("device", Value::from(r.device.as_str())),
-                ("source", Value::from(r.source.as_str())),
-            ])
-        })
-        .collect();
-    let alias_v: Vec<Value> = aliases.iter().map(SshAlias::to_json).collect();
-    let skill_v: Vec<Value> = skills
-        .iter()
-        .map(|s| {
-            Value::obj(vec![
-                ("device", Value::from(s.device.as_str())),
-                ("name", Value::from(s.name.as_str())),
-                ("present", Value::from(s.present)),
-            ])
-        })
-        .collect();
-    Value::obj(vec![
-        ("hub", Value::from(hub)),
-        ("devices", Value::Arr(devices_v)),
-        ("goals", Value::Arr(goals_v)),
-        ("tasks", Value::Arr(tasks_v)),
-        ("repos", Value::Arr(repos_v)),
-        ("ssh_aliases", Value::Arr(alias_v)),
-        ("skills", Value::Arr(skill_v)),
-    ])
 }
 
 pub fn forbidden_keys(v: &Value) -> Vec<String> {
@@ -503,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn alias_and_goal_roundtrip_and_payload_is_keyless() {
+    fn alias_and_goal_crud_roundtrip_and_keyless() {
         let path = tmp();
         let store = FleetStore::load_at(&path);
         let alias = store
@@ -514,44 +437,28 @@ mod tests {
             .upsert_alias("bad", "kenwa", "/home/kenwa/.ssh/id_ed25519", 22)
             .is_err());
         assert!(store.upsert_alias("bad", "kenwa", "host name", 22).is_err());
+        assert!(store.upsert_alias("-bad", "kenwa", "host.local", 22).is_err());
+
         let goal = store
-            .add_goal("finish the pickup card", "dashboard", "wtf-is-going-on-mcp", "mac")
+            .add_goal("finish the lean cli", "stateless", "wtf-is-going-on-mcp", "mac")
             .unwrap();
         let done = store.done_goal(&goal.id).unwrap();
         assert_eq!(done.status, "done");
+
         let reloaded = FleetStore::load_at(&path);
         assert_eq!(reloaded.aliases().len(), 1);
         assert_eq!(reloaded.goals()[0].status, "done");
-        let payload = assemble(
-            "hub-test",
-            &[("mac".into(), false)],
-            &reloaded.goals(),
-            &[TaskBrief {
-                id: "t1".into(),
-                title: "smoke".into(),
-                repo: "wtf-is-going-on-mcp".into(),
-                target: "windows".into(),
-                state: "queued".into(),
-                assignee: String::new(),
-            }],
-            &[RepoRef {
-                repo: "wtf-is-going-on-mcp".into(),
-                device: "mac".into(),
-                source: "goal".into(),
-            }],
-            &reloaded.aliases(),
-            &[SkillSight {
-                device: "mac".into(),
-                name: "herdr".into(),
-                present: true,
-            }],
-        );
-        let text = payload.to_json();
-        assert!(forbidden_keys(&payload).is_empty(), "{text}");
-        assert!(!text.contains("id_ed25519"));
-        assert!(text.contains("peopleofthedawn.local"));
-        assert!(text.contains("ssh_aliases"));
-        let _ = std::fs::remove_file(&path);
+        assert!(forbidden_keys(&reloaded.goals()[0].to_json()).is_empty());
+        assert!(forbidden_keys(&reloaded.aliases()[0].to_json()).is_empty());
+
+        assert!(reloaded.remove_goal(&goal.id).unwrap());
+        assert!(!reloaded.remove_goal(&goal.id).unwrap());
+        assert!(reloaded.remove_alias("windows").unwrap());
+        assert!(!reloaded.remove_alias("windows").unwrap());
+        let reloaded2 = FleetStore::load_at(&path);
+        assert!(reloaded2.goals().is_empty());
+        assert!(reloaded2.aliases().is_empty());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -562,25 +469,12 @@ mod tests {
         assert!(!valid_host("a/b"));
         assert!(!valid_host("~/.ssh/id_ed25519"));
         assert!(!valid_host("host:22"));
+        assert!(!valid_host("-badhost"));
     }
 
     #[test]
-    fn reported_skills_drop_unknown_names() {
-        let report = Value::obj(vec![(
-            "skills",
-            Value::arr(vec![
-                Value::obj(vec![
-                    ("name", Value::from("herdr")),
-                    ("present", Value::from(true)),
-                ]),
-                Value::obj(vec![
-                    ("name", Value::from("malware")),
-                    ("present", Value::from(true)),
-                ]),
-            ]),
-        )]);
-        let seen = skills_from_report("windows", &report);
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].name, "herdr");
+    fn forbidden_key_detector_catches_secret_fields() {
+        let bad = Value::obj(vec![("identityFile", Value::from("/tmp/key"))]);
+        assert_eq!(forbidden_keys(&bad), vec!["identityFile".to_string()]);
     }
 }

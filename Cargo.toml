@@ -1,11 +1,11 @@
 [package]
 name = "wtf"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2021"
-description = "wtf-is-going-on-mcp: secure multi-agent activity hub with MCP stdio bridge and live dashboard"
+description = "wtf: stateless zero-dependency SSH/local fleet status, goals, and pickup CLI"
 publish = false
 
-# Zero external dependencies by design (see README: Security model).
+# Zero external dependencies by design.
 [dependencies]
 
 [[bin]]
