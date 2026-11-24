@@ -42,7 +42,51 @@ wtf enroll --url http://HUB:7800 --name <name> --token T   # on the new machine
 wtf join user@host                                         # or over ssh, self-serve
 ```
 
-Keys print once. They live in `$WTF_HOME` (default `~/.config/wtf-mcp`).
+Keys print once. They live in `$WTF_HOME` (default: `~/.config/wtf-mcp`).
+
+**Windows hosts are first-class** (0.19.0+): the binary is `wtf.exe`, state lives at
+`%USERPROFILE%\.config\wtf-mcp`, runner discovery honours `PATHEXT` (so `orca-ide.exe`
+is found, not just `orca-ide`), and local commands run through `cmd /C`. No WSL detour.
+
+`join` shells out to plain `ssh`, so give it an alias whose key already works:
+
+```powershell
+wtf.exe join mac --name windows      # ~/.ssh/config alias -> the key block that verified
+```
+
+A bare `user@host` only works when that host's **default** identity is passphrase-free.
+A macOS key protected by a passphrase + keychain cannot be unlocked from a
+non-interactive session, so a hub enrolling itself needs a local key:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_local -N "" -C "wtf-hub-local@$(scutil --get LocalHostName)"
+# authorize it with `restrict,pty`, then give it a Host block:
+#   Host localhost 127.0.0.1 ::1
+#       IdentityFile ~/.ssh/id_ed25519_local
+#       IdentitiesOnly yes
+wtf join nbiish@localhost --name mac
+```
+
+The hub binds where the other machines can reach it (`wtf serve --bind 0.0.0.0:7800
+--no-open`); put it on the always-on machine. Enrollment and every signed call are
+refused without a device key, so an open bind port is not an open API.
+
+Keep it alive with the platform's supervisor, not `nohup`:
+
+```bash
+# macOS: ~/Library/LaunchAgents/dev.wtf.hub.plist with RunAtLoad + KeepAlive,
+# ProgramArguments = [$HOME/.local/bin/wtf, serve, --bind, 0.0.0.0:7800, --no-open]
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.wtf.hub.plist
+launchctl print gui/$(id -u)/dev.wtf.hub | grep -E 'state =|pid ='
+```
+
+Install the binary on the **internal** disk (a copy, not a symlink into the
+checkout). A LaunchAgent whose executable sits on an external volume blocks in
+`dyld::open` at login: launchd reports `running`, nothing listens, the log stays
+empty, and `lsof -p <pid>` naming `/Volumes/…` is the tell. Rebuilding therefore
+needs the installed copy refreshed: `cp target/release/wtf ~/.local/bin/wtf` on
+macOS, `copy target\release\wtf.exe %USERPROFILE%\bin\wtf.exe` on Windows (that
+directory is already on the user PATH, so `{"command":"wtf"}` resolves).
 
 ## 2. Wire the MCP server
 
@@ -53,13 +97,17 @@ Keys print once. They live in `$WTF_HOME` (default `~/.config/wtf-mcp`).
 Credentials resolve from `$WTF_HOME/bridge.json`, or `WTF_HUB_URL` /
 `WTF_DEVICE_NAME` / `WTF_DEVICE_KEY`.
 
-## 3. Tools (24)
+## 3. Tools (27)
 
 **Presence & record**
 
 | Tool | Args | Use |
 |---|---|---|
-| `wtf_is_going_on` | `agent?` | Start here. Who is doing what, every machine. |
+| `fleet_pickup` | — | Start here when resuming. Devices, goals, tasks, repos, SSH aliases, and which machine has which external skill. JSON. No key paths. |
+| `goal_add` | `title`, `detail?`, `repo?`, `target?` | Record a goal the next agent can pick up. |
+| `goal_done` | `id` | Close a goal. |
+| `alias_set` | `alias`, `user`, `host`, `port?` | Register an SSH alias (name, user, host, port). Refuses paths and key material. |
+| `wtf_is_going_on` | `agent?` | Who is doing what, every machine. |
 | `check_in` | `status`, `task`, `details?`, `agent?`, `repo?` | Claim/extend your lane: `working`/`blocked`/`done`/`idle`. |
 | `log_event` | `message`, `level?`, `agent?`, `repo?` | Milestones, decisions, failures. |
 | `hub_info` | — | Hub URL + this device. No secrets. |
@@ -154,11 +202,12 @@ messages that have to survive the session.
 ## 5. The loop
 
 ```bash
-wtf_is_going_on                      # 1. orient — who is on what
-check_in working "audit federation retry"    # 2. claim your lane
+fleet_pickup                         # 1. resume — goals, tasks, repos, aliases, skills
+wtf_is_going_on                      # 2. who is on what right now
+check_in working "audit federation retry"    # 3. claim your lane
 # ... do the work in Herdr ...
-log_event "federation retry audited"         # 3. record milestones
-check_in done "federation retry audited"     # 4. close, so the next agent sees truth
+log_event "federation retry audited"         # 4. record milestones
+check_in done "federation retry audited"     # 5. close, so the next agent sees truth
 ```
 
 Handing off to a peer machine:
@@ -190,6 +239,8 @@ task_report {"task": "<task id>", "state": "running"}        # heartbeat, long j
 task_report {"task": "<task id>", "state": "done", "result": "48,120 chunks"}
 ```
 
+**Pickup.** `fleet_pickup` is the resume call. It joins enrolled devices, open goals, the task board, repos attached to those records, SSH aliases, and a skill catalog (`herdr`, `orca`, `browsermcp`, `agent-desktop`, `browser-skill`). Aliases are `alias`, `user`, `host`, `port` only. BrowserMCP, browser-skill (`bsk`), and [agent-desktop](https://github.com/vercel-labs/agent-desktop) stay installed on the machine that holds the login. Dispatch a task to that machine; the hub does not start them. `env_report` publishes which of those names are on PATH. The dashboard PICKUP card shows the same set on the existing `/w/<capability>` page.
+
 `wtf tasks` prints the same board from any machine. Claims expire after 15
 minutes of silence, so a crashed worker returns its task to the queue rather
 than stranding it; only the claiming device may finish a task, and only the
@@ -198,7 +249,41 @@ dispatcher may cancel one.
 Never leave `working` open without `check_in done` or `blocked`. A stale lane is
 worse than none.
 
-## 6. No MCP? Signed curl
+## 6. Transport - the SSH link between the machines
+
+wtf carries the record and the messages; it deliberately does not move files or
+run remote commands. That is plain OpenSSH, already wired and verified.
+
+| From | Command | Lands on |
+|---|---|---|
+| Mac | `ssh windows '<cmd>'` (alias of `psh`) | Windows PowerShell 5.1, user `kenwa` |
+| Mac | `ssh wsl '<cmd>'` | WSL Ubuntu 26.04, user `nanoboozhoo` |
+| Windows / WSL | `ssh mac '<cmd>'` | macOS, user `nbiish` |
+| any | `run-on <alias> '<cmd>'` | same targets, BatchMode + timeouts pinned |
+
+- **Names, not addresses.** Targets resolve by name (`peopleofthedawn.local`,
+  `mac.attlocal.net`); the `*-ip` aliases (`psh-ip`, `wsl-ip`, `mac-ip`) carry
+  the last-known DHCP address. Prefer names in anything long-lived.
+- **No prompts, ever.** Key-only auth - `PasswordAuthentication no` and
+  `AuthenticationMethods publickey` on both servers - so `BatchMode=yes`
+  succeeds. A code path that needs interactive auth is broken by definition.
+- **Exit status is the remote program's.** `255` means the SSH layer failed;
+  anything else is the command's own result.
+- **Keys are `restrict,pty`.** No agent forwarding, no `-L`/`-R`/`-W` tunnels,
+  no X11. Do not build a feature on tunnelling.
+- **Files:** `scp`, `sftp`, and `rsync -e ssh` work through the same aliases.
+  Windows paths need the drive form (`psh:D:/Workspace/...` or
+  `psh:/D:/Workspace/...`), and Win32-OpenSSH cannot traverse a junction - a
+  path through one fails with `dest open ...: Failure`, so use the real path or
+  the WSL view (`wsl:/mnt/d/Workspace/...`).
+- **Pick the right lane.** `ssh`/`scp` for one-off transport and anything you
+  drive yourself; the **task lane** (`task_*`) when the work belongs to the
+  other machine's own agent, keys, or repo checkout.
+
+Full topology, keys, fingerprints, rollback, and the failure table:
+`INTER_MACHINE_SSH_RUNBOOK.md` in `system-care-and-updates`.
+
+## 7. No MCP? Signed curl
 
 HMAC-SHA256 over `wtf-hmac-v1\nMETHOD\npath-and-query\nTS\nNONCE\nsha256hex(body)`,
 key = the device secret's raw 32 bytes.
@@ -214,7 +299,7 @@ wtf_call() { local m=$1 p=$2 b=${3:-}; local ts n bh sig
     -H "X-Wtf-Nonce: $n" -H "X-Wtf-Signature: $sig"; }
 ```
 
-## 7. Rules
+## 8. Rules
 
 - **Never** log, echo, or commit device keys or the capability token.
 - **Never** port-forward plain HTTP to the internet. TLS, WireGuard, or Tailscale.
@@ -223,7 +308,7 @@ wtf_call() { local m=$1 p=$2 b=${3:-}; local ts n bh sig
 - Dashboard lives at one unguessable path, `/w/<64-hex>`. Wrong path = 404.
 - Default port `7800` (set in `wtf serve --bind IP:PORT` or `config.json`).
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -241,3 +326,5 @@ wtf_call() { local m=$1 p=$2 b=${3:-}; local ts n bh sig
 | Port busy | Pick another port: `wtf serve --bind 127.0.0.1:7801`. There is no auto-fallback. |
 | Agent not visible in Herdr | It isn't in a Herdr pane. Launch it with `herdr agent start`. |
 | Peer machine silent | `env_probe` — is it enrolled and reporting? |
+| `wtf join` → `Permission denied (publickey)` | the ssh target did not resolve to an authorized, passphrase-free key | pass an `~/.ssh/config` alias (`wtf join mac`), or create a dedicated local key plus a `Host localhost` block |
+| `wtf status` → `bridge config incomplete` | this machine was never enrolled | `wtf join <alias> --name <device>`; state lives at `$WTF_HOME` (`%USERPROFILE%\.config\wtf-mcp` on Windows) |

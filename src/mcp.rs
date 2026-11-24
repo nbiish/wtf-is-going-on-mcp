@@ -997,6 +997,46 @@ impl Bridge {
             Value::obj(vec![
                 (
                     "name",
+                    Value::from("connections_list"),
+                ),
+                (
+                    "description",
+                    Value::from(
+                        "List the machines this box can reach and what each needs. Reads ~/.ssh/config plus federation peers, and with probe=true performs one bounded ssh login per host to report reachability and which agent runtimes (herdr/orca) each machine has. Use it before dispatching to a machine you have not used: it distinguishes 'no route' from 'host up but my key is refused' and prints the exact fix.",
+                    ),
+                ),
+                (
+                    "inputSchema",
+                    Value::obj(vec![
+                        ("type", Value::from("object")),
+                        (
+                            "properties",
+                            Value::obj(vec![
+                                (
+                                    "probe",
+                                    Value::obj(vec![
+                                        ("type", Value::from("boolean")),
+                                        (
+                                            "description",
+                                            Value::from(
+                                                "attempt a bounded ssh login to each host to check reachability and discover its runtimes (default false: config read only)",
+                                            ),
+                                        ),
+                                    ]),
+                                ),
+                                (
+                                    "timeout",
+                                    int_prop("per-host connect timeout in seconds when probing (default 6)"),
+                                ),
+                            ]),
+                        ),
+                        ("additionalProperties", Value::from(false)),
+                    ]),
+                ),
+            ]),
+            Value::obj(vec![
+                (
+                    "name",
                     Value::from("chat"),
                 ),
                 (
@@ -1072,6 +1112,7 @@ impl Bridge {
             "task_status" => self.tool_task_status(args),
             "task_run" => self.tool_task_run(args),
             "runner_probe" => self.tool_runner_probe(args),
+            "connections_list" => self.tool_connections(args),
             "chat" => self.tool_chat(args),
             "router_status" => self.tool_router_status(args),
             other => (format!("unknown tool: {other}"), true),
@@ -2321,6 +2362,96 @@ impl Bridge {
                     out.push_str("\nno runner can start work here: install Orca (or pair it) or Herdr.\n");
                 } else {
                     out.push_str(&format!("\ntask_run would use: {preferred}\n"));
+                }
+                (out, false)
+            }
+            Err(e) => (e, true),
+        }
+    }
+
+    /// connections_list { probe?, timeout? }: reachable machines and their gaps.
+    fn tool_connections(&self, args: &Value) -> (String, bool) {
+        let probe = args
+            .get("probe")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let timeout = args
+            .get("timeout")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(6)
+            .clamp(2, 60);
+        let path = if probe {
+            format!("/api/v1/connections?probe=1&timeout={timeout}")
+        } else {
+            "/api/v1/connections".to_string()
+        };
+        match self.api_get(&path) {
+            Ok(v) => {
+                let conns = v.get("connections").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                let probes = v.get("probes").and_then(|x| x.as_arr()).unwrap_or(&[]);
+                // Rebuild the text through the same renderer the CLI uses so
+                // the two surfaces cannot drift.
+                let mut list: Vec<crate::connections::Connection> = Vec::new();
+                for c in conns {
+                    let s = |k: &str| {
+                        c.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+                    };
+                    let host = s("host");
+                    list.push(crate::connections::Connection {
+                        name: s("name"),
+                        kind: s("kind"),
+                        user: s("user"),
+                        port: c.get("port").and_then(|x| x.as_i64()).unwrap_or(22) as u16,
+                        source: s("source"),
+                        identity: s("identity"),
+                        host,
+                    });
+                }
+                let mut results: Vec<crate::connections::ProbeResult> = Vec::new();
+                for p in probes {
+                    let s = |k: &str| {
+                        p.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+                    };
+                    results.push(crate::connections::ProbeResult {
+                        name: s("name"),
+                        status: s("status"),
+                        detail: s("detail"),
+                        os: s("os"),
+                        runners: p
+                            .get("runners")
+                            .and_then(|x| x.as_arr())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|r| r.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    });
+                }
+                let mut out = crate::connections::format_connections(&list, &results);
+                // Focus: the session lanes that give these machines purpose.
+                if let Some(focus) = v.get("focus").and_then(|x| x.as_arr()) {
+                    if !focus.is_empty() {
+                        out.push_str("\nfocused lanes:\n");
+                        for f in focus {
+                            let name = f.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                            let repo = f.get("repo").and_then(|x| x.as_str()).unwrap_or("");
+                            let members =
+                                f.get("members").and_then(|x| x.as_i64()).unwrap_or(0);
+                            let open = f.get("open_tasks").and_then(|x| x.as_i64()).unwrap_or(0);
+                            let sid = f.get("session").and_then(|x| x.as_str()).unwrap_or("");
+                            out.push_str(&format!(
+                                "  {name} @{repo} · {members} member(s) · {open} open task(s) · chat {}\n",
+                                &sid[..sid.len().min(8)]
+                            ));
+                        }
+                    }
+                }
+                if !probe {
+                    out.push_str(
+                        "\n(pass probe:true for a reachability check and to discover each machine's runtimes)\n",
+                    );
+                    out.push_str(&crate::connections::add_machine_recipe());
                 }
                 (out, false)
             }

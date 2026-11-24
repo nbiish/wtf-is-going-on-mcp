@@ -88,6 +88,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             | "/api/v1/sessions"
             | "/api/v1/tasks"
             | "/api/v1/tasks/board"
+            | "/api/v1/connections"
             | "/api/v1/enroll"
             | "/api/v1/fed/push"
             | "/api/v1/fed/peers"
@@ -133,6 +134,7 @@ pub fn handle(hub: &Arc<Hub>, req: &Request) -> HandlerResult {
             HandlerResult::Respond(session_single(hub, req))
         }
         ("GET", "/api/v1/tasks/board") => HandlerResult::Respond(tasks_board(hub, req)),
+        ("GET", "/api/v1/connections") => HandlerResult::Respond(connections_list(hub, req)),
         ("GET", "/api/v1/tasks/runners") => HandlerResult::Respond(tasks_runners(hub, req)),
         ("GET", "/api/v1/tasks") => HandlerResult::Respond(tasks_board(hub, req)),
         ("POST", "/api/v1/tasks") => HandlerResult::Respond(task_dispatch(hub, req)),
@@ -358,9 +360,75 @@ fn heartbeat(hub: &Arc<Hub>, req: &Request) -> Response {
     Response::json(200, &Value::obj(vec![("ok", Value::from(true))]))
 }
 
-// ---------- federated task dispatch ----------
+// ---------- connection discovery ----------
 
-/// GET /api/v1/tasks/runners — which agent runtimes are usable, with reasons.
+/// GET /api/v1/connections[?probe=1&timeout=N] — machines this box can reach,
+/// enriched with the sessions and open task work that give them focus.
+///
+/// Without `probe`, this is a pure read of ssh config + federation (no network
+/// side effects). With `probe=1` each ssh host gets one bounded BatchMode login
+/// to establish reachability and discover its runtimes. Probing is opt-in
+/// because it performs outbound connections.
+///
+/// "Focus" is the operator's existing session lane: a session's `repo` label and
+/// the tasks dispatched with that repo are what make a machine interesting right
+/// now. A machine with live work is listed first and marked busy, so the flat
+/// host list becomes a map of where attention actually belongs.
+fn connections_list(hub: &Arc<Hub>, req: &Request) -> Response {
+    if !cap_ok(hub, req) && device_auth(hub, req).is_err() {
+        return Response::error(401, "provide ?cap=<capability> or device auth headers");
+    }
+    let conns = crate::connections::discover();
+    let do_probe = req
+        .q("probe")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let timeout = req
+        .q("timeout")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(6)
+        .clamp(2, 60);
+    let probes = if do_probe {
+        crate::connections::probe_all(&conns, timeout)
+    } else {
+        Vec::new()
+    };
+
+    // Focus: which repos have an open chat, and which machines have open work.
+    let sessions = hub.sessions.list();
+    let tasks = hub.tasks.list();
+    let focus: Vec<Value> = sessions
+        .iter()
+        .map(|s| {
+            let open = tasks
+                .iter()
+                .filter(|t| t.session == s.id && !t.is_terminal())
+                .count();
+            Value::obj(vec![
+                ("session", Value::from(s.id.as_str())),
+                ("name", Value::from(s.name.as_str())),
+                ("repo", Value::from(s.repo.as_str())),
+                ("members", Value::from(s.members.len() as i64)),
+                ("open_tasks", Value::from(open as i64)),
+            ])
+        })
+        .collect();
+
+    let conn_json: Vec<Value> = conns.iter().map(|c| c.to_json()).collect();
+    let probe_json: Vec<Value> = probes.iter().map(|p| p.to_json()).collect();
+    Response::json(
+        200,
+        &Value::obj(vec![
+            ("connections", Value::Arr(conn_json)),
+            ("probes", Value::Arr(probe_json)),
+            ("probed", Value::from(do_probe)),
+            ("focus", Value::Arr(focus)),
+            ("recipe", Value::from(crate::connections::add_machine_recipe())),
+        ]),
+    )
+}
+
+// ---------- federated task dispatch ----------/// GET /api/v1/tasks/runners — which agent runtimes are usable, with reasons.
 /// Read-only probe; lets a dispatcher see whether `orca` or `herdr` will run
 /// the work before committing a task to this machine.
 fn tasks_runners(hub: &Arc<Hub>, req: &Request) -> Response {

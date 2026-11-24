@@ -36,6 +36,7 @@ pub const RUNNERS: [&str; 2] = ["orca", "herdr"];
 
 /// How long a probe may take before we treat the runtime as absent. A hung
 /// `--version` must not stall a claim.
+#[allow(dead_code)]
 const PROBE_TIMEOUT_SECS: u64 = 6;
 
 /// A resolved plan for one execution.
@@ -88,6 +89,11 @@ impl RunOutcome {
 }
 
 /// Is `name` on PATH and executable?
+///
+/// Deliberately does NOT run `--version`: several real tools (`ssh` among them)
+/// reject an unknown flag with a non-zero exit, and treating that as "absent"
+/// would hide a perfectly usable binary. We require a regular file that is
+/// executable by us, which is the property we actually depend on.
 pub fn which(name: &str) -> Option<String> {
     if name.is_empty() || name.contains('/') || name.contains('\\') {
         return None;
@@ -95,34 +101,27 @@ pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
-        if candidate.is_file() {
-            // Confirm it actually runs: a stale shim on PATH is not a runner.
-            if probe_runs(&candidate.to_string_lossy()) {
-                return Some(candidate.to_string_lossy().to_string());
-            }
+        if is_executable_file(&candidate) {
+            return Some(candidate.to_string_lossy().to_string());
         }
     }
     None
 }
 
-/// Run `<binary> --version` with a hard cap; true only on a clean exit.
-///
-/// This is deliberately conservative: a binary that exists but cannot execute
-/// (wrong arch, broken interpreter, a shim whose target is gone) is treated as
-/// absent, because the alternative is dispatching work into a runtime that
-/// cannot accept it.
-fn probe_runs(binary: &str) -> bool {
-    let mut cmd = Command::new(binary);
-    cmd.arg("--version");
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    match run_with_timeout(cmd, PROBE_TIMEOUT_SECS) {
-        Some(out) => out.status.success(),
-        None => false,
+/// Regular file with any execute bit set.
+fn is_executable_file(p: &std::path::Path) -> bool {
+    let Ok(md) = std::fs::metadata(p) else {
+        return false;
+    };
+    if !md.is_file() {
+        return false;
     }
+    use std::os::unix::fs::PermissionsExt;
+    md.permissions().mode() & 0o111 != 0
 }
 
+/// Run `<binary> --version` with a hard cap; true only on a clean exit.
+///
 /// Run a command with a wall-clock cap. Returns None on timeout or spawn error.
 ///
 /// std has no portable wait-with-timeout, so the child is polled. A hung

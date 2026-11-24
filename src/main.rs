@@ -43,6 +43,7 @@ fn run() -> i32 {
         Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
         Some("sessions") => cmd_sessions(&args[1..]),
         Some("tasks") => cmd_tasks(&args[1..]),
+        Some("connections") | Some("conns") => cmd_connections(&args[1..]),
         Some("federate") => cmd_federate(&args[1..]),
         Some("agent") => cmd_agent(),
         Some("status") => cmd_status(),
@@ -87,6 +88,7 @@ fn print_help() {
     println!("  wtf federate list                         show the federation peer table");
     println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
     println!("  wtf tasks [--state S] [--url U] [--cap K]  review the federated task board (designated cross-machine work + results)");
+    println!("  wtf connections [--probe] [--json]         list reachable machines (ssh config + peers), what each needs, and its runtimes");
     println!("  wtf federate remove <name>                unlink a peer hub");
     println!("  wtf agent                                  run the MCP stdio bridge");
     println!("  wtf status                                 print hub state as text");
@@ -833,6 +835,55 @@ fn resolve_hub_and_cap(
         "no capability token: pass --cap, --k or set WTF_CAPABILITY".to_string()
     })?;
     Ok((hub_url, cap))
+}
+
+/// `wtf connections [--probe] [--json]` — what this box can reach.
+///
+/// Runs entirely locally (ssh config + federation), so it needs no hub. This is
+/// the "what is possible from here, and what is blocking it" view the operator
+/// asked for: a machine that exists in config but refuses our key is reported
+/// as `auth` with the fix, not hidden.
+fn cmd_connections(args: &[String]) -> i32 {
+    let conns = wtf::connections::discover();
+    let conns: Vec<wtf::connections::Connection> = conns
+        .into_iter()
+        .filter(|c| {
+            // --ssh-only trims the view to real ssh targets.
+            !args.iter().any(|a| a == "--ssh-only") || c.kind == "ssh"
+        })
+        .collect();
+    let do_probe = args.iter().any(|a| a == "--probe");
+    let probes = if do_probe {
+        eprintln!("probing {} ssh host(s)…", conns.iter().filter(|c| c.kind == "ssh").count());
+        wtf::connections::probe_all(&conns, 6)
+    } else {
+        Vec::new()
+    };
+    if args.iter().any(|a| a == "--json") {
+        let cj: Vec<wtf::json::Value> = conns.iter().map(|c| c.to_json()).collect();
+        let pj: Vec<wtf::json::Value> = probes.iter().map(|p| p.to_json()).collect();
+        println!(
+            "{}",
+            wtf::json::Value::obj(vec![
+                ("connections", wtf::json::Value::Arr(cj)),
+                ("probes", wtf::json::Value::Arr(pj)),
+                ("probed", wtf::json::Value::from(do_probe)),
+                (
+                    "recipe",
+                    wtf::json::Value::from(wtf::connections::add_machine_recipe())
+                ),
+            ])
+            .to_json()
+        );
+        return 0;
+    }
+    print!("{}", wtf::connections::format_connections(&conns, &probes));
+    if !do_probe {
+        println!("\n(pass --probe to check reachability and discover runtimes)");
+    }
+    println!();
+    print!("{}", wtf::connections::add_machine_recipe());
+    0
 }
 
 /// `wtf tasks [--state S] [--url U] [--cap K]` — review the federated task

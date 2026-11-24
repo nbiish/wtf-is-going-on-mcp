@@ -10,6 +10,7 @@ pub mod auth;
 pub mod client;
 pub mod comms;
 pub mod config;
+pub mod connections;
 pub mod dashboard;
 pub mod chat;
 pub mod fed_shell;
