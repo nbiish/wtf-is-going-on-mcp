@@ -1,33 +1,12 @@
-//! `wtf` command-line interface.
-//!
-//!   wtf serve            run the hub (dashboard + signed API)
-//!   wtf key issue/list/revoke
-//!   wtf setup            configure this machine's bridge credentials
-//!   wtf agent            run the MCP stdio bridge (what MCP clients launch)
-//!   wtf status           print current hub state as text
+//! `wtf` command-line interface — stateless SSH/local fleet status, goals, and pickup.
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
-use wtf::client;
-use wtf::config::{self, BridgeConfig, HubConfig, KeyStore};
-use wtf::hmac;
-use wtf::http;
-use wtf::identity;
-use wtf::json;
-use wtf::mcp;
-use wtf::session_crypto;
-use wtf::store::Store;
-use wtf::util;
+use std::path::PathBuf;
+use wtf::fleet::{forbidden_keys, FleetStore, Goal, SshAlias};
+use wtf::json::Value;
+use wtf::probe::{self, LocalReport, RemoteReport};
 use wtf::VERSION;
 
-/// The portable hub skill, embedded at build time so the single binary can
-/// distribute it anywhere (`wtf skill install`). Authored in
-/// `ainish-coder/.agents/skills/wtf-is-going-on-mcp/` and copied here verbatim.
-// The embed source lives outside `.agents/skills/`, which the ainish-coder rules
-// system owns and rewrites from its pack selection — a skill file in there can be
-// deselected and deleted, which would break the build.
-const MASTER_SKILL: &str = include_str!("../skill/wtf-is-going-on-mcp.md");
+const SKILL_MD: &str = include_str!("../skill/wtf-is-going-on-mcp.md");
 
 fn main() {
     std::process::exit(run());
@@ -36,28 +15,17 @@ fn main() {
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
-        Some("serve") => cmd_serve(&args[1..]),
-        Some("key") => cmd_key(&args[1..]),
-        Some("setup") => cmd_setup(&args[1..]),
-        Some("url") => cmd_url(&args[1..]),
-        Some("join") => cmd_join(&args[1..]),
-        Some("enroll-token") => cmd_enroll_token(&args[1..]),
-        Some("enroll") => cmd_enroll(&args[1..]),
-        Some("enroll-secret") => cmd_enroll_secret(&args[1..]),
-        Some("sessions") => cmd_sessions(&args[1..]),
-        Some("tasks") => cmd_tasks(&args[1..]),
+        None => cmd_status(&[]),
+        Some("status") => cmd_status(&args[1..]),
+        Some("pickup") => cmd_pickup(&args[1..]),
         Some("goal") => cmd_goal(&args[1..]),
         Some("alias") => cmd_alias(&args[1..]),
-        Some("federate") => cmd_federate(&args[1..]),
-        Some("agent") => cmd_agent(),
-        Some("status") => cmd_status(),
-        Some("dashboard-url") => cmd_dashboard_url(),
         Some("skill") => cmd_skill(&args[1..]),
         Some("version") | Some("--version") | Some("-V") => {
             println!("wtf {VERSION}");
             0
         }
-        Some("help") | Some("--help") | Some("-h") | None => {
+        Some("help") | Some("--help") | Some("-h") => {
             print_help();
             0
         }
@@ -70,42 +38,22 @@ fn run() -> i32 {
 }
 
 fn print_help() {
-    println!("wtf {VERSION} — what the fuck is going on, across all my machines");
+    println!("wtf {VERSION} — stateless SSH/local fleet status, goals, and pickup CLI");
     println!();
     println!("USAGE:");
-    println!("  wtf serve [--bind IP:PORT] [--no-open]     run the hub (dashboard + API)");
-    println!("  wtf key issue [--json] <name>              provision a device key");
-    println!("  wtf key list                               list device keys");
-    println!("  wtf key revoke <name>                      revoke a device key");
-    println!("  wtf url [URL | clear]                      show/set the URL handed to joiners");
-    println!("  wtf setup --url URL --name N --key K       configure this machine's bridge");
-    println!("  wtf join user@host [--name N] [--url U]    enroll this machine via ssh");
-    println!(
-        "  wtf enroll-token <name> [--ttl SECS]       mint a one-time enrollment token (hub side)"
-    );
-    println!("  wtf enroll --url URL --name N --token T    redeem a token to enroll this machine");
-    println!(
-        "  wtf enroll --url URL --name N --psk S      signed-handshake enroll (key arrives sealed)"
-    );
-    println!("  wtf enroll-secret [--rotate] [--json]      print/rotate the site enrollment secret (hub)");
-    println!("  wtf federate add <name> --url URL --psk SECRET [--as DEV]  link a peer hub (one secret copy per edge)");
-    println!("  wtf federate list                         show the federation peer table");
-    println!("  wtf sessions [--url U] [--k K]            list session chats (id, name, repo, members); adds local pairing keys on the hub machine");
-    println!("  wtf tasks [--state S] [--url U] [--cap K]  review the federated task board (designated cross-machine work + results)");
-    println!("  wtf goal add --title T [--repo R] [--target M] [--detail D]");
-    println!("  wtf goal list | wtf goal done <id>        federated goals on the hub");
+    println!("  wtf [status] [--local] [--json]               probe local machine + SSH aliases + open goals");
+    println!("  wtf pickup [--json]                           offline pickup snapshot (local, goals, SSH targets)");
+    println!("  wtf goal [list] [--all] [--json]              list goals (open by default, or --all)");
+    println!("  wtf goal add <title> [--detail D] [--repo R] [--target H]");
+    println!("  wtf goal done <id> | wtf goal rm <id>         complete or remove a goal");
+    println!("  wtf alias [list] [--json]                     list keyless SSH aliases");
     println!("  wtf alias set <alias> <user> <host> [--port N]");
-    println!("  wtf alias list                            SSH aliases (no key paths)");
-    println!("  wtf federate remove <name>                unlink a peer hub");
-    println!("  wtf agent                                  run the MCP stdio bridge");
-    println!("  wtf status                                 print hub state as text");
-    println!("  wtf dashboard-url                          print the clickable dashboard URL (hub machine)");
-    println!("  wtf skill install [--dir DIR] [--force]    install the hub skill into DIR/.agents/skills/");
-    println!("  wtf skill print                            print the hub skill to stdout");
-    println!("  wtf help                                   this text");
+    println!("  wtf alias rm <alias>                          remove an SSH alias");
+    println!("  wtf skill print | install [--dir DIR] [--force]");
+    println!("  wtf version | wtf help");
     println!();
-    println!("state lives in $WTF_HOME (default: ~/.config/wtf-mcp)");
-    println!("see README.md for the full story");
+    println!("State lives in $WTF_HOME/fleet.json (default: ~/.config/wtf-mcp/fleet.json).");
+    println!("Use plain ssh/scp for remote execution and file transfer.");
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
@@ -119,397 +67,387 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
-fn parse_ip(s: &str) -> Option<Ipv4Addr> {
-    match s {
-        "localhost" => Some(Ipv4Addr::LOCALHOST),
-        other => other.parse().ok(),
+fn positional_args<'a>(args: &'a [String], value_flags: &[&str]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if value_flags.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if a.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        out.push(a);
+        i += 1;
     }
+    out
 }
 
-/// Open `url` in the operator's browser. Best-effort: a headless box is normal.
-fn open_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = Command::new("open");
-        c.arg(url);
-        c
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = {
-        let mut c = Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-    // `start` treats its first argument as a window title, hence the empty one.
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "start", "", url]);
-        c
-    };
-    let _ = cmd.spawn();
+fn current_cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn cmd_serve(args: &[String]) -> i32 {
-    let cfg = match HubConfig::load_or_create() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let keys = match KeyStore::load() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let store = match Store::new(&config::events_path()) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            eprintln!("error: cannot open event log: {e}");
-            return 1;
-        }
-    };
-    let store_for_sessions = Arc::clone(&store);
-    let capability = match wtf::federation::load_or_create_capability() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-
-    let mut bind_ip = cfg.bind_ip.clone();
-    let mut port = cfg.port;
-    if let Some(b) = flag_value(args, "--bind") {
-        let parsed = b.rsplit_once(':').and_then(|(ip, p)| {
-            let port: u16 = p.parse().ok()?;
-            let ip = parse_ip(ip)?;
-            Some((ip, port))
-        });
-        match parsed {
-            Some((ip, p)) => {
-                bind_ip = ip.to_string();
-                port = p;
-            }
-            None => {
-                eprintln!("error: --bind expects IP:PORT, got '{b}'");
-                return 2;
-            }
-        }
-    }
-    let ip: Ipv4Addr = match bind_ip.parse() {
-        Ok(i) => i,
-        Err(_) => {
-            eprintln!("error: bad bind ip '{bind_ip}' in config.json");
-            return 2;
-        }
-    };
-
-    // Federation: load the peer table, mint the hub name on first serve,
-    // and stamp it as the event origin. Spawn replication only when peers
-    // exist (a lone hub has nothing to sync).
-    let mut fed = wtf::federation::FedConfig::load();
-    let _ = fed.ensure_name();
-    store.set_origin_name(&fed.name);
-    let fed_arc = Arc::new(Mutex::new(fed.clone()));
-    let fed_name_for_rep = fed.name.clone();
-    let rep_store = Arc::clone(&store);
-    let rep_fed = Arc::clone(&fed_arc);
-    let rep_peers = fed.peers.len();
-    if rep_peers > 0 {
-        wtf::replicate::spawn(rep_store, fed_name_for_rep, rep_fed);
-    }
-
-    let sessions = wtf::sessions::Sessions::load();
-    let tasks = wtf::tasks::TaskStore::load();
-    let fleet = wtf::fleet::FleetStore::load();
-    let local_device = wtf::config::BridgeConfig::load()
-        .map(|c| c.device_name)
-        .unwrap_or_default();
-    let identities = Mutex::new(wtf::api::load_identities(&sessions));
-
-    let hub = Arc::new(wtf::api::Hub {
-        store,
-        keys: Mutex::new(keys),
-        nonces: Mutex::new(wtf::auth::NonceCache::new()),
-        dashboard_key: cfg.dashboard_key.clone(),
-        started_at: util::now_secs(),
-        identities,
-        sessions,
-        tasks,
-        fleet,
-        local_device,
-        enroll_hits: Mutex::new(Vec::new()),
-        enroll_nonces: Mutex::new(Vec::new()),
-        fed_name: fed.name.clone(),
-        fed: fed_arc,
-        env_reports: Mutex::new(Vec::new()),
-        capability: capability.clone(),
-        loopback_only: ip.is_loopback(),
-    });
-    // Dashboard SESSIONS card: feed live session summaries (metadata only)
-    // into the store's state payload. The registry lives on the Hub; the
-    // provider closure reads it through the shared Arc.
-    {
-        let hub_for_sessions = Arc::clone(&hub);
-        store_for_sessions.set_sessions_provider(Box::new(move || {
-            hub_for_sessions
-                .sessions
-                .list()
-                .iter()
-                .map(|s| wtf::store::SessionSummary {
-                    id: s.id.clone(),
-                    name: s.name.clone(),
-                    repo: s.repo.clone(),
-                    members: s.members.len(),
-                    msg_count: s.msgs.len(),
-                })
-                .collect()
-        }));
-    }
-    // Dashboard TASKS card: the federated task board, read live.
-    {
-        let hub_for_tasks = Arc::clone(&hub);
-        store_for_sessions.set_tasks_provider(Box::new(move || hub_for_tasks.tasks.to_state_json()));
-    }
-    {
-        let hub_for_fleet = Arc::clone(&hub);
-        store_for_sessions.set_fleet_provider(Box::new(move || {
-            wtf::api::fleet_payload(&hub_for_fleet)
-        }));
-    }
-    let handler_hub = Arc::clone(&hub);
-    let handler: http::Handler = Arc::new(move |req| wtf::api::handle(&handler_hub, req));
-
-    let listener = match TcpListener::bind(SocketAddr::from((ip, port))) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("error: cannot bind {ip}:{port}: {e}");
-            return 1;
-        }
-    };
-    let local = listener
-        .local_addr()
-        .unwrap_or(SocketAddr::from((ip, port)));
-    let display_ip = if ip == Ipv4Addr::UNSPECIFIED {
-        util::lan_ip()
+fn cmd_status(args: &[String]) -> i32 {
+    let local_only = has_flag(args, "--local");
+    let as_json = has_flag(args, "--json");
+    let cwd = current_cwd();
+    let store = FleetStore::load();
+    let aliases = store.aliases();
+    let open_goals: Vec<Goal> = store
+        .goals()
+        .into_iter()
+        .filter(|g| g.status == "open")
+        .collect();
+    let local = probe::probe_local(&cwd);
+    let remotes = if local_only {
+        Vec::new()
     } else {
-        ip.to_string()
+        probe::probe_all_remotes(&aliases)
     };
-    println!("wtf-hub v{VERSION} listening at http://{local}");
-    let cap_url = if let Some(ref adv) = cfg.advertised_url {
-        format!("{}/w/{}", adv.trim_end_matches('/'), capability)
-    } else if ip.is_loopback() {
-        format!("http://localhost:{}/w/{}", local.port(), capability)
+
+    if as_json {
+        let doc = Value::obj(vec![
+            ("version", Value::from(VERSION)),
+            ("local", local.to_json()),
+            (
+                "remotes",
+                Value::Arr(remotes.iter().map(RemoteReport::to_json).collect()),
+            ),
+            (
+                "goals",
+                Value::Arr(open_goals.iter().map(Goal::to_json).collect()),
+            ),
+        ]);
+        debug_assert!(forbidden_keys(&doc).is_empty());
+        println!("{}", doc.to_json());
+        return 0;
+    }
+
+    print_local_text(&local);
+    println!();
+    if local_only {
+        println!("REMOTES — skipped (--local)");
+    } else if remotes.is_empty() {
+        println!("REMOTES — (none — wtf alias set <alias> <user> <host>)");
     } else {
-        format!("http://{}:{}/w/{}", display_ip, local.port(), capability)
-    };
-    println!("dashboard: {cap_url}");
-    println!("press Ctrl-C to stop");
-
-    // Operator directive (2026-09-04): the hub never spawns or supervises
-    // local-router / fcc-server. The operator runs that infra themselves;
-    // the dashboard + /api/v1/router/status only PASSIVELY probe :11434.
-    {
-        use std::io::Write as _;
-        let _ = std::io::stdout().flush();
+        println!("REMOTES");
+        for r in &remotes {
+            if r.reachable {
+                let hn = r.remote_hostname.as_deref().unwrap_or("?");
+                println!(
+                    "  [up]   {} ({}@{}:{}) -> {} ({}ms)",
+                    r.alias, r.user, r.host, r.port, hn, r.latency_ms
+                );
+            } else {
+                let err = r.error.as_deref().unwrap_or("unreachable");
+                println!(
+                    "  [down] {} ({}@{}:{}) — {}",
+                    r.alias, r.user, r.host, r.port, err
+                );
+            }
+        }
     }
-
-    if !has_flag(args, "--no-open") {
-        let url = format!(
-            "http://{}:{}/w/{}",
-            display_ip,
-            local.port(),
-            capability
-        );
-        open_browser(&url);
-    }
-
-    http::serve(listener, handler);
+    println!();
+    print_goals_text(&open_goals, false);
     0
 }
 
-fn cmd_key(args: &[String]) -> i32 {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    let mut ks = match KeyStore::load() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
+fn cmd_pickup(args: &[String]) -> i32 {
+    let as_json = has_flag(args, "--json");
+    let cwd = current_cwd();
+    let store = FleetStore::load();
+    let aliases = store.aliases();
+    let open_goals: Vec<Goal> = store
+        .goals()
+        .into_iter()
+        .filter(|g| g.status == "open")
+        .collect();
+    let local = probe::probe_local(&cwd);
+
+    if as_json {
+        let alias_rows: Vec<Value> = aliases.iter().map(alias_pickup_json).collect();
+        let doc = Value::obj(vec![
+            ("version", Value::from(VERSION)),
+            ("local", local.to_json()),
+            ("goals", Value::Arr(open_goals.iter().map(Goal::to_json).collect())),
+            ("ssh_aliases", Value::Arr(alias_rows)),
+        ]);
+        debug_assert!(forbidden_keys(&doc).is_empty());
+        println!("{}", doc.to_json());
+        return 0;
+    }
+
+    print_local_text(&local);
+    println!();
+    print_goals_text(&open_goals, false);
+    println!();
+    print_aliases_text(&aliases);
+    0
+}
+
+fn alias_pickup_json(a: &SshAlias) -> Value {
+    let ssh_cmd = if a.port == 22 {
+        format!("ssh {}@{}", a.user, a.host)
+    } else {
+        format!("ssh -p {} {}@{}", a.port, a.user, a.host)
     };
-    match sub {
-        "issue" => {
-            let Some(name) = args.iter().skip(1).find(|a| !a.starts_with('-')) else {
-                eprintln!("usage: wtf key issue [--json] <name>");
-                return 2;
-            };
-            let secret = match ks.issue(name) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return 1;
-                }
-            };
-            let hub_url = HubConfig::load_or_create()
-                .map(|c| c.lan_url())
-                .unwrap_or_else(|_| "http://<hub-host>:7800".to_string());
-            if has_flag(args, "--json") {
-                let v = json::Value::obj(vec![
-                    ("hub_url", json::Value::from(hub_url.as_str())),
-                    ("device", json::Value::from(name.as_str())),
-                    ("key", json::Value::from(secret.as_str())),
-                ]);
-                println!("{}", v.to_json());
+    let scp_prefix = format!("{}@{}:", a.user, a.host);
+    Value::obj(vec![
+        ("alias", Value::from(a.alias.as_str())),
+        ("user", Value::from(a.user.as_str())),
+        ("host", Value::from(a.host.as_str())),
+        ("port", Value::from(a.port as i64)),
+        ("ssh", Value::from(ssh_cmd.as_str())),
+        ("scp_prefix", Value::from(scp_prefix.as_str())),
+    ])
+}
+
+fn print_local_text(local: &LocalReport) {
+    let tools: Vec<&str> = local
+        .skills
+        .iter()
+        .filter(|s| s.present)
+        .map(|s| s.name.as_str())
+        .collect();
+    let tools_str = if tools.is_empty() {
+        "none".to_string()
+    } else {
+        tools.join(", ")
+    };
+    println!(
+        "LOCAL: {} ({}/{}) · tools: [{}]",
+        local.hostname, local.os, local.arch, tools_str
+    );
+    if let Some(repo) = &local.repo {
+        println!(
+            "REPO:  {} [{}] ({} dirty)",
+            repo.path, repo.branch, repo.dirty
+        );
+    }
+    if let Some(herdr) = &local.herdr_agents {
+        println!("HERDR:\n  {}", herdr.replace('\n', "\n  "));
+    }
+}
+
+fn print_goals_text(goals: &[Goal], all: bool) {
+    if goals.is_empty() {
+        if all {
+            println!("GOALS — (none)");
+        } else {
+            println!("OPEN GOALS — (none)");
+        }
+        return;
+    }
+    println!("{}", if all { "GOALS" } else { "OPEN GOALS" });
+    for g in goals {
+        let mut meta = Vec::new();
+        if !g.repo.is_empty() {
+            meta.push(format!("repo={}", g.repo));
+        }
+        if !g.target.is_empty() {
+            meta.push(format!("target={}", g.target));
+        }
+        let suffix = if meta.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", meta.join(", "))
+        };
+        println!("  [{}] {} {}{}", g.status, g.id, g.title, suffix);
+        if !g.detail.is_empty() {
+            println!("      {}", g.detail);
+        }
+    }
+}
+
+fn print_aliases_text(aliases: &[SshAlias]) {
+    if aliases.is_empty() {
+        println!("SSH ALIASES — (none — wtf alias set <alias> <user> <host>)");
+        return;
+    }
+    println!("SSH ALIASES");
+    for a in aliases {
+        println!("  {} -> {}@{}:{}", a.alias, a.user, a.host, a.port);
+    }
+}
+
+fn cmd_goal(args: &[String]) -> i32 {
+    let store = FleetStore::load();
+    match args.first().map(|s| s.as_str()) {
+        None | Some("list") => {
+            let sub = args.get(1..).unwrap_or(&[]);
+            let show_all = has_flag(sub, "--all") || has_flag(args, "--all");
+            let as_json = has_flag(sub, "--json") || has_flag(args, "--json");
+            let goals: Vec<Goal> = store
+                .goals()
+                .into_iter()
+                .filter(|g| show_all || g.status == "open")
+                .collect();
+            if as_json {
+                let doc = Value::obj(vec![(
+                    "goals",
+                    Value::Arr(goals.iter().map(Goal::to_json).collect()),
+                )]);
+                println!("{}", doc.to_json());
                 return 0;
             }
-            println!("device '{name}' enrolled.");
-            println!();
-            println!("device key (shown once; store it now):");
-            println!("  {secret}");
-            println!();
-            println!("on the device, either run:");
-            println!("  wtf setup --url {hub_url} --name {name} --key {secret}");
-            println!("or set these env vars for the MCP bridge:");
-            println!("  WTF_HUB_URL={hub_url}");
-            println!("  WTF_DEVICE_NAME={name}");
-            println!("  WTF_DEVICE_KEY={secret}");
+            print_goals_text(&goals, show_all);
             0
         }
-        "list" => {
-            if ks.records.is_empty() {
-                println!("no devices enrolled");
-            }
-            for r in &ks.records {
-                let state = if r.revoked { "revoked" } else { "active" };
-                println!("{:<24} {state:<8} created {}", r.name, r.created_at);
-            }
-            0
-        }
-        "revoke" => {
-            let Some(name) = args.get(1) else {
-                eprintln!("usage: wtf key revoke <name>");
+        Some("add") => {
+            let rest = &args[1..];
+            let title = flag_value(rest, "--title").or_else(|| {
+                positional_args(rest, &["--detail", "--repo", "--target", "--title"])
+                    .into_iter()
+                    .next()
+                    .map(|s| s.to_string())
+            });
+            let Some(title) = title else {
+                eprintln!("usage: wtf goal add <title> [--detail D] [--repo R] [--target H]");
                 return 2;
             };
-            match ks.revoke(name) {
+            let detail = flag_value(rest, "--detail").unwrap_or_default();
+            let repo = flag_value(rest, "--repo").unwrap_or_default();
+            let target = flag_value(rest, "--target").unwrap_or_default();
+            match store.add_goal(&title, &detail, &repo, &target) {
+                Ok(g) => {
+                    println!("goal {} open: {}", g.id, g.title);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    2
+                }
+            }
+        }
+        Some("done") => {
+            let Some(id) = args.get(1).filter(|s| !s.starts_with('-')) else {
+                eprintln!("usage: wtf goal done <id>");
+                return 2;
+            };
+            match store.done_goal(id) {
+                Ok(g) => {
+                    println!("goal {} done", g.id);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        Some("rm") => {
+            let Some(id) = args.get(1).filter(|s| !s.starts_with('-')) else {
+                eprintln!("usage: wtf goal rm <id>");
+                return 2;
+            };
+            match store.remove_goal(id) {
                 Ok(true) => {
-                    println!("device '{name}' revoked; its key no longer authenticates.");
+                    println!("goal {id} removed");
                     0
                 }
                 Ok(false) => {
-                    eprintln!("error: no active device named '{name}'");
+                    eprintln!("error: no goal {id}");
                     1
                 }
                 Err(e) => {
                     eprintln!("error: {e}");
-                    1
+                    2
                 }
             }
         }
-        _ => {
-            eprintln!("usage: wtf key <issue|list|revoke> ...");
+        Some(other) => {
+            eprintln!("error: unknown goal command '{other}'");
             2
         }
     }
 }
 
-/// Shared enrollment path: verify hub reachability, persist bridge.json (0600),
-/// then verify the credentials end-to-end with a signed state fetch.
-fn run_setup(cfg: &BridgeConfig) -> Result<(), String> {
-    match client::get_text(&format!("{}/healthz", cfg.hub_url)) {
-        Ok((200, body)) if body.contains("wtf-hub") => {}
-        Ok((status, _)) => {
-            return Err(format!(
-                "hub responded HTTP {status} (is `wtf serve` running there?)"
-            ));
-        }
-        Err(e) => return Err(format!("cannot reach hub: {e}")),
-    }
-    cfg.save()?;
-    mcp::fetch_state(cfg).map(|_| ())
-}
-
-fn cmd_setup(args: &[String]) -> i32 {
-    let (url, name, key) = (
-        flag_value(args, "--url"),
-        flag_value(args, "--name"),
-        flag_value(args, "--key"),
-    );
-    let (Some(url), Some(name), Some(key)) = (url, name, key) else {
-        eprintln!("usage: wtf setup --url http://HUB:7800 --name DEVICE --key KEYHEX");
-        return 2;
-    };
-    let cfg = BridgeConfig {
-        hub_url: url.trim_end_matches('/').to_string(),
-        device_name: name,
-        device_key: key,
-    };
-    if let Err(e) = cfg.validate() {
-        eprintln!("error: {e}");
-        return 2;
-    }
-    if let Err(e) = run_setup(&cfg) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    println!("setup complete: bridge.json written, credentials verified against the hub.");
-    println!();
-    println!("add this to your MCP client configuration:");
-    println!(r#"  {{ "command": "wtf", "args": ["agent"] }}"#);
-    0
-}
-
-fn cmd_agent() -> i32 {
-    let cfg = match BridgeConfig::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    mcp::run(cfg);
-    0
-}
-
-fn cmd_status() -> i32 {
-    let cfg = match BridgeConfig::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    match mcp::fetch_state(&cfg) {
-        Ok(state) => {
-            print!("{}", mcp::format_state(&state, &cfg.hub_url));
+fn cmd_alias(args: &[String]) -> i32 {
+    let store = FleetStore::load();
+    match args.first().map(|s| s.as_str()) {
+        None | Some("list") => {
+            let as_json = has_flag(args, "--json");
+            let aliases = store.aliases();
+            if as_json {
+                let doc = Value::obj(vec![(
+                    "ssh_aliases",
+                    Value::Arr(aliases.iter().map(SshAlias::to_json).collect()),
+                )]);
+                println!("{}", doc.to_json());
+                return 0;
+            }
+            print_aliases_text(&aliases);
             0
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
+        Some("set") => {
+            let rest = &args[1..];
+            let pos = positional_args(rest, &["--port"]);
+            if pos.len() < 3 {
+                eprintln!("usage: wtf alias set <alias> <user> <host> [--port N]");
+                return 2;
+            }
+            let port: u16 = match flag_value(rest, "--port") {
+                Some(p) => match p.parse::<u16>() {
+                    Ok(n) if n > 0 => n,
+                    _ => {
+                        eprintln!("error: --port must be 1-65535");
+                        return 2;
+                    }
+                },
+                None => 22,
+            };
+            match store.upsert_alias(pos[0], pos[1], pos[2], port) {
+                Ok(a) => {
+                    println!("alias {} -> {}@{}:{}", a.alias, a.user, a.host, a.port);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    2
+                }
+            }
+        }
+        Some("rm") => {
+            let Some(alias) = args.get(1).filter(|s| !s.starts_with('-')) else {
+                eprintln!("usage: wtf alias rm <alias>");
+                return 2;
+            };
+            match store.remove_alias(alias) {
+                Ok(true) => {
+                    println!("alias {alias} removed");
+                    0
+                }
+                Ok(false) => {
+                    eprintln!("error: no alias {alias}");
+                    1
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    2
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!("error: unknown alias command '{other}'");
+            2
         }
     }
 }
 
-/// Distribute the portable hub skill to any project, repo, or agent
-/// workspace: `wtf skill install [--dir DIR] [--force]`. Idempotent —
-/// identical installs are a no-op; differing files need --force.
-/// `wtf skill print` emits the raw SKILL.md for piping.
 fn cmd_skill(args: &[String]) -> i32 {
     match args.first().map(|s| s.as_str()) {
         Some("print") => {
-            print!("{MASTER_SKILL}");
+            print!("{SKILL_MD}");
             0
         }
         Some("install") => {
             let force = has_flag(args, "--force");
-            let base = match flag_value(args, "--dir") {
-                Some(d) => std::path::PathBuf::from(d),
-                None => std::path::PathBuf::from("."),
-            };
+            let base = flag_value(args, "--dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
             let target = base
                 .join(".agents")
                 .join("skills")
@@ -517,7 +455,7 @@ fn cmd_skill(args: &[String]) -> i32 {
                 .join("SKILL.md");
             if target.exists() {
                 let existing = std::fs::read_to_string(&target).unwrap_or_default();
-                if existing == MASTER_SKILL {
+                if existing == SKILL_MD {
                     println!("already installed (identical): {}", target.display());
                     return 0;
                 }
@@ -535,12 +473,9 @@ fn cmd_skill(args: &[String]) -> i32 {
                     return 1;
                 }
             }
-            match std::fs::write(&target, MASTER_SKILL) {
+            match std::fs::write(&target, SKILL_MD) {
                 Ok(_) => {
                     println!("skill installed: {}", target.display());
-                    println!();
-                    println!("point agents at .agents/skills/wtf-is-going-on-mcp/SKILL.md, then register the bridge:");
-                    println!(r#"  {{ "command": "<absolute path to>/wtf", "args": ["agent"] }}"#);
                     0
                 }
                 Err(e) => {
@@ -554,1119 +489,4 @@ fn cmd_skill(args: &[String]) -> i32 {
             2
         }
     }
-}
-
-/// Mint a one-time enrollment token (hub machine). The token is printed once;
-/// only its SHA-256 hash is stored. It expires on its own, burns on
-/// redemption, and can be dropped early with `enroll-token revoke <name>` —
-/// so it can travel to the joining device over any channel.
-fn cmd_enroll_token(args: &[String]) -> i32 {
-    if args.first().map(|s| s.as_str()) == Some("revoke") {
-        let Some(name) = args.get(1) else {
-            eprintln!("usage: wtf enroll-token revoke <name>");
-            return 2;
-        };
-        let mut tokens = match config::EnrollTokenStore::load() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        };
-        if tokens.revoke(name) {
-            println!("pending enrollment tokens for '{name}' dropped.");
-            return 0;
-        }
-        eprintln!("error: no pending enrollment token for '{name}'");
-        return 1;
-    }
-    let Some(name) = args.iter().find(|a| !a.starts_with('-')) else {
-        eprintln!(
-            "usage: wtf enroll-token <name> [--ttl SECS] [--json] | wtf enroll-token revoke <name>"
-        );
-        return 2;
-    };
-    let ttl: u64 = flag_value(args, "--ttl")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(600);
-    let mut tokens = match config::EnrollTokenStore::load() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let token = match tokens.issue(name, ttl) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let hub_url = HubConfig::load_or_create()
-        .map(|c| c.lan_url())
-        .unwrap_or_else(|_| "http://<hub-host>:7800".to_string());
-    if has_flag(args, "--json") {
-        let v = json::Value::obj(vec![
-            ("hub_url", json::Value::from(hub_url.as_str())),
-            ("device", json::Value::from(name.as_str())),
-            ("token", json::Value::from(token.as_str())),
-            ("expires_in", json::Value::from(ttl as i64)),
-        ]);
-        println!("{}", v.to_json());
-        return 0;
-    }
-    println!("enrollment token for '{name}' (valid {ttl}s, shown once):");
-    println!("  {token}");
-    println!();
-    println!("on the joining device, run:");
-    println!("  wtf enroll --url {hub_url} --name {name} --token {token}");
-    0
-}
-
-/// Enroll this machine over HTTP. Two modes:
-/// - `--token T` (v0.8.0): the single-use token is the credential; the fresh
-///   device key crosses in the one-time response.
-/// - `--psk S` (v0.9.0): signed handshake — we prove possession of the site
-///   secret via HMAC (the secret itself never travels) and receive the device
-///   key ML-KEM-768-sealed to this machine's encapsulation key.
-/// `--url` is the address to store — use it to override the hub's
-/// auto-detected/advertised address (overlay IPs, NAT, TLS proxies).
-fn cmd_enroll(args: &[String]) -> i32 {
-    let url = match flag_value(args, "--url") {
-        Some(u) => u.trim_end_matches('/').to_string(),
-        None => {
-            eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE (--token TOKEN | --psk SECRET)");
-            return 2;
-        }
-    };
-    let name = match flag_value(args, "--name") {
-        Some(n) => n,
-        None => {
-            eprintln!("error: --name is required");
-            return 2;
-        }
-    };
-    if !config::valid_name(&name) {
-        eprintln!("error: --name must match [A-Za-z0-9._-]{{1,64}}");
-        return 2;
-    }
-    let token = flag_value(args, "--token");
-    let psk = flag_value(args, "--psk");
-    let key = match (token, psk) {
-        (Some(_), Some(_)) => {
-            eprintln!("error: --token and --psk are mutually exclusive");
-            return 2;
-        }
-        (Some(t), None) => match redeem_token(&url, &name, &t) {
-            Ok(k) => k,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        },
-        (None, Some(s)) => match redeem_psk(&url, &name, &s) {
-            Ok(k) => k,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        },
-        (None, None) => {
-            eprintln!("usage: wtf enroll --url http://HUB:7800 --name DEVICE (--token TOKEN | --psk SECRET)");
-            return 2;
-        }
-    };
-    let cfg = BridgeConfig {
-        hub_url: url,
-        device_name: name,
-        device_key: key,
-    };
-    if let Err(e) = cfg.validate() {
-        eprintln!("error: {e}");
-        return 2;
-    }
-    if let Err(e) = run_setup(&cfg) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    println!(
-        "enrolled: '{}' reaching the hub at {}.",
-        cfg.device_name, cfg.hub_url
-    );
-    println!();
-    println!("add this to your MCP client configuration:");
-    println!(r#"  {{ "command": "wtf", "args": ["agent"] }}"#);
-    0
-}
-
-/// Token mode: POST { name, token }, expect the one-time `key` response.
-fn redeem_token(url: &str, name: &str, token: &str) -> Result<String, String> {
-    let body = json::Value::obj(vec![
-        ("name", json::Value::from(name)),
-        ("token", json::Value::from(token)),
-    ]);
-    eprintln!("enrolling '{name}' at {url} (token) ...");
-    let resp = client::request(
-        &format!("{url}/api/v1/enroll"),
-        "POST",
-        &[],
-        body.to_json().as_bytes(),
-    )
-    .map_err(|e| format!("cannot reach hub: {e}"))?;
-    if resp.status != 200 {
-        eprintln!(
-            "enrollment refused (HTTP {}): {}",
-            resp.status,
-            resp.text().trim()
-        );
-        return Err("tokens are single-use and expire; ask the hub operator for a fresh `wtf enroll-token`.".into());
-    }
-    let parsed = resp.json().ok_or("hub returned a non-JSON response")?;
-    parsed
-        .get("key")
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .ok_or("hub response missing key field".into())
-}
-
-/// PSK mode: prove possession of the site secret with an HMAC over the
-/// handshake transcript, then open the ML-KEM-768-sealed key package that
-/// comes back. The secret never crosses the wire; the device key arrives
-/// sealed and is unwrapped only in memory.
-fn redeem_psk(url: &str, name: &str, psk: &str) -> Result<String, String> {
-    let psk = psk.trim().to_lowercase();
-    if psk.len() != 64 || !psk.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("--psk must be the 64-hex site enrollment secret (print it on the hub with `wtf enroll-secret`)".into());
-    }
-    let id = identity::load_or_create()?;
-    let ek = util::hex_encode(&id.ek);
-    let ts = util::now_secs();
-    let nonce = wtf::rand::hex(16);
-    let proof = hmac::hmac_sha256_hex(
-        psk.as_bytes(),
-        format!("wtf-enroll-v2\n{name}\n{ek}\n{ts}\n{nonce}").as_bytes(),
-    );
-    let body = json::Value::obj(vec![
-        ("name", json::Value::from(name)),
-        ("ek", json::Value::from(ek.as_str())),
-        ("ts", json::Value::from(ts as i64)),
-        ("nonce", json::Value::from(nonce.as_str())),
-        ("proof", json::Value::from(proof.as_str())),
-    ]);
-    eprintln!("enrolling '{name}' at {url} (signed handshake) ...");
-    let resp = client::request(
-        &format!("{url}/api/v1/enroll"),
-        "POST",
-        &[],
-        body.to_json().as_bytes(),
-    )
-    .map_err(|e| format!("cannot reach hub: {e}"))?;
-    if resp.status != 200 {
-        eprintln!(
-            "enrollment refused (HTTP {}): {}",
-            resp.status,
-            resp.text().trim()
-        );
-        return Err("handshake rejected: wrong/expired secret, stale clock, replayed handshake, or the secret was rotated (`wtf enroll-secret --rotate` invalidates every copy)".into());
-    }
-    let parsed = resp.json().ok_or("hub returned a non-JSON response")?;
-    let Some(sealed) = parsed.get("sealed").and_then(|x| x.as_str()) else {
-        return Err("hub response missing sealed key package".into());
-    };
-    let key32 =
-        session_crypto::open_sealed_package(sealed, &id.dk, &format!("wtf-enroll-v2:{name}"))?;
-    Ok(util::hex_encode(&key32))
-}
-
-/// Hub-side: print (or rotate) the site enrollment secret that the operator
-/// copies once to each joining machine (`wtf enroll --psk`).
-fn cmd_enroll_secret(args: &[String]) -> i32 {
-    let rotate = args.iter().any(|a| a == "--rotate");
-    let as_json = args.iter().any(|a| a == "--json");
-    let secret = if rotate {
-        match HubConfig::rotate_enroll_secret() {
-            Ok(s) => {
-                eprintln!("rotated: every previously copied secret is now invalid.");
-                s
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        }
-    } else {
-        match HubConfig::load_or_create() {
-            Ok(c) => c.enroll_secret,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        }
-    };
-    if as_json {
-        let url = HubConfig::load_or_create()
-            .map(|c| c.lan_url())
-            .unwrap_or_default();
-        println!(
-            "{}",
-            json::Value::obj(vec![
-                ("hub_url", json::Value::from(url.as_str())),
-                ("enroll_secret", json::Value::from(secret.as_str())),
-            ])
-            .to_json()
-        );
-        return 0;
-    }
-    let url = HubConfig::load_or_create()
-        .map(|c| c.lan_url())
-        .unwrap_or_default();
-    println!("site enrollment secret (copy once per joining machine):");
-    println!("{secret}");
-    println!();
-    println!("then on the joining machine:");
-    println!("  wtf enroll --url {url} --name DEVICE --psk {secret}");
-    println!();
-    println!("rotate with `wtf enroll-secret --rotate` to invalidate every outstanding copy.");
-    0
-}
-
-/// Resolve (hub_url, capability) the way every operator CLI command does:
-/// explicit flags, then WTF_HUB_URL / WTF_CAPABILITY, then the local
-/// bridge.json / hub config.json / dashboard_capability file.
-fn resolve_hub_and_cap(
-    args: &[String],
-) -> Result<(String, String), String> {
-    let home = config::home();
-    let hub_url = match flag_value(args, "--url") {
-        Some(u) => Some(u.trim_end_matches('/').to_string()),
-        None => match std::env::var("WTF_HUB_URL") {
-            Ok(u) if !u.trim().is_empty() => Some(u.trim().trim_end_matches('/').to_string()),
-            _ => {
-                let bridge = home.join("bridge.json");
-                let cfg = home.join("config.json");
-                if bridge.exists() {
-                    read_json_field(&bridge, "hub_url")
-                } else if cfg.exists() {
-                    HubConfig::load_or_create_at(&cfg).map(|c| c.lan_url()).ok()
-                } else {
-                    None
-                }
-            }
-        },
-    };
-    let hub_url = hub_url.ok_or_else(|| {
-        "no hub URL: pass --url, set WTF_HUB_URL, or run where bridge.json/config.json exists"
-            .to_string()
-    })?;
-    let cap = match flag_value(args, "--cap").or_else(|| flag_value(args, "--k")) {
-        Some(k) => Some(k),
-        None => match std::env::var("WTF_CAPABILITY").or_else(|_| std::env::var("WTF_DASHBOARD_KEY"))
-        {
-            Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
-            _ => {
-                let cap_file = home.join("dashboard_capability");
-                if cap_file.exists() {
-                    std::fs::read_to_string(&cap_file).ok().map(|s| s.trim().to_string())
-                } else {
-                    None
-                }
-            }
-        },
-    };
-    let cap = cap.ok_or_else(|| {
-        "no capability token: pass --cap, --k or set WTF_CAPABILITY".to_string()
-    })?;
-    Ok((hub_url, cap))
-}
-
-/// `wtf tasks [--state S] [--url U] [--cap K]` — review the federated task
-/// board from any machine. Reads the same capability-gated route the
-/// dashboard uses, so the operator never needs the browser to see where
-/// designated work actually went.
-fn bridge_or_exit() -> Result<mcp::Bridge, i32> {
-    match BridgeConfig::load() {
-        Ok(cfg) => Ok(mcp::Bridge { cfg }),
-        Err(e) => {
-            eprintln!("error: {e}");
-            Err(1)
-        }
-    }
-}
-
-fn cmd_goal(args: &[String]) -> i32 {
-    let bridge = match bridge_or_exit() {
-        Ok(b) => b,
-        Err(c) => return c,
-    };
-    match args.first().map(|s| s.as_str()) {
-        Some("list") | None => match bridge.api_get("/api/v1/fleet") {
-            Ok(v) => {
-                let goals = v.get("goals").and_then(|x| x.as_arr()).unwrap_or(&[]);
-                if goals.is_empty() {
-                    println!("GOALS — (none)");
-                    return 0;
-                }
-                println!("GOALS");
-                for g in goals {
-                    let id = g.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-                    let status = g.get("status").and_then(|x| x.as_str()).unwrap_or("?");
-                    let title = g.get("title").and_then(|x| x.as_str()).unwrap_or("");
-                    let repo = g.get("repo").and_then(|x| x.as_str()).unwrap_or("");
-                    let target = g.get("target").and_then(|x| x.as_str()).unwrap_or("");
-                    println!("  {status} {id} {title} repo={repo} target={target}");
-                }
-                0
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                1
-            }
-        },
-        Some("add") => {
-            let title = match flag_value(args, "--title") {
-                Some(t) => t,
-                None => {
-                    eprintln!("error: wtf goal add --title T [--repo R] [--target M] [--detail D]");
-                    return 2;
-                }
-            };
-            let body = json::Value::obj(vec![
-                ("title", json::Value::from(title.as_str())),
-                (
-                    "detail",
-                    json::Value::from(flag_value(args, "--detail").unwrap_or_default().as_str()),
-                ),
-                (
-                    "repo",
-                    json::Value::from(flag_value(args, "--repo").unwrap_or_default().as_str()),
-                ),
-                (
-                    "target",
-                    json::Value::from(flag_value(args, "--target").unwrap_or_default().as_str()),
-                ),
-            ]);
-            match bridge.api_post("/api/v1/goals", &body) {
-                Ok(v) => {
-                    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-                    println!("goal {id} open");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    1
-                }
-            }
-        }
-        Some("done") => {
-            let id = match args.get(1) {
-                Some(id) if !id.starts_with('-') => id.clone(),
-                _ => {
-                    eprintln!("error: wtf goal done <id>");
-                    return 2;
-                }
-            };
-            let body = json::Value::obj(vec![("id", json::Value::from(id.as_str()))]);
-            match bridge.api_post("/api/v1/goals/done", &body) {
-                Ok(_) => {
-                    println!("goal {id} done");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    1
-                }
-            }
-        }
-        Some(other) => {
-            eprintln!("error: unknown goal command '{other}'");
-            2
-        }
-    }
-}
-
-fn cmd_alias(args: &[String]) -> i32 {
-    let bridge = match bridge_or_exit() {
-        Ok(b) => b,
-        Err(c) => return c,
-    };
-    match args.first().map(|s| s.as_str()) {
-        Some("list") | None => match bridge.api_get("/api/v1/fleet") {
-            Ok(v) => {
-                let rows = v.get("ssh_aliases").and_then(|x| x.as_arr()).unwrap_or(&[]);
-                if rows.is_empty() {
-                    println!("SSH ALIASES — (none — wtf alias set <alias> <user> <host>)");
-                    return 0;
-                }
-                println!("SSH ALIASES");
-                for a in rows {
-                    let alias = a.get("alias").and_then(|x| x.as_str()).unwrap_or("?");
-                    let user = a.get("user").and_then(|x| x.as_str()).unwrap_or("?");
-                    let host = a.get("host").and_then(|x| x.as_str()).unwrap_or("?");
-                    let port = a.get("port").and_then(|x| x.as_i64()).unwrap_or(22);
-                    println!("  {alias} {user}@{host}:{port}");
-                }
-                0
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                1
-            }
-        },
-        Some("set") => {
-            let alias = match args.get(1) {
-                Some(s) => s.clone(),
-                None => {
-                    eprintln!("error: wtf alias set <alias> <user> <host> [--port N]");
-                    return 2;
-                }
-            };
-            let user = match args.get(2) {
-                Some(s) => s.clone(),
-                None => {
-                    eprintln!("error: wtf alias set <alias> <user> <host> [--port N]");
-                    return 2;
-                }
-            };
-            let host = match args.get(3) {
-                Some(s) => s.clone(),
-                None => {
-                    eprintln!("error: wtf alias set <alias> <user> <host> [--port N]");
-                    return 2;
-                }
-            };
-            let port: i64 = match flag_value(args, "--port") {
-                Some(p) => match p.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        eprintln!("error: --port must be a number");
-                        return 2;
-                    }
-                },
-                None => 22,
-            };
-            let body = json::Value::obj(vec![
-                ("alias", json::Value::from(alias.as_str())),
-                ("user", json::Value::from(user.as_str())),
-                ("host", json::Value::from(host.as_str())),
-                ("port", json::Value::from(port)),
-            ]);
-            match bridge.api_post("/api/v1/aliases", &body) {
-                Ok(_) => {
-                    println!("alias {alias} {user}@{host}:{port}");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    1
-                }
-            }
-        }
-        Some(other) => {
-            eprintln!("error: unknown alias command '{other}'");
-            2
-        }
-    }
-}
-
-fn cmd_tasks(args: &[String]) -> i32 {
-    let (hub_url, cap) = match resolve_hub_and_cap(args) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
-    };
-    let want_state = flag_value(args, "--state");
-    let resp = match client::request(
-        &format!("{hub_url}/api/v1/tasks?cap={cap}"),
-        "GET",
-        &[],
-        b"",
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: cannot reach hub: {e}");
-            return 1;
-        }
-    };
-    if resp.status != 200 {
-        eprintln!(
-            "error: hub refused (HTTP {}): {}",
-            resp.status,
-            resp.text().trim()
-        );
-        return 1;
-    }
-    let Some(v) = resp.json() else {
-        eprintln!("error: hub returned a non-JSON response");
-        return 1;
-    };
-    let tasks = v.get("tasks").and_then(|x| x.as_arr()).unwrap_or(&[]);
-    let counts = v.get("counts");
-    let n = |k: &str| {
-        counts
-            .and_then(|c| c.get(k))
-            .and_then(|x| x.as_i64())
-            .unwrap_or(0)
-    };
-    println!(
-        "FEDERATED TASKS — queued {} · claimed {} · running {} · blocked {} · done {} · failed {} · cancelled {}",
-        n("queued"),
-        n("claimed"),
-        n("running"),
-        n("blocked"),
-        n("done"),
-        n("failed"),
-        n("cancelled")
-    );
-    let shown: Vec<&wtf::json::Value> = tasks
-        .iter()
-        .filter(|t| match &want_state {
-            Some(s) => t.get("state").and_then(|x| x.as_str()) == Some(s.as_str()),
-            None => true,
-        })
-        .collect();
-    if shown.is_empty() {
-        match want_state {
-            Some(s) => println!("  (none in state '{s}')"),
-            None => println!("  (none — an agent designates work with task_dispatch)"),
-        }
-        return 0;
-    }
-    for t in shown {
-        let state = t.get("state").and_then(|x| x.as_str()).unwrap_or("?");
-        let id = t.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-        let title = t.get("title").and_then(|x| x.as_str()).unwrap_or("");
-        let target = t.get("target").and_then(|x| x.as_str()).unwrap_or("");
-        let assignee = t.get("assignee").and_then(|x| x.as_str()).unwrap_or("");
-        let repo = t.get("repo").and_then(|x| x.as_str()).unwrap_or("");
-        let session = t.get("session").and_then(|x| x.as_str()).unwrap_or("");
-        print!("  [{state}] {id} ");
-        print!("{title}");
-        if !repo.is_empty() {
-            print!(" @{repo}");
-        }
-        print!(
-            " · target {target} · assignee {}",
-            if assignee.is_empty() { "-" } else { assignee }
-        );
-        if !session.is_empty() {
-            print!(" · chat {}", &session[..session.len().min(8)]);
-        }
-        println!();
-    }
-    0
-}
-
-/// Operator session-chat view: lists every chat on the hub (id, name,
-/// paired repo, members, messages) so the operator can see which chat maps
-/// to which repo and hand out pairing keys. On the machine that CREATED a
-/// chat (the creator's session_keys.json holds its pairing key), the local
-/// pairing keys are printed too — that is the key the operator copies to
-/// the other machine/agent. Hub URL + key resolve like every other CLI command.
-fn cmd_sessions(args: &[String]) -> i32 {
-    let rest = &args[..];
-    let url_flag = flag_value(rest, "--url");
-    let k_flag = flag_value(rest, "--cap").or_else(|| flag_value(rest, "--k"));
-    let home = config::home();
-    let hub_url = match url_flag {
-        Some(u) => Some(u.trim_end_matches('/').to_string()),
-        None => match std::env::var("WTF_HUB_URL") {
-            Ok(u) if !u.trim().is_empty() => Some(u.trim().trim_end_matches('/').to_string()),
-            _ => {
-                let bridge = home.join("bridge.json");
-                let cfg = home.join("config.json");
-                if bridge.exists() {
-                    read_json_field(&bridge, "hub_url")
-                } else if cfg.exists() {
-                    HubConfig::load_or_create_at(&cfg).map(|c| c.lan_url()).ok()
-                } else {
-                    None
-                }
-            }
-        },
-    };
-    let Some(hub_url) = hub_url else {
-        eprintln!("error: no hub URL: pass --url, set WTF_HUB_URL, or run where bridge.json/config.json exists");
-        return 2;
-    };
-    let key = match k_flag {
-        Some(k) => Some(k),
-        None => match std::env::var("WTF_CAPABILITY").or_else(|_| std::env::var("WTF_DASHBOARD_KEY")) {
-            Ok(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
-            _ => {
-                let cap_file = home.join("dashboard_capability");
-                if cap_file.exists() {
-                    std::fs::read_to_string(&cap_file).ok().map(|s| s.trim().to_string())
-                } else {
-                    None
-                }
-            }
-        },
-    };
-    let Some(key) = key else {
-        eprintln!("error: no capability token: pass --cap, --k or set WTF_CAPABILITY");
-        return 2;
-    };
-    let resp = match client::request(
-        &format!("{hub_url}/api/v1/sessions?cap={key}"),
-        "GET",
-        &[],
-        b"",
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: cannot reach hub: {e}");
-            return 1;
-        }
-    };
-    if resp.status != 200 {
-        eprintln!(
-            "error: hub refused (HTTP {}): {}",
-            resp.status,
-            resp.text().trim()
-        );
-        return 1;
-    }
-    let Some(v) = resp.json() else {
-        eprintln!("error: hub returned a non-JSON response");
-        return 1;
-    };
-    // Local pairing keys (creator machine only; file is 0600).
-    let local_pairings: Vec<(String, String)> =
-        crate::config::load_json(&home.join("session_keys.json"))
-            .ok()
-            .flatten()
-            .and_then(|v| {
-                v.get("pairings").and_then(|x| x.as_obj()).map(|o| {
-                    o.iter()
-                        .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-    println!("AGENT CHATS (id · name · repo · members · msgs)");
-    let sessions = v.get("sessions").and_then(|x| x.as_arr()).unwrap_or(&[]);
-    if sessions.is_empty() {
-        println!("  (none — an agent creates one with session_create)");
-    }
-    for s in sessions {
-        let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-        let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-        let repo = s.get("repo").and_then(|x| x.as_str()).unwrap_or("");
-        let members = s
-            .get("members")
-            .and_then(|x| x.as_arr())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        let msgs = s.get("msg_count").and_then(|x| x.as_i64()).unwrap_or(0);
-        let mut member_names: Vec<String> = s
-            .get("members")
-            .and_then(|x| x.as_arr())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| {
-                        m.get("device")
-                            .and_then(|v| v.as_str())
-                            .map(|d| d.to_string())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        member_names.sort();
-        println!(
-            "  {id} · '{name}' · repo: {} · {members} member(s) [{}] · {msgs} msg(s)",
-            if repo.is_empty() { "-" } else { repo },
-            member_names.join(", ")
-        );
-        if let Some((_, pk)) = local_pairings.iter().find(|(sid, _)| sid == id) {
-            println!("    pairing key (copy to joiners on other machines): {pk}");
-        }
-    }
-    0
-}
-
-/// Federation: link/unlink peer hubs. `add` runs the PSK handshake against
-/// the peer (the peer's SITE secret is the one secret you copy; this hub's
-/// device credential on the peer arrives ML-KEM-768-sealed and the peer
-/// simultaneously learns nothing else), records the peer in federation.json
-/// (0600), and verifies the link with a signed round-trip. Both hubs
-/// replicate after this single command on ONE side.
-fn cmd_federate(args: &[String]) -> i32 {
-    let usage = "usage:\n  wtf federate add <name> --url URL --psk SECRET [--as DEV]\n  wtf federate list\n  wtf federate remove <name>";
-    let Some(op) = args.first().map(|s| s.as_str()) else {
-        eprintln!("{usage}");
-        return 2;
-    };
-    let rest = &args[1..];
-    match op {
-        "list" => {
-            let fed = wtf::federation::FedConfig::load();
-            if fed.name.is_empty() && fed.peers.is_empty() {
-                println!("no federation configured (this hub has no name yet)");
-                return 0;
-            }
-            println!(
-                "this hub: {}",
-                if fed.name.is_empty() {
-                    "(unnamed)"
-                } else {
-                    &fed.name
-                }
-            );
-            if fed.peers.is_empty() {
-                println!("no peers linked");
-            }
-            for p in &fed.peers {
-                println!("  {} — {} (device {})", p.name, p.url, p.device);
-            }
-            0
-        }
-        "remove" => {
-            let Some(name) = rest.first() else {
-                eprintln!("{usage}");
-                return 2;
-            };
-            let mut fed = wtf::federation::FedConfig::load();
-            let before = fed.peers.len();
-            fed.peers.retain(|p| &p.name != name);
-            if fed.peers.len() == before {
-                eprintln!("error: no peer named '{name}'");
-                return 1;
-            }
-            if let Err(e) = fed.save() {
-                eprintln!("error: {e}");
-                return 1;
-            }
-            println!("peer '{name}' unlinked; restart the hub to stop replication to it.");
-            0
-        }
-        "add" => {
-            let Some(name) = rest.iter().find(|a| !a.starts_with('-')).cloned() else {
-                eprintln!("{usage}");
-                return 2;
-            };
-            if !config::valid_name(&name) || name.len() > 32 {
-                eprintln!("error: peer name must match [A-Za-z0-9._-]{{1,32}}");
-                return 2;
-            }
-            let Some(url) = flag_value(rest, "--url") else {
-                eprintln!("error: --url is required (the peer hub's address)");
-                return 2;
-            };
-            let Some(psk) = flag_value(rest, "--psk") else {
-                eprintln!("error: --psk is required (the peer's site secret from `wtf enroll-secret` there)");
-                return 2;
-            };
-            let url = url.trim_end_matches('/').to_string();
-            let mut fed = wtf::federation::FedConfig::load();
-            let hub_name = fed.ensure_name().unwrap_or_default();
-            let device = match flag_value(rest, "--as") {
-                Some(d) => d,
-                None => format!("{}{hub_name}", wtf::federation::FED_NAME_PREFIX),
-            };
-            if !config::valid_name(&device) {
-                eprintln!("error: --as must match [A-Za-z0-9._-]{{1,64}}");
-                return 2;
-            }
-            if fed.find_peer(&name).is_some() {
-                eprintln!("error: peer '{name}' already linked (remove it first)");
-                return 1;
-            }
-            // PSK handshake against the peer, as a device named <device>.
-            let key = match redeem_psk(&url, &device, &psk) {
-                Ok(k) => k,
-                Err(e) => {
-                    eprintln!("error: handshake with peer failed: {e}");
-                    return 1;
-                }
-            };
-            fed.peers.push(wtf::federation::Peer {
-                name: name.clone(),
-                url: url.clone(),
-                device: device.clone(),
-                device_key: key,
-                added_at: util::now_secs(),
-            });
-            if let Err(e) = fed.save() {
-                eprintln!("error: cannot persist federation.json: {e}");
-                return 1;
-            }
-            // Adopt the peer's REAL federation identity: ask it (signed
-            // with the credential it just issued) for its fed name. The
-            // peer's origin-stamped events carry that name, so pull cursors
-            // must address it, not the operator's label.
-            let peer_key = fed.peers.last().unwrap().device_key.clone();
-            let real_name = (|| -> Option<String> {
-                let ts = util::now_secs();
-                let nonce = wtf::rand::hex(16);
-                let sig = hmac::hmac_sha256_hex(
-                    &util::hex_decode(&peer_key)?,
-                    format!(
-                        "wtf-hmac-v1\nGET\n/api/v1/fed/peers\n{ts}\n{nonce}\n{}",
-                        wtf::sha256::hexdigest(b"")
-                    )
-                    .as_bytes(),
-                );
-                let headers = vec![
-                    ("X-Wtf-Device".to_string(), device.clone()),
-                    ("X-Wtf-Timestamp".to_string(), ts.to_string()),
-                    ("X-Wtf-Nonce".to_string(), nonce),
-                    ("X-Wtf-Signature".to_string(), sig),
-                ];
-                let resp =
-                    client::request(&format!("{url}/api/v1/fed/peers"), "GET", &headers, b"")
-                        .ok()?;
-                let v = resp.json()?;
-                v.get("name")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string())
-            })();
-            let peer_name = match real_name {
-                Some(n) if !n.is_empty() && config::valid_name(&n) && n != fed.name => n,
-                _ => name.clone(),
-            };
-            if peer_name != name {
-                println!("peer identity: {} (label {name})", peer_name);
-            }
-            // Rewrite the stored peer with the real name.
-            fed.peers.pop();
-            fed.peers.push(wtf::federation::Peer {
-                name: peer_name.clone(),
-                url: url.clone(),
-                device: device.clone(),
-                device_key: peer_key.clone(),
-                added_at: util::now_secs(),
-            });
-            let _ = fed.save();
-
-            // Verify with a signed round-trip on the new credential.
-            let peer = wtf::federation::Peer {
-                name: peer_name.clone(),
-                url: url.clone(),
-                device: device.clone(),
-                device_key: peer_key.clone(),
-                added_at: 0,
-            };
-            let rep = wtf::replicate::Replicator {
-                store: Arc::new(
-                    Store::new(
-                        &std::env::temp_dir().join(format!("wtf-fedverify-{}", wtf::rand::hex(4))),
-                    )
-                    .expect("tmp store"),
-                ),
-                hub_url: String::new(),
-                hub_name,
-                fed: Arc::new(Mutex::new(wtf::federation::FedConfig::default())),
-                nonces: Mutex::new(std::collections::HashMap::new()),
-                last_warn: Mutex::new(std::collections::HashMap::new()),
-                push_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                wake: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            };
-            match wtf::replicate::anti_entropy(&rep, &peer, &rep.push_gen) {
-                Ok(_) => {
-                    println!("peer '{peer_name}' linked at {url} (device '{device}').");
-                    println!("restart the hub to begin replication; both hubs now carry the full ledger.");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("warning: link saved but first sync failed: {e}");
-                    eprintln!("replication will retry automatically once the hub restarts.");
-                    0
-                }
-            }
-        }
-        _ => {
-            eprintln!("{usage}");
-            2
-        }
-    }
-}
-
-/// Read one string field from a JSON file without creating or upgrading it.
-fn read_json_field(path: &std::path::Path, field: &str) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let v = json::parse(text.trim()).ok()?;
-    v.get(field).and_then(|x| x.as_str()).map(|s| s.to_string())
-}
-
-/// Print the full dashboard URL (including the `?k=` key) for the operator
-/// sitting on the hub machine. The key already lives in this machine's
-/// config.json — this just saves retyping it. Agents can never fetch this
-/// over MCP; they only get the hub address via the `hub_info` tool.
-fn cmd_dashboard_url() -> i32 {
-    let cfg = match HubConfig::load_or_create() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let bind: Ipv4Addr = match cfg.bind_ip.parse() {
-        Ok(i) => i,
-        Err(_) => {
-            eprintln!("error: bad bind ip '{}' in config.json", cfg.bind_ip);
-            return 2;
-        }
-    };
-    let cap = match wtf::federation::load_or_create_capability() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    if let Some(ref adv) = cfg.advertised_url {
-        println!("dashboard: {}/w/{cap}", adv.trim_end_matches('/'));
-    } else {
-        println!("dashboard: http://localhost:{}/w/{cap}", cfg.port);
-    }
-    if !bind.is_loopback() {
-        println!("LAN capability link: http://{}:{}/w/{cap}", util::lan_ip(), cfg.port);
-    }
-    0
-}
-
-fn cmd_url(args: &[String]) -> i32 {
-    match args.first().map(|s| s.as_str()) {
-        None => match HubConfig::load_or_create() {
-            Ok(c) => {
-                println!(
-                    "advertised url: {}",
-                    c.advertised_url
-                        .as_deref()
-                        .unwrap_or("(not set; auto-detecting LAN address)")
-                );
-                0
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                1
-            }
-        },
-        Some("clear") => match HubConfig::set_advertised_url(None) {
-            Ok(_) => {
-                println!("advertised url cleared; joining devices get the auto-detected LAN URL.");
-                0
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                1
-            }
-        },
-        Some(u) => match HubConfig::set_advertised_url(Some(u.to_string())) {
-            Ok(c) => {
-                println!(
-                    "advertised url set: {}",
-                    c.advertised_url.as_deref().unwrap_or("")
-                );
-                println!("`wtf key issue` and `wtf join` now hand out this URL (overlay IP or public https host).");
-                0
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                1
-            }
-        },
-    }
-}
-
-/// Enroll THIS machine by executing the enrollment on the hub over ssh.
-/// The one-time device secret travels only inside the ssh channel; nothing is
-/// written to intermediate files. Usage:
-///   wtf join user@hub-host [--name DEVICE] [--url URL]
-fn cmd_join(args: &[String]) -> i32 {
-    let target = match args.first() {
-        Some(t) if !t.trim().is_empty() && !t.starts_with('-') => t.trim(),
-        _ => {
-            eprintln!("usage: wtf join user@hub-host [--name DEVICE] [--url URL]");
-            return 2;
-        }
-    };
-    let name = flag_value(args, "--name").unwrap_or_else(|| format!("box-{}", wtf::rand::hex(3)));
-    // The name is embedded in the remote shell command: restrict the charset
-    // before it ever leaves this machine (also what the hub will validate).
-    if !config::valid_name(&name) {
-        eprintln!("error: --name must match [A-Za-z0-9._-]{{1,64}}");
-        return 2;
-    }
-    let url_override = flag_value(args, "--url");
-
-    eprintln!("enrolling '{name}' via ssh {target} ...");
-    let remote_cmd = format!("wtf key issue --json {name}");
-    let out = match Command::new("ssh")
-        .args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            target,
-            "--",
-            &remote_cmd,
-        ])
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("error: cannot run ssh: {e}");
-            return 1;
-        }
-    };
-    if !out.status.success() {
-        eprintln!(
-            "error: remote enrollment failed (exit {:?}): {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        eprintln!("hint: sshd up on the hub? key authorized? `wtf` in the remote PATH?");
-        return 1;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let line = stdout
-        .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .unwrap_or("");
-    let parsed = match json::parse(line.trim()) {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: remote did not return JSON; the hub's `wtf` is too old (needs `key issue --json`).");
-            return 1;
-        }
-    };
-    let get = |k: &str| {
-        parsed
-            .get(k)
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string())
-    };
-    let (remote_url, key) = (get("hub_url"), get("key"));
-    let (Some(mut hub_url), Some(key)) = (remote_url, key) else {
-        eprintln!("error: remote JSON missing hub_url/key fields.");
-        return 1;
-    };
-    if let Some(u) = &url_override {
-        hub_url = u.trim_end_matches('/').to_string();
-    }
-    let cfg = BridgeConfig {
-        hub_url,
-        device_name: name,
-        device_key: key,
-    };
-    if let Err(e) = cfg.validate() {
-        eprintln!("error: {e}");
-        return 2;
-    }
-    if let Err(e) = run_setup(&cfg) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    println!(
-        "joined: enrolled as '{}' reaching the hub at {}.",
-        cfg.device_name, cfg.hub_url
-    );
-    println!();
-    println!("add this to your MCP client configuration:");
-    println!(r#"  {{ "command": "wtf", "args": ["agent"] }}"#);
-    0
 }

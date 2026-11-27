@@ -1,37 +1,12 @@
-//! wtf-is-going-on-mcp — see README.md.
+//! wtf — stateless zero-dependency SSH/local fleet status, goals, and pickup CLI.
 //!
-//! Everything is implemented in-tree on top of `std` only:
-//! SHA-256, HMAC-SHA256, JSON, HTTP/1.1 server+client, and the MCP stdio
-//! bridge. Zero external crates is a hard project constraint.
+//! Implemented purely on Rust `std` (zero external crates).
 
-pub mod aes;
-pub mod api;
-pub mod auth;
-pub mod client;
-pub mod comms;
 pub mod config;
-pub mod dashboard;
-pub mod chat;
-pub mod fed_shell;
-pub mod federation;
 pub mod fleet;
-pub mod gcm;
-pub mod hmac;
-pub mod http;
-pub mod identity;
 pub mod json;
-pub mod keccak;
-pub mod mcp;
-pub mod mlkem768;
-pub mod ntt_tables;
+pub mod probe;
 pub mod rand;
-pub mod replicate;
-pub mod runner;
-pub mod session_crypto;
-pub mod sessions;
-pub mod sha256;
-pub mod store;
-pub mod tasks;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

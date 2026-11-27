@@ -1,148 +1,25 @@
 # DOX framework
 
-- DOX is a highly performant `llms.txt` hierarchy installed here
-- Agent must follow DOX instructions across any edits
-
-## Core Contract
-
-- `llms.txt` files are binding work contracts for their subtrees
-- Work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable `llms.txt` plus every parent `llms.txt` above it
-
-## Read Before Editing
-
-1. Read the root `llms.txt`
-2. Identify every file or folder you expect to touch
-3. Walk from the repository root to each target path
-4. Read every `llms.txt` found along each route
-5. If a parent `llms.txt` lists a child `llms.txt` whose scope contains the path, read that child and continue from there
-6. Use the nearest `llms.txt` as the local contract and parent docs for repo-wide rules
-7. If docs conflict, the closer doc controls local work details, but no child doc may weaken DOX
-
-Do not rely on memory. Re-read the applicable DOX chain in the current session before editing.
-
-## Update After Editing
-
-Every meaningful change requires a DOX pass before the task is done.
-
-Update the closest owning `llms.txt` when a change affects:
-
-- purpose, scope, ownership, or responsibilities
-- durable structure, contracts, workflows, or operating rules
-- required inputs, outputs, permissions, constraints, side effects, or artifacts
-- user preferences about behavior, communication, process, organization, or quality
-- `llms.txt` creation, deletion, move, rename, or index contents
-
-Update parent docs when parent-level structure, ownership, workflow, or child index changes. Update child docs when parent changes alter local rules. Remove stale or contradictory text immediately. Small edits that do not change behavior or contracts may leave docs unchanged, but the DOX pass still must happen.
-
-## Hierarchy
-
-- Root `llms.txt` is the DOX rail: project-wide instructions, global preferences, durable workflow rules, and the top-level Child DOX Index
-- Child `llms.txt` files own domain-specific instructions and their own Child DOX Index
-- Each parent explains what its direct children cover and what stays owned by the parent
-- The closer a doc is to the work, the more specific and practical it must be
-
-## Child Doc Shape
-
-- Create a child `llms.txt` when a folder becomes a durable boundary with its own purpose, rules, responsibilities, workflow, materials, or quality standards
-- Work Guidance must reflect the current standards of the project or user instructions; if there are no specific standards or instructions yet, leave it empty
-- Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
-
-Default section order:
-- Purpose
-- Ownership
-- Local Contracts
-- Work Guidance
-- Verification
-- Child DOX Index
-
-## Style
-
-- Keep docs concise, current, and operational
-- Document stable contracts, not diary entries
-- Put broad rules in parent docs and concrete details in child docs
-- Prefer direct bullets with explicit names
-- Do not duplicate rules across many files unless each scope needs a local version
-- Delete stale notes instead of explaining history
-- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no longer exist
-
-## Closeout
-
-1. Re-check changed paths against the DOX chain
-2. Update nearest owning docs and any affected parents or children
-3. Refresh every affected Child DOX Index
-4. Remove stale or contradictory text
-5. Run existing verification when relevant
-6. Report any docs intentionally left unchanged and why
-
-## User Preferences
-
-When the user requests a durable behavior change, record it here or in the relevant child `llms.txt`
-
-- **Hard-code everything in Rust; own your dependencies** (2026-09-01): implement new capabilities in-tree (crypto, JSON, HTTP, protocols — everything) with unit tests + official vectors; never add crates.io deps; `[dependencies]` stays empty.
-- **Singular federated access plane** (2026-09-03, operator directive; R5 completed 2026-09-04): ONE server, ONE dashboard page, ONE non-device gate — the unguessable 64-hex capability endpoint `/w/<capability>` (rotate: delete `dashboard_capability` + restart), valid across loopback, LAN, remote, and cloud with uniform-404 security (wrong token == unknown path; zero info disclosure). `wtf dashboard-url` prints the canonical URL plus, on non-loopback binds, the LAN link (same endpoint). Legacy `?k=` is completely retired; requests to `/` or malformed paths return uniform 404. The page embeds the Chat & Agent Orchestration Studio paired with the Federated Shell (`~/` virtual cluster root: `~/mac`, `~/windows`, `~/creeper-pi`; compound cross-architecture prompts like `cd ~/mac/frontend && npm test && cd ~/windows/backend && cargo test`). Non-device tooling integrates via MCP only and never needs the capability token.
-- **Federated OMP execution, LKGL tracking & distributed compute** (2026-09-03, operator directive): `omp`/ACP fleet masters invoked from dashboard chat or federated terminal run with the synchronized `fed_omp_config.json`; per-machine/architecture Last Known Good Location (LKGL) persists in `lkgl.json` and anchors execution to each node's native tree. Route tasks cluster-wide or target nodes by compute tier — an edge Raspberry Pi harness offloads heavy builds/music/TTS to the strongest node and streams artifacts back for local playback.
-- **Router chat, no harnesses** (2026-09-03 executor directive SUPERSEDED 2026-09-07): wtf's only inference surface is chatting with the OPERATOR-RUN local-router's OpenAI-compatible endpoint (`http://127.0.0.1:11434/v1/chat/completions`) from the machine running wtf — MCP `chat {prompt, model?, system?}`, dashboard Studio chat pane (`POST /api/v1/chat/completions`, capability-gated), or signed curl. Model defaults to passive discovery from the router's live `/v1/models` (**llama.cpp qwen3 abliterated** → qwen3 → llama.cpp → `local-router/fallback-models`). ALL agent-harness logic was stripped: no agent-CLI catalog, no tmux dispatch, no `chat_run`/term sessions, no `/api/v1/agents/available`. **wtf NEVER spawns, stops, or restarts `local-router`, `fcc-server`, or `fcc-dsh`** — with :11434 down, chat fails closed with a start-it-yourself message. Cross-machine agent work happens through each machine's OWN tooling/config (federated lanes carry the directives; `env_report`/`env_probe` share os/arch/wtf versions, NEVER keys; secrets cross machines ONLY via `pqc-secrets envelope`).
-- **Autonomous operation is pre-authorized** (2026-09-01): agents in this system's repo chats execute work with their own agent CLI without per-task permission checks. Assume, verify by output.
-- **Fleet state (2026-09-07):** windows hub `hub-2538554f` v0.15.3 (fresh-main bring-up, this tree); mac hub `hub-799c0c4c` v0.15.2 — PENDING pull of v0.15.3 no-spawn contract (R1 identity persistence, singular capability URL, Chat Studio, Federated Shell + LKGL); federation edge via windows host portproxy. Coordination via repo chats `wtf-is-going-on-mcp` + `local-router ops`; runbooks in `docs/FLEET.md` + `docs/OPERATIONS.md`.
-- **Refinement status (2026-09-04):** R1 identity persistence RESOLVED (`identities.json` 0600 rehydrates across restarts). R2 windows-1 COMMS ledger entry RESOLVED. R3 singular dashboard URL + federated shell RESOLVED. R4 federated OMP config + LKGL + compute routing RESOLVED. R5 legacy `?k=` retirement RESOLVED (`dash_ok` retired, uniform-404 security, capability-only singular access plane).
-- **Federated fleet roadmap — walk-and-talk edge, cross-architecture compute, PQC one-time handshake** (2026-09-03, operator directive): grow the singular federated server to ALL operator compute — the windows + mac federated sides, a battery-powered Raspberry Pi edge node (wearable walk-and-talk harness over the WTF MCP bridge offloading heavy compute to cluster heavies), one more laptop, and any cloud compute. Any tooling integrates via MCP; secrets cross machines only via `pqc-secrets`. Enrollment is a one-time PQC-ready handshake (`wtf join` ssh courier, hashed TTL tokens via `wtf enroll-token` burned immediately on use, `--psk` ML-KEM-768-sealed delivery; identities persist in `identities.json` 0600); after it, agents must reconnect seamlessly across restarts, sleep/resume, and updates — requiring re-enrollment is a bug.
-- **Standing context: LOCAL ROUTER** (2026-09-01): the wtf federated comms layer is functionally complete and in maintenance. Build priority lives in the separate `/mnt/d/Code/local-router` repo under its own worktree gates — never mix router commits into this tree; coordinate that work through the wtf repo chats.
-- **Repo-Memory substrate** (2026-09-10, operator directive): persistent cross-session memory is powered by three complementary local MCP servers available to any agent harness (`memorix` for project facts/gotchas/symbol graph in SQLite, `reference_memory` for entity-relation knowledge graph in JSONL, `engram` for curated session memory and conflict resolution in SQLite+FTS5). The git-tracked `.agents/memories/` layer (`MEMORY.md` curated digest + `exports/` snapshots; contract: `.agents/memories/llms.txt`) is the singular home where durable knowledge lands across machines; full protocols in `.agents/skills/repo-memory/SKILL.md`. Graph-intelligence substrate retired.
-- **`.agents/` global standard, `llms.txt` is the PRD** (2026-09-03, operator directive): `.agents/` is the harness-agnostic skills home replacing `.claude/`; the DOX (`llms.txt` hierarchy) replaces CLAUDE.md as the project-context/PRD source. Tools may generate `.claude/` alongside (GitNexus `analyze` mirrors skills there) and Claude-Code-compatible harnesses — notably `fcc-claude` — require it: tolerate the mirror, never hand-edit both. `.agents/` + `llms.txt` are the source of truth; generated files pair with them for fcc-claude.
-- **Universal single-config AI tooling source & router supervision** (2026-09-03, operator directive; amended 2026-09-04): all AI tooling and agent harnesses point strictly at port 11434, where the OPERATOR-RUN `local-router` proxies the real Ollama daemon on 11435 as the PQC-secure single configuration — Ollama API (`/api/generate`, `/api/chat`, `/api/tags`), OpenAI-compatible (`/v1/chat/completions`, `/v1/models`), Anthropic-compatible (`/v1/messages`), and the federated `local-router/fallback-models` brain. **wtf NEVER spawns, stops, or restarts `local-router`/`fcc-server`** (2026-09-04 directive, superseding the supervisor loop): that infrastructure is installed and run by the operator; spawning a competing copy corrupted operator terminals. The hub, MCP, and dashboard only PASSIVELY probe `http://localhost:11434/v1` (`/api/v1/router/status`, MCP `router_status`, dashboard pill — read-only, no restart endpoint). Agent harnesses are assumed pre-installed; executor env injection toward 11434 happens only while the router is up, otherwise each harness runs with its own configuration (`route:harness-own` trace).
-- **Zero-config join** (2026-09-01): `wtf skill install` + one highly secure federated key must connect ANY agent on ANY machine autonomously — no manual configuration; all join tooling in-tree.
-- **End-of-turn voice summary (TTS)** (2026-09-03, operator directive): every agent closes its turn with ONE fire-and-forget `cli-tts --prompt` call (kitten-tts-nano @ 1.8x, one ONNX session, quiet stdout; full contract in `.agents/skills/tts-cli/SKILL.md`). Prompt shape: concise change summary -> exactly one `Next step:` marker -> one sentence per master (adversarial/security, privacy, supply-chain, systems-architecture, reliability, governance, terminal-orchestration/SWE-bench, master-orchestrator, developer-experience). Transcripts auto-append to `AGENTS-TTS-COMMS.txt`.
-- Any agent instructed to use, set up, join, debug, or extend this system must load `.agents/skills/wtf-is-going-on-mcp/SKILL.md` first — the SINGULAR operating guide (Herdr for agent sessions, wtf for presence and cross-machine messaging, MCP wiring, router chat, sessions/COMMS, signed curl fallback, operator CLI, multi-machine bring-up).
+- DOX is a hierarchical `llms.txt` contract for this repository.
+- Agents must read the root `llms.txt` and every `llms.txt` along the route to any file they modify, and update affected docs on closeout.
 
 ## Project Shape
 
-Rust workspace (binary + lib crate `wtf`) implementing an observability hub (`wtf serve`) and an MCP stdio bridge (`wtf agent`) with zero external crates. Current release: **v0.20.0** (2026-11-22; **fleet pickup** — `fleet_pickup` / `goal_add` / `goal_done` / `alias_set`, `GET /api/v1/fleet`, goals and SSH aliases in `$WTF_HOME/fleet.json` mode 0600, dashboard PICKUP card on the existing `/w/<capability>` page. Aliases are name, user, host, and port. The hub does not start BrowserMCP, browser-skill, or agent-desktop. Carried forward from **v0.19.0** (2026-11-07; **agent runners** — `src/runner.rs` launches the agent that performs a claimed task: Orca (`orca orchestration worker-start`) for supervised orchestration, Herdr (`herdr agent start`) for durable terminal agents, Orca preferred when both exist. Selection is by availability with an explicit fail-closed option; argv is built and tested separately from execution; specs are passed as single argv words, never through a shell. Adds `task_run` + `runner_probe` MCP tools (24 total), `GET /api/v1/tasks/runners`, `POST /api/v1/tasks/{id}/run`, and `runner`/`run_handle` fields on the task record. Carried forward: federated task dispatch (v0.18.0), paste-bin removal, router-only inference against the operator-run local-router :11434/v1, no agent-harness logic beyond starting a runtime on request, singular capability dashboard URL `/w/<capability>`, Federated Shell with `~/` cluster root and LKGL tracking, R1 identity persistence. All 132 unit tests and 14 e2e tests green.
+Zero-dependency Rust workspace (`wtf`, edition 2021, `[dependencies]` empty) providing a stateless local & SSH fleet status, goals, and pickup CLI (`v0.21.0`).
 
-Parent-owned here: repo workflow gates, task records (`.agents/tasks/`), PQC policy, operator preferences.
+- **No daemon, no HTTP server, no MCP bridge.** The legacy hub (`wtf serve`), MCP stdio server (`wtf agent`), PQC crypto/sessions, federation, task dispatch, runner, and router chat were retired and archived at tag `v0.20.0-archive`.
+- Cross-machine work uses plain OpenSSH (`ssh` / `scp`) and local agent session tools (`herdr`, `orca`) directly.
+- All state lives in `$WTF_HOME/fleet.json` (default `~/.config/wtf-mcp/fleet.json`, mode `0600`, keyless `{goals, aliases}`).
+
+## Core Contracts
+
+1. **Zero external crates.** `[dependencies]` in `Cargo.toml` remains empty.
+2. **Keyless storage.** `fleet.json` and JSON outputs (`wtf status --json`, `wtf pickup --json`) must never contain keys, tokens, passwords, or `IdentityFile` paths (enforced by `valid_name`, `valid_host`, and `forbidden_keys`).
+3. **Argv-only subprocesses.** `ssh`, `git`, `hostname`, `herdr`, and `which`/`where` are invoked strictly via argv arrays with bounded timeouts (`src/probe.rs`); never pass user/file fields through `sh -c` or `cmd /C`.
+4. **Fail closed.** Invalid aliases, hosts, ports, goal IDs, or unknown CLI subcommands exit non-zero without mutating state.
 
 ## Child DOX Index
 
-- `src/llms.txt` — implementation tree: module map, crypto/HTTP/JSON/auth contracts, storage rules, verification commands.
-- `docs/llms.txt` — operator/fleet documentation split (`FLEET.md` state inventory, `OPERATIONS.md` runbooks, `ROADMAP.md` refinement items). Root `llms.txt` stays the lean agent contract; human-facing state and runbooks live there.
-- `tests/` — parent-owned for now (single e2e suite, no local conventions). Create `tests/llms.txt` if it grows its own rules.
-
-## Distributed Skills
-
-- `.agents/skills/wtf-is-going-on-mcp/SKILL.md` — the SINGULAR wtf skill, authored and distributed from `~/code-external/ainish-coder/.agents/skills/` (agent-facing connect + protocol + operator/CLI + signed-curl reference; embedded in the binary; `wtf skill install` distributes it). Replaced `wtf-agent-hub` + `wtf-observability` + `wtf-mcp-mastery` (2026-11-03).
-- **Curated skill set (persisted selection, 2026-09-10):** this repo carries the skills deployed by `ainish-coder --rules`: `code-security`, `llm-security`, `model-add`, `model-remove`, `orchestrate-subagent-masters`, `pqc-secrets`, `pqc-signatures-security`, `production-security`, `provider-models-list`, `question-me`, `repo-memory`, `tts-cli`, `wtf-is-going-on-mcp`, plus the six GitNexus playbooks as standalone skills (`gitnexus-cli`, `gitnexus-debugging`, `gitnexus-exploring`, `gitnexus-guide`, `gitnexus-impact-analysis`, `gitnexus-refactoring`).
-- PQC skills (`pqc-secrets`, `pqc-signatures-security`) are sourced from the ainish-coder repo and deployed by `ainish-coder --rules`.
-
-## Chat integration — cross-system agent-to-agent lanes (v0.15.2, operator directive)
-
-Federated chats ARE the cross-system agent-to-agent lanes. Contract:
-
-1. **One chat = one project lane.** The scope label (`repo-a+repo-b@mac+win`) declares which repos on which machines the chat coordinates. Members join from any machine with the pairing key; every message is E2E-encrypted, replicated via the hub mesh, and visible decrypted to the operator's dashboard viewer.
-2. **Agent-to-agent update flow.** Agent A (machine 1) posts progress via `session_send`/`comms_post`; Agent B (machine 2) polls via `session_read`/`comms_read` and executes the handed-off task through its OWN machine tooling and configuration — never through wtf. The repo chats on each machine are the discovery surface (`session_list {repo}`).
-3. **Operator interjection.** The dashboard chat viewer exposes the same chat decrypted, plus a live terminal on the executor tmux session — the operator can type into either machine's agent session mid-conversation.
-4. **Lifecycle.** Each agent checks in when it starts work (`check_in`), logs milestones (`log_event`), and closes with `done` or `blocked`. The ledger surface for that is `comms_post`/`comms_read` on a session lane. Agent sessions themselves belong to Herdr, not wtf — wtf records state, it never manages sessions or scratch storage.
-5. **Log hygiene.** Heartbeats and replication churn are quiet (presence only). The dashboard shows work; the ring + rotated log keep only troubleshooting-worthy signal.
-6. **Cross-machine CLI helpers (windows-installed; promote to MCP later).** `wtf-ask --local "q"` runs the fallback chain locally and reports the lane. `wtf-ask-remote <session-id> "directive" [--wait N]` posts a directive into a chat via session_send and optionally polls session_read for the remote agent's reply — the message is the contract; the remote runtime (Windows/mac/Linux) is irrelevant.
-
-## Federated task dispatch — addressable cross-machine work (v0.18.0)
-
-The task lane is how one agent designates work for another machine and gets the result back. A **task** is a durable, addressable work item on the hub; a **chat** is the conversation about it. `src/tasks.rs` owns the record, `/api/v1/tasks*` exposes it, and the four MCP tools are the agent surface. Contract:
-
-1. **Addressed, not spawned.** A task carries a `target`: an exact machine name/alias, `any`, `tier:heavy|tier:standard|tier:edge`, or `arch:<os>-<arch>`. Dispatch writes a queued record; an agent **already running on that machine** claims it. wtf never spawns a harness and never opens an ssh session to another box — that boundary is the v0.16.0 harness-free contract and it is not negotiable.
-2. **Pull, with leases.** `task_dispatch` → `task_claim` (selector-matched, oldest first) → `task_report`. A claim holds a 15-minute lease that `running` heartbeats extend; an abandoned claim returns the task to `queued` on the next read, so a crashed peer cannot strand work. A queued task is a legitimate resting state, not a failure — it means no agent is polling that target.
-3. **Ownership is enforced in the store, not the UI.** Only the claiming device may `start`/`finish`/`block`; only the dispatching device may `cancel`. An out-of-order or foreign report fails closed with an explicit message.
-4. **One wire shape.** `POST /api/v1/tasks/claim` answers `{ok, task: <record>|null}` in both the hit and miss cases — a bare record on success and a wrapper on empty would make a mis-branch read as "no work" while the task was in fact claimed.
-5. **A task may bind one chat.** `session` joins the two lanes: the reviewer follows the human conversation in the dashboard, while `task_status` returns the machine deliverable. Confidential payloads still travel only inside encrypted sessions; a task record is operator-readable work state and must never carry secrets.
-6. **Durable and replayable.** `$WTF_HOME/tasks.json` (0600, atomic) is loaded on boot beside `sessions.json`; the hub's state payload carries the board so the dashboard TASKS card and `wtf tasks` read the same source.
-
-## Agent runners — how a claimed task actually starts (v0.19.0)
-
-A task says what to do and where; `src/runner.rs` decides what to run it on. Contract:
-
-1. **Orca first, Herdr as fallback.** `runner: auto` (the default) probes in preference order and reports which it picked and why. `orca` means supervised orchestration — `orca orchestration worker-start --spec … --agent <id>`, which returns a dispatch id and reports completion through its own Run. `herdr` means a durable terminal agent — `herdr agent start --prompt …`, remote via `herdr --machine <label>`.
-2. **Remote Orca needs a pairing, not a hostname.** `orca --on <environment>` addresses a server paired with `orca environment add --pairing-code orca://pair?...`; the target machine must be running `orca serve`. A bare LAN address is not an Orca target. Remote Herdr needs `herdr machine add <ssh-target> --label <label>` once.
-3. **An explicit runner is honored exactly and fails closed.** Asking for `orca` on a machine without it returns the install step; it never silently downgrades to Herdr, because "your work ran somewhere else" is worse than "it did not run".
-4. **`--agent` is mandatory for Orca.** `worker-start` refuses to create a terminal without it (`agent_unconfigured`). `DEFAULT_ORCA_AGENT` supplies one; callers may override per task.
-5. **argv is data, never a shell.** Specs are peer-supplied text; the whole command line is built as an argv array and unit-tested (`runner::argv`) before anything executes. No `sh -c` ever sees a task title.
-6. **Only a claimer launches, and only once.** `POST /tasks/{id}/run` requires the claiming device, refuses a terminal task, and records the runner's handle on the record. Launching is the one place the hub starts an external runtime, and it starts it for work a device has already claimed.
-7. **A failed launch leaves the claim intact.** The task stays `claimed` with the runtime's error verbatim, so the worker can fix the prerequisite and re-run instead of losing the work.
-
+- `src/llms.txt` — Rust modules (`config`, `fleet`, `json`, `probe`, `rand`, `util`, `main`), contracts, and verification commands.
+- `docs/llms.txt` — Operator fleet inventory (`docs/FLEET.md`).
+- `tests/` — Integration tests (`tests/cli.rs`) exercising the compiled `wtf` binary against isolated `$WTF_HOME` directories.
